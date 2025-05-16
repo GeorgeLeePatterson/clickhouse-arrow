@@ -1,0 +1,5 @@
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+[target.'cfg(all())']
+rustflags = ["-C", "target-cpu=native"]

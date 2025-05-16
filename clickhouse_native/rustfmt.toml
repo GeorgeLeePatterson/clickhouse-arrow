@@ -1,0 +1,30 @@
+edition = "2024"
+style_edition = "2024"
+unstable_features = true
+
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+combine_control_expr = true
+fn_single_line = true
+format_strings = true
+ignore = []
+use_field_init_shorthand = true
+array_width = 90
+fn_call_width = 90
+
+reorder_impl_items = true
+overflow_delimited_expr = true
+blank_lines_upper_bound = 1
+wrap_comments = true
+enum_discrim_align_threshold = 60
+format_macro_matchers = true
+struct_field_align_threshold = 40
+
+comment_width = 100
+attr_fn_like_width = 90
+struct_lit_width = 90
+struct_variant_width = 90
+single_line_if_else_max_width = 90
+single_line_let_else_max_width = 90
+chain_width = 90
+max_width = 100

@@ -1,0 +1,84 @@
+[package]
+name = "clickhouse_native"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[package.metadata.docs.rs]
+all-features = false
+
+[features]
+default = ["derive", "serde", "pool", "cloud"]
+derive = ["clickhouse_native_derive"]
+geo-types = ["dep:geo-types"]
+serde = [
+    "dep:serde",
+    "serde_json",
+    "uuid/serde",
+    "chrono/serde",
+    "chrono-tz/serde",
+]
+cloud = ["dep:ureq"]
+pool = ["dep:bb8"]
+rust_decimal = ["dep:rust_decimal"]
+tests = ["serde", "rust_decimal"]
+
+[dependencies]
+arrow = { version = "55", features = [
+    "prettyprint",
+    "ipc_compression",
+    "chrono-tz",
+] }
+async-trait = "0.1"
+cityhash-rs = "1.0.1"
+chrono = "0.4"
+chrono-tz = "0.10"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+indexmap = { version = "2" }
+lz4_flex = "0.11"
+opentelemetry-semantic-conventions = { version = "0.29", features = [
+    "default",
+    "semconv_experimental",
+] }
+parking_lot = "0.12"
+paste = "1"
+pin-project = "1"
+rustc-hash = "2"
+socket2 = "0.5"
+strum = { version = "0.27", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = [
+    "io-util",
+    "net",
+    "sync",
+    "rt",
+    "macros",
+    "tracing",
+] }
+tokio-rustls = { version = "0.26", features = ["logging", "tls12"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+webpki-roots = "1"
+
+# Optional
+bb8 = { version = "0.9", optional = true }
+clickhouse_native_derive = { version = "0.2", optional = true, path = "../clickhouse_native_derive" }
+geo-types = { version = "0.7", optional = true }
+rust_decimal = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
+
+[dev-dependencies]
+testcontainers = { version = "0.24" }
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+ureq = { version = "3", features = ["rustls", "gzip", "json"] }
+
+[lints]
+workspace = true
+
+[build-dependencies]
+rustc_version = "0.4.1"
