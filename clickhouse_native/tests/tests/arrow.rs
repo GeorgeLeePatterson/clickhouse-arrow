@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arrow::array::*;
 use arrow::datatypes::*;
@@ -15,8 +16,7 @@ use crate::common::arrow_helpers::*;
 use crate::common::docker::ClickHouseContainer;
 use crate::common::header;
 
-/// # Panics
-pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
+async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOptions) {
     let native_url = ch.get_native_url();
     debug!("ClickHouse Native URL: {native_url}");
 
@@ -54,23 +54,103 @@ pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
         .with_order_by(&["id".to_string()])
         .with_schema_conversions(schema_conversions);
 
+    client.health_check(true).await.expect("Health check failed");
+
+    (client, options)
+}
+
+/// Test arrow e2e using `ClientBuilder`.
+///
+/// NOTES:
+/// 1. Strings as strings is used
+/// 2. Date32 for Date is used.
+/// 3. Strict schema's will be converted (when available).
+///
+/// # Panics
+pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
+    let (client, options) = bootstrap(ch).await;
+
     // Create table with schema and enum mappings
     let schema = test_schema();
 
     // Create test RecordBatch
     let batch = test_record_batch();
 
-    round_trip(client, schema, batch, &options).await.expect("Round trip failed");
+    // Create schema
+    let (db, table) =
+        create_schema(&client, schema, &options).await.expect("Schema creation failed");
+
+    // Round trip
+    round_trip(&format!("{db}.{table}"), &client, batch).await.expect("Round trip failed");
+
+    // Drop schema
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+}
+
+// Test arrow schema functions
+/// # Panics
+pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
+    let (client, options) = bootstrap(ch).await;
+
+    // Create table with schema and enum mappings
+    let schema = test_schema();
+
+    // Create schema
+    let (db, table) = create_schema(&client, Arc::clone(&schema), &options)
+        .await
+        .expect("Schema creation failed");
+
+    // Test fetch databases
+    let query_id = Qid::new();
+    header(query_id, "Fetching databases");
+    let databases = client.fetch_schemas(Some(query_id)).await.expect("Fetch databases failed");
+    assert!(databases.contains(&db));
+
+    // Test fetch all tables
+    let query_id = Qid::new();
+    header(query_id, "Fetching all tables");
+    let tables = client.fetch_all_tables(Some(query_id)).await.expect("Fetch all tables failed");
+    let db_tables = tables.get(&db);
+    assert!(db_tables.is_some());
+    assert!(db_tables.unwrap().contains(&table));
+
+    // Test fetch tables
+    let query_id = Qid::new();
+    header(query_id, "Fetching db tables");
+    let tables = client.fetch_tables(Some(&db), Some(query_id)).await.expect("Fetch tables failed");
+    assert!(tables.contains(&table));
+
+    // Test fetch schema unfiltered
+    let query_id = Qid::new();
+    header(query_id, "Fetching db schema (non-filtered)");
+    let tables =
+        client.fetch_schema(Some(&db), &[], Some(query_id)).await.expect("Fetch schema failed");
+    let table_schema = tables.get(&table);
+    assert!(table_schema.is_some());
+    compare_schemas(table_schema.unwrap(), &schema);
+
+    // Test fetch schema filtered
+    let query_id = Qid::new();
+    header(query_id, "Fetching db schema (filtered)");
+    let tables = client
+        .fetch_schema(Some(&db), &[&table], Some(query_id))
+        .await
+        .expect("Fetch schema filtered failed");
+    let table_schema = tables.get(&table);
+    assert!(table_schema.is_some());
+    compare_schemas(table_schema.unwrap(), &schema);
+
+    // Drop schema
+    drop_schema(&db, &table, &client).await.expect("Drop table");
 }
 
 /// # Errors
 /// # Panics
-pub async fn round_trip(
-    client: ArrowClient,
+pub async fn create_schema(
+    client: &ArrowClient,
     schema: SchemaRef,
-    batch: RecordBatch,
     options: &CreateOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(String, String), Box<dyn std::error::Error>> {
     // Generate unique database and table names
     let table_qid = Qid::new();
 
@@ -100,11 +180,45 @@ pub async fn round_trip(
         .create_table(Some(&db_name), &table_name, &schema, options, Some(table_qid))
         .await?;
 
+    Ok((db_name, table_name))
+}
+
+/// # Errors
+pub async fn drop_schema(
+    db: &str,
+    table: &str,
+    client: &ArrowClient,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let query_id = Qid::new();
+    // Truncate table
+    header(query_id, format!("Truncating table: {db}.{table}"));
+    client.execute(format!("TRUNCATE TABLE {db}.{table}"), Some(query_id)).await?;
+
+    // Drop table
+    header(query_id, format!("Dropping table: {db}.{table}"));
+    client.execute(format!("DROP TABLE {db}.{table}"), None).await?;
+
+    // Drop database
+    header(query_id, format!("Dropping database: {db}"));
+    client.drop_database(db, true, None).await?;
+
+    header(query_id, "Round-trip test completed successfully");
+
+    Ok(())
+}
+
+/// # Errors
+/// # Panics
+pub async fn round_trip(
+    table_ref: &str,
+    client: &ArrowClient,
+    batch: RecordBatch,
+) -> Result<(), Box<dyn std::error::Error>> {
     let query_id = Qid::new();
     header(query_id, format!("Inserting RecordBatch with {} rows", batch.num_rows()));
-    let query = format!("INSERT INTO {db_name}.{table_name} FORMAT Native");
+    let query = format!("INSERT INTO {table_ref} FORMAT Native");
     let result = client
-        .insert(&query, batch.clone(), Some(table_qid))
+        .insert(&query, batch.clone(), Some(query_id))
         .await
         .inspect_err(|error| error!(?error, "Insertion failed: {query_id}"))?
         .collect::<Vec<_>>()
@@ -119,10 +233,10 @@ pub async fn round_trip(
 
     // Query and verify results
     let query_id = Qid::new();
-    header(query_id, format!("Querying table: {db_name}.{table_name}"));
-    let query = format!("SELECT * FROM {db_name}.{table_name}");
+    header(query_id, format!("Querying table: {table_ref}"));
+    let query = format!("SELECT * FROM {table_ref}");
     let queried_batches = client
-        .query(&query, Some(table_qid))
+        .query(&query, Some(query_id))
         .await?
         .collect::<Vec<_>>()
         .await
@@ -140,43 +254,51 @@ pub async fn round_trip(
 
     for (i, col) in queried_batches[0].columns().iter().enumerate() {
         let inserted_column = inserted_batch.column(i);
-        match (col.data_type(), inserted_column.data_type()) {
-            // LowCardinality/Dictionaries
-            (DataType::Dictionary(k1, v1), DataType::Dictionary(_, _)) => {
-                assert_dictionaries(i, col, inserted_column, k1, v1);
-            }
-            // List LowCardinality/Dictionaries
-            (
-                DataType::List(field1) | DataType::LargeList(field1) | DataType::ListView(field1),
-                DataType::List(field2) | DataType::LargeList(field2) | DataType::ListView(field2),
-            ) => {
-                assert_lists(i, col, inserted_column, field1, field2);
-            }
-            // Dates
-            (
-                DataType::Timestamp(TimeUnit::Millisecond, Some(tz)),
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-            ) if tz.as_ref() == "UTC" => {
-                assert_datetimes_utf_default(col, inserted_column);
-            }
-            // Default
-            _ => assert_eq!(col, inserted_column, "Column {i} mismatch"),
-        }
+        crate::roundtrip_exceptions!(
+            (col.data_type(), inserted_column.data_type()) => {
+                dict(k1, v1, _k2, _v2) => {{
+                    assert_dictionaries(i, col, inserted_column, k1, v1);
+                }};
+                list(field1, field2) => {{
+                    assert_lists(i, col, inserted_column, field1, field2);
+                }};
+                utc_default() => {{
+                    assert_datetimes_utf_default(col, inserted_column);
+                }};
+            };
+            _ => { assert_eq!(col, inserted_column, "Column {i} mismatch"); }
+        );
+
+        // list(field1, field2) => {
+        //     assert_lists(i, col, inserted_column, field1, field2);
+        // },
+        // utc_default() => {
+        //     assert_datetimes_utf_default(col, inserted_column);
+        // },
+
+        // match (col.data_type(), inserted_column.data_type()) {
+        //     // LowCardinality/Dictionaries
+        //     (DataType::Dictionary(k1, v1), DataType::Dictionary(_, _)) => {
+        //         assert_dictionaries(i, col, inserted_column, k1, v1);
+        //     }
+        //     // List LowCardinality/Dictionaries
+        //     (
+        //         DataType::List(field1) | DataType::LargeList(field1) |
+        // DataType::ListView(field1),         DataType::List(field2) |
+        // DataType::LargeList(field2) | DataType::ListView(field2),     ) => {
+        //         assert_lists(i, col, inserted_column, field1, field2);
+        //     }
+        //     // Dates
+        //     (
+        //         DataType::Timestamp(TimeUnit::Millisecond, Some(tz)),
+        //         DataType::Timestamp(TimeUnit::Millisecond, None),
+        //     ) if tz.as_ref() == "UTC" => {
+        //         assert_datetimes_utf_default(col, inserted_column);
+        //     }
+        //     // Default
+        //     _ => assert_eq!(col, inserted_column, "Column {i} mismatch"),
+        // }
     }
-
-    // Truncate table
-    header(query_id, format!("Truncating table: {db_name}.{table_name}"));
-    client.execute(format!("TRUNCATE TABLE {db_name}.{table_name}"), Some(table_qid)).await?;
-
-    // Drop table
-    header(query_id, format!("Dropping table: {db_name}.{table_name}"));
-    client.execute(format!("DROP TABLE {db_name}.{table_name}"), None).await?;
-
-    // Drop database
-    header(query_id, format!("Dropping database: {db_name}"));
-    client.drop_database(&db_name, true, None).await?;
-
-    header(query_id, "Round-trip test completed successfully");
 
     Ok(())
 }

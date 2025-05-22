@@ -24,6 +24,48 @@ pub mod assertions {
     use arrow::datatypes::*;
     use clickhouse_native::arrow::utils::array_to_string_iter;
 
+    /// Macro to provide matching against common schema divergences
+    #[macro_export]
+    macro_rules! roundtrip_exceptions {
+        (
+            ($dt1:expr, $dt2:expr) => {
+                $( dict($k1:pat, $v1:pat, $k2:pat, $v2:pat) => { $dictst:expr }; )?
+                $( list($field1:pat, $field2:pat) => { $listst:expr }; )?
+                $( utc_default() => { $utcst:expr }; )?
+            };
+            _ => $dflt:expr
+        ) => {
+            match ($dt1, $dt2) {
+                // LowCardinality/Dictionaries
+                $((DataType::Dictionary($k1, $v1), DataType::Dictionary($k2, $v2)) => {
+                    $dictst
+                })?
+                // List LowCardinality/Dictionaries
+                $((
+                    DataType::List($field1)
+                    | DataType::LargeList($field1)
+                    | DataType::ListView($field1),
+                    DataType::List($field2)
+                    | DataType::LargeList($field2)
+                    | DataType::ListView($field2),
+                ) => {
+                    $listst
+                })?
+                // Dates
+                $((
+                    DataType::Timestamp(TimeUnit::Millisecond, Some(tz)),
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                ) if tz.as_ref() == "UTC" => {
+                    $utcst
+                })?
+                // Default
+                _ => {
+                    $dflt
+                },
+            }
+        };
+    }
+
     // Macro to compare dictionaries
     macro_rules! compare_dictionaries {
         ($idx:expr, $left:expr, $right:expr, ($k1:expr, $v1:expr), $(
@@ -61,6 +103,79 @@ pub mod assertions {
                 _ => panic!("Expected dictionary type: {}", $idx)
             }
         }}
+    }
+
+    /// # Panics
+    pub fn compare_schemas(sch1: &SchemaRef, sch2: &SchemaRef) {
+        let schema_fields = sch1.fields().iter().zip(sch2.fields().iter());
+
+        for (sch_field1, sch_field2) in schema_fields {
+            assert_eq!(sch_field1.name(), sch_field2.name());
+
+            crate::roundtrip_exceptions!(
+                (sch_field1.data_type(), sch_field2.data_type()) => {
+                    dict(k1, v1, k2, v2) => {{
+                        assert!(
+                            sch_field1.is_nullable() == sch_field2.is_nullable()
+                            && (k1.is_integer() && k2.is_integer())
+                            && (
+                                is_string_like(v1, v2)
+                                || is_list_like(v1, v2)
+                                || v1 == v2
+                            )
+                        );
+                    }};
+                    list(field1, field2) => {{
+                        assert!(
+                            field1.is_nullable() == field2.is_nullable()
+                            && is_string_like(field1.data_type(), field2.data_type())
+                            || is_list_like(field1.data_type(), field2.data_type())
+                            || field1.data_type() == field2.data_type()
+                        );
+                    }};
+                    utc_default() => {{
+                        // The match is enough
+                    }};
+                };
+                _ => { assert_eq!(sch_field1, sch_field2, "Schema fields mismatch"); }
+            );
+        }
+    }
+
+    fn is_string_like(dt1: &DataType, dt2: &DataType) -> bool {
+        matches!(
+            dt1,
+            DataType::Utf8
+                | DataType::Utf8View
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::BinaryView
+                | DataType::LargeBinary
+        ) && matches!(
+            dt2,
+            DataType::Utf8
+                | DataType::Utf8View
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::BinaryView
+                | DataType::LargeBinary
+        )
+    }
+
+    fn is_list_like(dt1: &DataType, dt2: &DataType) -> bool {
+        matches!(
+            dt1,
+            DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::ListView(_)
+                | DataType::LargeListView(_)
+        ) && matches!(
+            dt2,
+            DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::ListView(_)
+                | DataType::LargeListView(_)
+        )
     }
 
     // Dictionaries do not round-trip precisely so we compare their resolved values and nulls
@@ -115,7 +230,6 @@ pub mod assertions {
     }
 }
 
-// --- TESTING ALL ---
 #[expect(clippy::too_many_lines)]
 pub fn test_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
@@ -285,7 +399,7 @@ pub fn test_schema() -> Arc<Schema> {
 }
 
 // TODO: Support json column
-// TODO: Support point column
+// TODO: Support geo columns
 /// # Panics
 #[expect(clippy::too_many_lines)]
 pub fn test_record_batch() -> RecordBatch {
@@ -788,7 +902,7 @@ pub fn test_record_batch() -> RecordBatch {
     .expect("Failed to create RecordBatch")
 }
 
-// --- TESTING LOW CARDINALITY ---
+// --- TESTING LOW CARDINALITY (not currently used, helpful to isolate low card problems) ---
 
 // Low Cardinality
 pub fn low_cardinality_schema() -> Arc<Schema> {

@@ -25,16 +25,16 @@ pub struct TestRowAll {
     #[cfg(feature = "rust_decimal")]
     decimal32_col:             rust_decimal::Decimal,
     #[cfg(not(feature = "rust_decimal"))]
-    decimal32_col:             FixedPoint32<9>,
+    decimal32_col:             FixedPoint32<4>,
     #[cfg(feature = "rust_decimal")]
     decimal64_col:             rust_decimal::Decimal,
     #[cfg(not(feature = "rust_decimal"))]
-    decimal64_col:             FixedPoint64<18>,
+    decimal64_col:             FixedPoint64<6>,
     #[cfg(feature = "rust_decimal")]
     decimal128_col:            rust_decimal::Decimal,
     #[cfg(not(feature = "rust_decimal"))]
-    decimal128_col:            FixedPoint128<38>,
-    decimal256_col:            FixedPoint256<64>,
+    decimal128_col:            FixedPoint128<8>,
+    decimal256_col:            FixedPoint256<10>,
     nullable_string_col:       Option<String>,
     nullable_int32_col:        Option<i32>,
     nullable_uint64_col:       Option<u64>,
@@ -63,10 +63,10 @@ pub fn get_testrowall_schema() -> Vec<ColumnDefinition> {
         ("date_col".to_string(), Type::Date, None),
         ("datetime_col".to_string(), Type::DateTime(Tz::UTC), None),
         ("datetime64_col".to_string(), Type::DateTime64(3, Tz::UTC), None),
-        ("decimal32_col".to_string(), Type::Decimal32(2), None),
-        ("decimal64_col".to_string(), Type::Decimal64(8), None),
-        ("decimal128_col".to_string(), Type::Decimal128(12), None),
-        ("decimal256_col".to_string(), Type::Decimal256(64), None),
+        ("decimal32_col".to_string(), Type::Decimal32(4), None),
+        ("decimal64_col".to_string(), Type::Decimal64(6), None),
+        ("decimal128_col".to_string(), Type::Decimal128(8), None),
+        ("decimal256_col".to_string(), Type::Decimal256(10), None),
         ("nullable_string_col".to_string(), Type::Nullable(Box::new(Type::String)), None),
         ("nullable_int32_col".to_string(), Type::Nullable(Box::new(Type::Int32)), None),
         ("nullable_uint64_col".to_string(), Type::Nullable(Box::new(Type::UInt64)), None),
@@ -117,18 +117,21 @@ pub fn generate_test_block() -> Vec<TestRowAll> {
             )
             .unwrap(),
             #[cfg(feature = "rust_decimal")]
-            decimal32_col: rust_decimal::Decimal::new(1234, 2), // 12.34
+            decimal32_col: rust_decimal::Decimal::new(123_456, 4), // 12.3456 (6 digits, scale 4)
             #[cfg(not(feature = "rust_decimal"))]
-            decimal32_col: FixedPoint32::<9>(1234), // 12.34
+            decimal32_col: FixedPoint32::<4>(123456), // 12.3456
             #[cfg(feature = "rust_decimal")]
-            decimal64_col: rust_decimal::Decimal::new(123_456, 4), // 12.3456
+            decimal64_col: rust_decimal::Decimal::new(12_345_678, 6), /* 12.345678 (8 digits,
+                                                                       * scale 6) */
             #[cfg(not(feature = "rust_decimal"))]
-            decimal64_col: FixedPoint64::<18>(123_456), // 12.34
+            decimal64_col: FixedPoint64::<6>(12345678), // 12.345678
             #[cfg(feature = "rust_decimal")]
-            decimal128_col: rust_decimal::Decimal::new(12_345_678, 6), // 12.345678
+            decimal128_col: rust_decimal::Decimal::new(1_234_567_890, 8), /* 12.34567890 (10
+                                                                           * digits, scale 8) */
             #[cfg(not(feature = "rust_decimal"))]
-            decimal128_col: FixedPoint128::<38>(12_345_678), // 12.34
-            decimal256_col: FixedPoint256::<64>::from(123i128),
+            decimal128_col: FixedPoint128::<8>(1234567890), // 12.34567890
+            decimal256_col: FixedPoint256::<10>::from(12_345_678_901_i128), /* 12.345678901 (11
+                                                                             * digits, scale 10) */
             nullable_string_col: Some("Test String 1".to_string()),
             nullable_int32_col: Some(42),
             nullable_uint64_col: Some(424_242),
@@ -163,19 +166,23 @@ pub fn generate_test_block() -> Vec<TestRowAll> {
             )
             .unwrap(),
             #[cfg(feature = "rust_decimal")]
-            decimal32_col: rust_decimal::Decimal::new(-5678, 2), // -56.78
+            decimal32_col: rust_decimal::Decimal::new(-56789, 4), // -5.6789 (5 digits, scale 4)
             #[cfg(not(feature = "rust_decimal"))]
-            decimal32_col: FixedPoint32::<9>(-5678), // -56.78 (-5678 / 10^2)
+            decimal32_col: FixedPoint32::<4>(-56789), // -5.6789
             #[cfg(feature = "rust_decimal")]
-            decimal64_col: rust_decimal::Decimal::new(-9_876_543, 5), // -98.76543
+            decimal64_col: rust_decimal::Decimal::new(-98_765_432, 6), /* -98.765432 (8 digits,
+                                                                        * scale 6) */
             #[cfg(not(feature = "rust_decimal"))]
-            decimal64_col: FixedPoint64::<18>(-9876543), // -98.76543 (-9876543 / 10^5)
+            decimal64_col: FixedPoint64::<6>(-98765432), // -98.765432
             #[cfg(feature = "rust_decimal")]
-            decimal128_col: rust_decimal::Decimal::new(-876_543_210, 7), // -87.6543210
+            decimal128_col: rust_decimal::Decimal::new(-8_765_432_101, 8), /* -87.65432101 (10
+                                                                            * digits, scale 8) */
             #[cfg(not(feature = "rust_decimal"))]
-            decimal128_col: FixedPoint128::<38>(-876543210), /* -87.6543210 (-876543210 /
-                                                              * 10^7) */
-            decimal256_col: FixedPoint256::<64>::from(-987i128),
+            decimal128_col: FixedPoint128::<8>(-8765432101), // -87.65432101
+            decimal256_col: FixedPoint256::<10>::from(-98_765_432_101_i128), /* -98.765432101
+                                                                              * (11
+                                                                              * digits, scale
+                                                                              * 10) */
             nullable_string_col: None,
             nullable_int32_col: Some(-99),
             nullable_uint64_col: None,
@@ -207,19 +214,21 @@ pub fn generate_test_block() -> Vec<TestRowAll> {
             datetime64_col: DateTime64::<3>::try_from(chrono::DateTime::<chrono::Utc>::MAX_UTC)
                 .unwrap(),
             #[cfg(feature = "rust_decimal")]
-            decimal32_col: rust_decimal::Decimal::new(123_456_789, 2), // 1234567.89 (9 digits)
+            decimal32_col: rust_decimal::Decimal::new(99999, 4), // 9.9999 (5 digits, scale 4)
             #[cfg(not(feature = "rust_decimal"))]
-            decimal32_col: FixedPoint32::<9>(123_456_789), // 1234567.89
+            decimal32_col: FixedPoint32::<4>(99999), // 9.9999
             #[cfg(feature = "rust_decimal")]
-            decimal64_col: rust_decimal::Decimal::new(788_654, 6), // 0.788654
+            decimal64_col: rust_decimal::Decimal::new(99_999_999, 6), /* 99.999999 (8 digits,
+                                                                       * scale 6) */
             #[cfg(not(feature = "rust_decimal"))]
-            decimal64_col: FixedPoint64::<18>(788654), // 0.788654 (788654 / 10^6)
+            decimal64_col: FixedPoint64::<6>(99999999), // 99.999999
             #[cfg(feature = "rust_decimal")]
-            decimal128_col: rust_decimal::Decimal::new(-676_543_654, 8), // -6.76543654
+            decimal128_col: rust_decimal::Decimal::new(9_999_999_999, 8), /* 99.99999999 (10
+                                                                           * digits, scale 8) */
             #[cfg(not(feature = "rust_decimal"))]
-            decimal128_col: FixedPoint128::<38>(-676543654), /* -6.76543654 (-676543654 /
-                                                              * 10^8) */
-            decimal256_col: FixedPoint256::<64>::MAX, // Consistent
+            decimal128_col: FixedPoint128::<8>(9999999999), // 99.99999999
+            decimal256_col: FixedPoint256::<10>::from(99_999_999_999_i128), /* 99.999999999 (11
+                                                                             * digits, scale 10) */
             nullable_string_col: Some(String::new()), // Empty string
             nullable_int32_col: Some(0),
             nullable_uint64_col: Some(0),
@@ -254,18 +263,18 @@ pub fn generate_test_block() -> Vec<TestRowAll> {
             )
             .unwrap(),
             #[cfg(feature = "rust_decimal")]
-            decimal32_col: rust_decimal::Decimal::ZERO, // 0
+            decimal32_col: rust_decimal::Decimal::ZERO, // 0 (1 digit, scale 0)
             #[cfg(not(feature = "rust_decimal"))]
-            decimal32_col: FixedPoint32::<9>(0), // 0
+            decimal32_col: FixedPoint32::<4>(0), // 0
             #[cfg(feature = "rust_decimal")]
-            decimal64_col: rust_decimal::Decimal::ZERO, // 0
+            decimal64_col: rust_decimal::Decimal::ZERO, // 0 (1 digit, scale 0)
             #[cfg(not(feature = "rust_decimal"))]
-            decimal64_col: FixedPoint64::<18>(0), // 0
+            decimal64_col: FixedPoint64::<6>(0), // 0
             #[cfg(feature = "rust_decimal")]
-            decimal128_col: rust_decimal::Decimal::ZERO, // 0
+            decimal128_col: rust_decimal::Decimal::ZERO, // 0 (1 digit, scale 0)
             #[cfg(not(feature = "rust_decimal"))]
-            decimal128_col: FixedPoint128::<38>(0), // 0
-            decimal256_col: FixedPoint256::<64>(i256([0; 32])),
+            decimal128_col: FixedPoint128::<8>(0), // 0
+            decimal256_col: FixedPoint256::<10>(i256([0; 32])), // 0
             nullable_string_col: Some("Just one more test".to_string()),
             nullable_int32_col: None,
             nullable_uint64_col: Some(u64::MAX),

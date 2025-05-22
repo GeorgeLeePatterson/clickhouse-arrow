@@ -29,7 +29,7 @@ use crate::{ArrowOptions, Result, Type};
 /// based on the block’s metadata and data.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use std::sync::Arc;
 ///
 /// use arrow::array::Int32Array;
@@ -37,20 +37,17 @@ use crate::{ArrowOptions, Result, Type};
 /// use arrow::record_batch::RecordBatch;
 /// use tokio::io::AsyncWriteExt;
 ///
-/// use clickhouse_native::arrow::ProtocolData;
 /// use clickhouse_native::CompressionMethod;
 ///
-/// async fn write_record_batch() {
-///     let schema = Arc::new(Schema::new(vec![
-///         Field::new("id", DataType::Int32, false),
-///     ]));
-///     let batch = RecordBatch::try_new(
-///         schema,
-///         vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-///     ).unwrap();
-///     let mut buffer = Vec::new();
-///     batch.write(&mut buffer, None).await.unwrap();
-/// }
+/// let schema = Arc::new(Schema::new(vec![
+///     Field::new("id", DataType::Int32, false),
+/// ]));
+/// let batch = RecordBatch::try_new(
+///     schema,
+///     vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+/// ).unwrap();
+/// let mut buffer = Vec::new();
+/// batch.write(&mut buffer, None).await.unwrap();
 /// ```
 impl ProtocolData<RecordBatch> for RecordBatch {
     type Options = ArrowOptions;

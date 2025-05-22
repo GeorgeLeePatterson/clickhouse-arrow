@@ -40,15 +40,16 @@ pub enum Type {
     Float32,
     Float64,
 
+    // Inner value is SCALE
     Decimal32(usize),
     Decimal64(usize),
     Decimal128(usize),
     Decimal256(usize),
-    Binary,
-    FixedSizedBinary(usize),
 
     String,
     FixedSizedString(usize),
+    Binary,
+    FixedSizedBinary(usize),
 
     Uuid,
 
@@ -533,11 +534,28 @@ impl Type {
     #[expect(clippy::too_many_lines)]
     pub(crate) fn validate(&self) -> Result<()> {
         match self {
-            Type::Decimal32(precision) => {
-                if *precision == 0 || *precision > 9 {
+            Type::Decimal32(scale) => {
+                if *scale == 0 || *scale > 9 {
                     return Err(ClickhouseNativeError::TypeParseError(format!(
-                        "precision out of bounds for Decimal32({}) must be in range (1..=9)",
-                        *precision
+                        "scale out of bounds for Decimal32({}) must be in range (1..=9)",
+                        *scale
+                    )));
+                }
+            }
+
+            Type::Decimal128(scale) => {
+                if *scale == 0 || *scale > 38 {
+                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                        "scale out of bounds for Decimal128({}) must be in range (1..=38)",
+                        *scale
+                    )));
+                }
+            }
+            Type::Decimal256(scale) => {
+                if *scale == 0 || *scale > 76 {
+                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                        "scale out of bounds for Decimal256({}) must be in range (1..=76)",
+                        *scale
                     )));
                 }
             }
@@ -546,22 +564,6 @@ impl Type {
                     return Err(ClickhouseNativeError::TypeParseError(format!(
                         "precision out of bounds for Decimal64/DateTime64({}) must be in range \
                          (1..=18)",
-                        *precision
-                    )));
-                }
-            }
-            Type::Decimal128(precision) => {
-                if *precision == 0 || *precision > 38 {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
-                        "precision out of bounds for Decimal128({}) must be in range (1..=38)",
-                        *precision
-                    )));
-                }
-            }
-            Type::Decimal256(precision) => {
-                if *precision == 0 || *precision > 76 {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
-                        "precision out of bounds for Decimal256({}) must be in range (1..=76)",
                         *precision
                     )));
                 }
@@ -664,7 +666,7 @@ impl Type {
 
     fn inner_validate_value(&self, value: &Value) -> bool {
         match (self, value) {
-            (Type::Int8, Value::Int8(_) | Value::UInt8(_))
+            (Type::Int8, Value::Int8(_))
             | (Type::Int16, Value::Int16(_))
             | (Type::Int32, Value::Int32(_))
             | (Type::Int64, Value::Int64(_))
@@ -692,12 +694,10 @@ impl Type {
             (Type::DateTime64(precision1, tz1), Value::DateTime64(tz2)) => {
                 tz1 == &tz2.0 && precision1 == &tz2.2
             }
-            (Type::Decimal32(precision1), Value::Decimal32(precision2, _))
-            | (Type::Decimal64(precision1), Value::Decimal64(precision2, _))
-            | (Type::Decimal128(precision1), Value::Decimal128(precision2, _))
-            | (Type::Decimal256(precision1), Value::Decimal256(precision2, _)) => {
-                precision1 == precision2
-            }
+            (Type::Decimal32(scale1), Value::Decimal32(scale2, _))
+            | (Type::Decimal64(scale1), Value::Decimal64(scale2, _))
+            | (Type::Decimal128(scale1), Value::Decimal128(scale2, _))
+            | (Type::Decimal256(scale1), Value::Decimal256(scale2, _)) => scale1 >= scale2,
             (Type::FixedSizedString(_) | Type::String, Value::Array(items))
                 if items.iter().all(|item| matches!(item, Value::UInt8(_) | Value::Int8(_))) =>
             {
@@ -711,15 +711,19 @@ impl Type {
             (Type::Array(inner_type), Value::Array(values)) => {
                 values.iter().all(|x| inner_type.inner_validate_value(x))
             }
-            (Type::Tuple(inner_types), Value::Tuple(values)) => inner_types
-                .iter()
-                .zip(values.iter())
-                .all(|(type_, value)| type_.inner_validate_value(value)),
+            (Type::Tuple(inner_types), Value::Tuple(values)) => {
+                inner_types.len() == values.len()
+                    && inner_types
+                        .iter()
+                        .zip(values.iter())
+                        .all(|(type_, value)| type_.inner_validate_value(value))
+            }
             (Type::Nullable(inner), value) => {
                 value == &Value::Null || inner.inner_validate_value(value)
             }
             (Type::Map(key, value), Value::Map(keys, values)) => {
-                keys.iter().all(|x| key.inner_validate_value(x))
+                keys.len() == values.len()
+                    && keys.iter().all(|x| key.inner_validate_value(x))
                     && values.iter().all(|x| value.inner_validate_value(x))
             }
             _ => false,

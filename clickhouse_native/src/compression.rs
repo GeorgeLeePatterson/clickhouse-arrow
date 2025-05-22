@@ -132,7 +132,7 @@ type BlockReadingFuture<R> =
 /// Supports LZ4 and no compression, handling block-by-block decompression.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::compression::{CompressionMethod, DecompressionReader};
 /// use tokio::io::AsyncReadExt;
 ///

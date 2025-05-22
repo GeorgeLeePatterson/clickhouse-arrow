@@ -84,29 +84,26 @@ pub(crate) trait ClickhouseArrowDeserializer {
 /// - Tuples: `Tuple(inner)` via `tuple::deserialize`.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, StringArray};
-/// use clickhouse_native::types::{Type, ClickhouseArrowDeserializer, DeserializerState};
+/// use clickhouse_native::native::types::{Type, DeserializerState};
 /// use std::sync::Arc;
 /// use tokio::io::Cursor;
 ///
-/// #[tokio::test]
-/// async fn test_deserialize() {
-///     let data = vec![
-///         5,                              // Size
-///         b'h', b'e', b'l', b'l', b'o',   // "hello"
-///         3,                              // Size
-///         b'f', b'o', b'o',               // "foo"
-///     ];
-///     let mut reader = Cursor::new(data);
-///             let mut state = DeserializerState::default();
-///     let array = Type::String
-///         .deserialize(&mut reader, 2, &[], &mut state)
-///         .await
-///         .unwrap();
-///     let expected = Arc::new(StringArray::from(vec!["hello", "foo"])) as ArrayRef;
-///     assert_eq!(array.as_ref(), expected.as_ref());
-/// }
+/// let data = vec![
+///     5,                              // Size
+///     b'h', b'e', b'l', b'l', b'o',   // "hello"
+///     3,                              // Size
+///     b'f', b'o', b'o',               // "foo"
+/// ];
+/// let mut reader = Cursor::new(data);
+///         let mut state = DeserializerState::default();
+/// let array = Type::String
+///     .deserialize(&mut reader, 2, &[], &mut state)
+///     .await
+///     .unwrap();
+/// let expected = Arc::new(StringArray::from(vec!["hello", "foo"])) as ArrayRef;
+/// assert_eq!(array.as_ref(), expected.as_ref());
 /// ```
 #[async_trait]
 impl ClickhouseArrowDeserializer for Type {

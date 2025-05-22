@@ -137,15 +137,7 @@ pub(super) struct PendingQuery<T: Send + Sync + 'static> {
 
 impl<T: Send + Sync + 'static> std::fmt::Debug for PendingQuery<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingQuery")
-            .field("qid", &self.qid)
-            .field("query", &self.query)
-            .field("op_state", &self.op_state.as_ref())
-            .field(
-                "response",
-                if self.response.is_closed() { &"CHANNEL_CLOSED" } else { &"CHANNEL_OPEN" },
-            )
-            .finish()
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -153,10 +145,11 @@ impl<T: Send + Sync + 'static> std::fmt::Display for PendingQuery<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "PendingQuery(qid={}, query={}, state={})",
+            "PendingQuery(qid={}, query={}, state={}, channel={})",
             self.qid,
             self.query.as_ref(),
-            self.op_state.as_ref()
+            self.op_state.as_ref(),
+            if self.response.is_closed() { &"CHANNEL_CLOSED" } else { &"CHANNEL_OPEN" },
         )
     }
 }
@@ -181,14 +174,14 @@ impl<T: ClientFormat> InternalClient<T> {
         InternalClient { pending: VecDeque::with_capacity(Self::CAPACITY), metadata }
     }
 
-    // TODO: Use this for reconnect
-    #[expect(unused)]
-    pub(super) fn new_with_pending(
-        pending: VecDeque<PendingQuery<T::Data>>,
-        metadata: ConnectionMetadata,
-    ) -> Self {
-        InternalClient { pending, metadata }
-    }
+    // // TODO: Use this for reconnect
+    // #[expect(unused)]
+    // pub(super) fn new_with_pending(
+    //     pending: VecDeque<PendingQuery<T::Data>>,
+    //     metadata: ConnectionMetadata,
+    // ) -> Self {
+    //     InternalClient { pending, metadata }
+    // }
 
     #[instrument(level = "trace", skip_all, fields(clickhouse.client.id = self.metadata.client_id))]
     pub(super) async fn run<R: ClickhouseRead + 'static, W: ClickhouseWrite>(

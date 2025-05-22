@@ -197,3 +197,117 @@ impl From<(Ipv6Addr, u16)> for Destination {
         Destination { inner: DestinationInner::SocketAddr((host, port).into()) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::*;
+
+    // Helper to create Destination variants
+    fn socket_addr() -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000)
+    }
+
+    #[tokio::test]
+    async fn test_resolve_socket_addrs() {
+        let addrs = vec![socket_addr()];
+        let dest = Destination { inner: DestinationInner::SocketAddrs(addrs.clone()) };
+        let result = dest.resolve(false).await.unwrap();
+        assert_eq!(result, addrs);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_socket_addr() {
+        let addr = socket_addr();
+        let dest = Destination { inner: DestinationInner::SocketAddr(addr) };
+        let result = dest.resolve(false).await.unwrap();
+        assert_eq!(result, vec![addr]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_host_port_valid() {
+        let dest = Destination { inner: DestinationInner::HostPort("localhost".to_string(), 9000) };
+        let result = dest.resolve(false).await.unwrap();
+        assert!(!result.is_empty());
+        assert!(result.iter().all(|addr| addr.port() == 9000));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_host_port_invalid() {
+        let dest =
+            Destination { inner: DestinationInner::HostPort("invalid-host-xyz".to_string(), 9000) };
+        let result = dest.resolve(false).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::MalformedConnectionInformation(msg))
+            if msg == "Could not resolve destination"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_endpoint_valid() {
+        let dest = Destination { inner: DestinationInner::Endpoint("localhost:9000".to_string()) };
+        let result = dest.resolve(false).await.unwrap();
+        assert!(!result.is_empty());
+        assert!(result.iter().all(|addr| addr.port() == 9000));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_endpoint_invalid() {
+        let dest =
+            Destination { inner: DestinationInner::Endpoint("invalid-host-xyz:9000".to_string()) };
+        let result = dest.resolve(false).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::MalformedConnectionInformation(msg))
+            if msg == "Could not resolve destination"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_ipv4_only() {
+        let dest = Destination { inner: DestinationInner::Endpoint("localhost:9000".to_string()) };
+        let result = dest.resolve(true).await.unwrap();
+        assert!(!result.is_empty());
+        assert!(result.iter().all(|addr| matches!(addr, SocketAddr::V4(_))));
+    }
+
+    #[test]
+    fn test_domain_socket_addrs() {
+        let addrs = vec![socket_addr()];
+        let dest = Destination { inner: DestinationInner::SocketAddrs(addrs) };
+        assert_eq!(dest.domain(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_domain_socket_addrs_empty() {
+        let dest = Destination { inner: DestinationInner::SocketAddrs(vec![]) };
+        assert_eq!(dest.domain(), "");
+    }
+
+    #[test]
+    fn test_domain_socket_addr() {
+        let addr = socket_addr();
+        let dest = Destination { inner: DestinationInner::SocketAddr(addr) };
+        assert_eq!(dest.domain(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_domain_host_port() {
+        let dest = Destination { inner: DestinationInner::HostPort("localhost".to_string(), 9000) };
+        assert_eq!(dest.domain(), "localhost");
+    }
+
+    #[test]
+    fn test_domain_endpoint() {
+        let dest = Destination { inner: DestinationInner::Endpoint("localhost:9000".to_string()) };
+        assert_eq!(dest.domain(), "localhost");
+    }
+
+    #[test]
+    fn test_domain_endpoint_no_port() {
+        let dest = Destination { inner: DestinationInner::Endpoint("localhost".to_string()) };
+        assert_eq!(dest.domain(), "localhost");
+    }
+}

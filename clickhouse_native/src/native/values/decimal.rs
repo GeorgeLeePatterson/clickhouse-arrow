@@ -2,12 +2,24 @@ use rust_decimal::Decimal;
 
 use crate::{ClickhouseNativeError, FromSql, Result, ToSql, Type, Value, unexpected_type};
 
+fn count_digits_i128(n: i128) -> u32 { if n == 0 { 1 } else { n.abs().ilog10() + 1 } }
+
 impl FromSql for Decimal {
     #[expect(clippy::cast_possible_truncation)]
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
         fn out_of_range(name: &str) -> ClickhouseNativeError {
             ClickhouseNativeError::DeserializeError(format!(
                 "{name} out of bounds for rust_decimal"
+            ))
+        }
+        fn decimal_out_of_range<T: std::fmt::Display>(
+            name: &str,
+            type_: &Type,
+            scale: usize,
+            value: T,
+        ) -> ClickhouseNativeError {
+            ClickhouseNativeError::DeserializeError(format!(
+                "{name} out of bounds for rust_decimal: type={type_:?} scale={scale} value={value}"
             ))
         }
 
@@ -30,16 +42,26 @@ impl FromSql for Decimal {
                 0,
             )
             .map_err(|_| out_of_range("u128")),
-            Value::Decimal32(precision, value) => {
-                Decimal::try_new(i64::from(value), precision as u32)
-                    .map_err(|_| out_of_range("Decimal32"))
+            Value::Decimal32(scale, value) => {
+                if count_digits_i128(i128::from(value)) > 9 {
+                    return Err(decimal_out_of_range("Decimal32", type_, scale, value));
+                }
+                Decimal::try_from_i128_with_scale(i128::from(value), scale as u32)
+                    .map_err(|_| decimal_out_of_range("Decimal32", type_, scale, value))
             }
-            Value::Decimal64(precision, value) => {
-                Decimal::try_new(value, precision as u32).map_err(|_| out_of_range("Decimal64"))
+            Value::Decimal64(scale, value) => {
+                if count_digits_i128(i128::from(value)) > 18 {
+                    return Err(decimal_out_of_range("Decimal64", type_, scale, value));
+                }
+                Decimal::try_from_i128_with_scale(i128::from(value), scale as u32)
+                    .map_err(|_| decimal_out_of_range("Decimal64", type_, scale, value))
             }
-            Value::Decimal128(precision, value) => {
-                Decimal::try_from_i128_with_scale(value, precision as u32)
-                    .map_err(|_| out_of_range("Decimal128"))
+            Value::Decimal128(scale, value) => {
+                if count_digits_i128(value) > 28 {
+                    return Err(decimal_out_of_range("Decimal128", type_, scale, value));
+                }
+                Decimal::try_from_i128_with_scale(value, scale as u32)
+                    .map_err(|_| decimal_out_of_range("Decimal128", type_, scale, value))
             }
             _ => Err(unexpected_type(type_)),
         }
@@ -53,39 +75,43 @@ impl ToSql for Decimal {
             ClickhouseNativeError::SerializeError(format!("{name} out of bounds for rust_decimal"))
         }
 
-        fn mantissa_to_scale(mantissa: i128, scale: u32, precision: u32) -> Result<i128> {
-            assert!(precision >= scale);
-            if precision == scale {
-                Ok(mantissa)
-            } else {
-                mantissa
-                    .checked_mul(10i128.pow(precision - scale))
-                    .ok_or_else(|| out_of_range("mantissa"))
-            }
-        }
-
         let scale = self.scale();
         let mantissa = self.mantissa();
 
         match type_hint {
             None => Ok(Value::Decimal128(scale as usize, mantissa)),
-            Some(Type::Decimal32(precision)) if *precision as u32 >= scale => Ok(Value::Decimal32(
-                *precision,
-                mantissa_to_scale(mantissa, scale, *precision as u32)?
-                    .try_into()
-                    .map_err(|_| out_of_range("Decimal32"))?,
-            )),
-            Some(Type::Decimal64(precision)) if *precision as u32 >= scale => Ok(Value::Decimal64(
-                *precision,
-                mantissa_to_scale(mantissa, scale, *precision as u32)?
-                    .try_into()
-                    .map_err(|_| out_of_range("Decimal64"))?,
-            )),
-            Some(Type::Decimal128(precision)) if *precision as u32 >= scale => {
-                Ok(Value::Decimal128(
-                    *precision,
-                    mantissa_to_scale(mantissa, scale, *precision as u32)?,
+            Some(Type::Decimal32(s)) => {
+                if count_digits_i128(mantissa) > 9 {
+                    return Err(out_of_range("Decimal32"));
+                }
+                if scale > *s as u32 {
+                    return Err(out_of_range("Decimal32 scale"));
+                }
+                Ok(Value::Decimal32(
+                    scale as usize,
+                    mantissa.try_into().map_err(|_| out_of_range("Decimal32 mantissa"))?,
                 ))
+            }
+            Some(Type::Decimal64(s)) => {
+                if count_digits_i128(mantissa) > 18 {
+                    return Err(out_of_range("Decimal64"));
+                }
+                if scale > *s as u32 {
+                    return Err(out_of_range("Decimal64 scale"));
+                }
+                Ok(Value::Decimal64(
+                    scale as usize,
+                    mantissa.try_into().map_err(|_| out_of_range("Decimal64"))?,
+                ))
+            }
+            Some(Type::Decimal128(s)) => {
+                if count_digits_i128(mantissa) > 38 {
+                    return Err(out_of_range("Decimal128"));
+                }
+                if scale > *s as u32 {
+                    return Err(out_of_range("Decimal128 scale"));
+                }
+                Ok(Value::Decimal128(scale as usize, mantissa))
             }
             Some(x) => Err(ClickhouseNativeError::SerializeError(format!(
                 "unexpected type for scale {scale}: {x}"

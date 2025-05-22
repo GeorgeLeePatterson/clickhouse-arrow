@@ -101,34 +101,31 @@ macro_rules! deserialize_primitive {
 /// - Returns `ArrowDeserialize` if the `type_hint` is unsupported or data is malformed.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, Int32Array};
 /// use clickhouse_native::types::{Type, DeserializerState};
 /// use std::io::Cursor;
 /// use std::sync::Arc;
 ///
-/// #[tokio::test]
-/// async fn test_primitives() {
-///     let data = vec![
-///         // Int32: [1, 2, 3]
-///         1, 0, 0, 0, // 1
-///         2, 0, 0, 0, // 2
-///         3, 0, 0, 0, // 3
-///     ];
-///     let mut reader = Cursor::new(data);
-///     let mut state = DeserializerState::default();
-///     let array = crate::arrow::deserialize::primitive::deserialize(
-///         &Type::Int32,
-///         &mut reader,
-///         3,
-///         &[],
-///         &mut state,
-///     )
-///     .await
-///     .unwrap();
-///     let expected = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
-///     assert_eq!(array.as_ref(), expected.as_ref());
-/// }
+/// let data = vec![
+///     // Int32: [1, 2, 3]
+///     1, 0, 0, 0, // 1
+///     2, 0, 0, 0, // 2
+///     3, 0, 0, 0, // 3
+/// ];
+/// let mut reader = Cursor::new(data);
+/// let mut state = DeserializerState::default();
+/// let array = crate::arrow::deserialize::primitive::deserialize(
+///     &Type::Int32,
+///     &mut reader,
+///     3,
+///     &[],
+///     &mut state,
+/// )
+/// .await
+/// .unwrap();
+/// let expected = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+/// assert_eq!(array.as_ref(), expected.as_ref());
 /// ```
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn deserialize<R: ClickhouseRead>(

@@ -372,43 +372,43 @@ impl fmt::Display for Value {
             Value::UInt256(x) => write!(f, "{x}::UInt256"),
             Value::Float32(x) => write!(f, "{x}"),
             Value::Float64(x) => write!(f, "{x}"),
-            Value::Decimal32(precision, value) => {
+            Value::Decimal32(scale, value) => {
                 let raw_value = value.to_string();
-                if raw_value.len() < *precision {
+                if raw_value.len() < *scale {
                     write!(f, "{raw_value}")
                 } else {
-                    let pre = &raw_value[..raw_value.len() - precision];
-                    let fraction = &raw_value[raw_value.len() - precision..];
+                    let pre = &raw_value[..raw_value.len() - scale];
+                    let fraction = &raw_value[raw_value.len() - scale..];
                     write!(f, "{pre}.{fraction}")
                 }
             }
-            Value::Decimal64(precision, value) => {
+            Value::Decimal64(scale, value) => {
                 let raw_value = value.to_string();
-                if raw_value.len() < *precision {
+                if raw_value.len() < *scale {
                     write!(f, "{raw_value}")
                 } else {
-                    let pre = &raw_value[..raw_value.len() - precision];
-                    let fraction = &raw_value[raw_value.len() - precision..];
+                    let pre = &raw_value[..raw_value.len() - scale];
+                    let fraction = &raw_value[raw_value.len() - scale..];
                     write!(f, "{pre}.{fraction}")
                 }
             }
-            Value::Decimal128(precision, value) => {
+            Value::Decimal128(scale, value) => {
                 let raw_value = value.to_string();
-                if raw_value.len() < *precision {
+                if raw_value.len() < *scale {
                     write!(f, "{raw_value}")
                 } else {
-                    let pre = &raw_value[..raw_value.len() - precision];
-                    let fraction = &raw_value[raw_value.len() - precision..];
+                    let pre = &raw_value[..raw_value.len() - scale];
+                    let fraction = &raw_value[raw_value.len() - scale..];
                     write!(f, "{pre}.{fraction}")
                 }
             }
-            Value::Decimal256(precision, value) => {
+            Value::Decimal256(scale, value) => {
                 let raw_value = value.to_string();
-                if raw_value.len() < *precision {
+                if raw_value.len() < *scale {
                     write!(f, "{raw_value}")
                 } else {
-                    let pre = &raw_value[..raw_value.len() - precision];
-                    let fraction = &raw_value[raw_value.len() - precision..];
+                    let pre = &raw_value[..raw_value.len() - scale];
+                    let fraction = &raw_value[raw_value.len() - scale..];
                     write!(f, "{pre}.{fraction}")
                 }
             }

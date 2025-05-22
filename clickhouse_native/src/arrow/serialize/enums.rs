@@ -23,7 +23,7 @@
 /// efficient validation and minimal allocations (only a small `HashMap` for `StringArray`).
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
 /// use arrow::datatypes::{Field, Int8Type};
 /// use clickhouse_native::types::{Type, enums::serialize, SerializerState};

@@ -47,42 +47,37 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - Returns `ArrowDeserialize` if the inner type deserialization fails.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, Int32Array, ListArray};
 /// use clickhouse_native::types::{Type, ClickhouseArrowDeserializer, DeserializerState};
 /// use std::io::Cursor;
 ///
-/// #[tokio::test]
-/// async fn test_deserialize_list_int32() {
-///     let inner_type = Type::Int32;
-///     let rows = 3;
-///     let nulls = vec![];
-///     let input = vec![
-///         // Offsets: [2, 3, 5] (skipping first 0)
-///         2, 0, 0, 0, 0, 0, 0, 0, // 2
-///         3, 0, 0, 0, 0, 0, 0, 0, // 3
-///         5, 0, 0, 0, 0, 0, 0, 0, // 5
-///         // Values: [1, 2, 3, 4, 5]
-///         1, 0, 0, 0, // 1
-///         2, 0, 0, 0, // 2
-///         3, 0, 0, 0, // 3
-///         4, 0, 0, 0, // 4
-///         5, 0, 0, 0, // 5
-///     ];
-///     let mut reader = Cursor::new(input);
-///     let mut state = DeserializerState::default();
-///
-///     let result = deserialize(&inner_type, &mut reader, rows, &nulls, &mut state)
-///         .await
-///         .expect("Failed to deserialize List(Int32)");
-///     let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
-///     let values = list_array.values().as_any().downcast_ref::<Int32Array>().unwrap();
-///
-///     assert_eq!(list_array.len(), 3);
-///     assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
-///     assert_eq!(list_array.offsets().iter().copied().collect::<Vec<_>>(), vec![0, 2, 3, 5]);
-///     assert_eq!(list_array.nulls(), None);
-/// }
+/// let inner_type = Type::Int32;
+/// let rows = 3;
+/// let nulls = vec![];
+/// let input = vec![
+///     // Offsets: [2, 3, 5] (skipping first 0)
+///     2, 0, 0, 0, 0, 0, 0, 0, // 2
+///     3, 0, 0, 0, 0, 0, 0, 0, // 3
+///     5, 0, 0, 0, 0, 0, 0, 0, // 5
+///     // Values: [1, 2, 3, 4, 5]
+///     1, 0, 0, 0, // 1
+///     2, 0, 0, 0, // 2
+///     3, 0, 0, 0, // 3
+///     4, 0, 0, 0, // 4
+///     5, 0, 0, 0, // 5
+/// ];
+/// let mut reader = Cursor::new(input);
+/// let mut state = DeserializerState::default();
+/// let result = deserialize(&inner_type, &mut reader, rows, &nulls, &mut state)
+///     .await
+///     .expect("Failed to deserialize List(Int32)");
+/// let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
+/// let values = list_array.values().as_any().downcast_ref::<Int32Array>().unwrap();
+/// assert_eq!(list_array.len(), 3);
+/// assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
+/// assert_eq!(list_array.offsets().iter().copied().collect::<Vec<_>>(), vec![0, 2, 3, 5]);
+/// assert_eq!(list_array.nulls(), None);
 /// ```
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]

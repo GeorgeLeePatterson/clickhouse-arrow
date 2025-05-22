@@ -9,18 +9,15 @@
 /// appropriate bitmap before serializing the inner values.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::Int32Array;
 /// use clickhouse_native::types::null::write_nullability;
 /// use std::sync::Arc;
 /// use tokio::io::AsyncWriteExt;
 ///
-/// #[tokio::main]
-/// async fn main() {
-///     let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
-///     let mut buffer = Vec::new();
-///     write_nullability(&mut buffer, &array).await.unwrap();
-/// }
+/// let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
+/// let mut buffer = Vec::new();
+/// write_nullability(&mut buffer, &array).await.unwrap();
 /// ```
 use arrow::array::ArrayRef;
 

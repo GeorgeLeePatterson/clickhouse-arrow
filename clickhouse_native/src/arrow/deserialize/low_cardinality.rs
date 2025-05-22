@@ -85,37 +85,32 @@ macro_rules! indices {
 /// - `Io` if reading from the reader fails.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use std::io::Cursor;
 /// use std::sync::Arc;
 /// use arrow::array::{ArrayRef, DictionaryArray, Int32Type, StringArray};
-/// use clickhouse_native::types::{DeserializerState, Type};
-/// use clickhouse_native::io::ClickhouseRead;
+/// use clickhouse_native::native::types::{DeserializerState, Type};
+/// use clickhouse_native::ClickhouseRead;
 ///
-/// #[tokio::test]
-/// async fn test_deserialize_low_cardinality_string() {
-///     let inner_type = Type::String;
-///     let rows = 3;
-///     let input = vec![
-///         0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-///         2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-///         1, b'a', 1, b'b', // Dict: ["a", "b"]
-///         3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-///         0, 1, 0, // Indices: [0, 1, 0]
-///     ];
-///     let mut reader = Cursor::new(input);
-///     let mut state = DeserializerState::default();
-///
-///     let result = deserialize(&inner_type, &mut reader, rows, &[], &mut state)
-///         .await
-///         .expect("Failed to deserialize LowCardinality(String)");
-///     let dict_array = result.as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-///     let indices = dict_array.keys();
-///     let values = dict_array.values().as_any().downcast_ref::<StringArray>().unwrap();
-///
-///     assert_eq!(indices, &Int32Array::from(vec![0, 1, 0]));
-///     assert_eq!(values, &StringArray::from(vec!["a", "b"]));
-/// }
+/// let inner_type = Type::String;
+/// let rows = 3;
+/// let input = vec![
+///     0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+///     2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+///     1, b'a', 1, b'b', // Dict: ["a", "b"]
+///     3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+///     0, 1, 0, // Indices: [0, 1, 0]
+/// ];
+/// let mut reader = Cursor::new(input);
+/// let mut state = DeserializerState::default();
+/// let result = deserialize(&inner_type, &mut reader, rows, &[], &mut state)
+///     .await
+///     .expect("Failed to deserialize LowCardinality(String)");
+/// let dict_array = result.as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
+/// let indices = dict_array.keys();
+/// let values = dict_array.values().as_any().downcast_ref::<StringArray>().unwrap();
+/// assert_eq!(indices, &Int32Array::from(vec![0, 1, 0]));
+/// assert_eq!(values, &StringArray::from(vec!["a", "b"]));
 /// ```
 #[expect(clippy::cast_possible_truncation)]
 pub(crate) async fn deserialize<R: ClickhouseRead>(

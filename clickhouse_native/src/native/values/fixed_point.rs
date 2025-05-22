@@ -6,25 +6,25 @@ use crate::{FromSql, Result, ToSql, Type, Value, i256, unexpected_type};
 
 /// Wrapper type for Clickhouse `FixedPoint32` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
-pub struct FixedPoint32<const PRECISION: u64>(pub i32);
+pub struct FixedPoint32<const SCALE: u64>(pub i32);
 
-impl<const PRECISION: u64> FixedPoint32<PRECISION> {
-    pub const fn modulus(&self) -> i32 { 10i32.pow(PRECISION as u32) }
+impl<const SCALE: u64> FixedPoint32<SCALE> {
+    pub const fn modulus(&self) -> i32 { 10i32.pow(SCALE as u32) }
 
-    pub fn integer(&self) -> i32 { self.0 / 10i32.pow(PRECISION as u32) }
+    pub fn integer(&self) -> i32 { self.0 / 10i32.pow(SCALE as u32) }
 
-    pub fn fraction(&self) -> i32 { self.0 % 10i32.pow(PRECISION as u32) }
+    pub fn fraction(&self) -> i32 { self.0 % 10i32.pow(SCALE as u32) }
 }
 
-impl<const PRECISION: u64> ToSql for FixedPoint32<PRECISION> {
+impl<const SCALE: u64> ToSql for FixedPoint32<SCALE> {
     fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Decimal32(PRECISION as usize, self.0))
+        Ok(Value::Decimal32(SCALE as usize, self.0))
     }
 }
 
-impl<const PRECISION: u64> FromSql for FixedPoint32<PRECISION> {
+impl<const SCALE: u64> FromSql for FixedPoint32<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal32(x) if *x == PRECISION as usize) {
+        if !matches!(type_, Type::Decimal32(x) if *x == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -34,25 +34,25 @@ impl<const PRECISION: u64> FromSql for FixedPoint32<PRECISION> {
     }
 }
 
-impl<const PRECISION: u64> From<FixedPoint32<PRECISION>> for f64 {
-    fn from(fp: FixedPoint32<PRECISION>) -> Self {
+impl<const SCALE: u64> From<FixedPoint32<SCALE>> for f64 {
+    fn from(fp: FixedPoint32<SCALE>) -> Self {
         f64::from(fp.integer()) + (f64::from(fp.fraction()) / f64::from(fp.modulus()))
     }
 }
 
 /// Wrapper type for Clickhouse `FixedPoint64` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
-pub struct FixedPoint64<const PRECISION: u64>(pub i64);
+pub struct FixedPoint64<const SCALE: u64>(pub i64);
 
-impl<const PRECISION: u64> ToSql for FixedPoint64<PRECISION> {
+impl<const SCALE: u64> ToSql for FixedPoint64<SCALE> {
     fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Decimal64(PRECISION as usize, self.0))
+        Ok(Value::Decimal64(SCALE as usize, self.0))
     }
 }
 
-impl<const PRECISION: u64> FromSql for FixedPoint64<PRECISION> {
+impl<const SCALE: u64> FromSql for FixedPoint64<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal64(x) if *x == PRECISION as usize) {
+        if !matches!(type_, Type::Decimal64(x) if *x == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -62,33 +62,33 @@ impl<const PRECISION: u64> FromSql for FixedPoint64<PRECISION> {
     }
 }
 
-impl<const PRECISION: u64> FixedPoint64<PRECISION> {
-    pub const fn modulus(&self) -> i64 { 10i64.pow(PRECISION as u32) }
+impl<const SCALE: u64> FixedPoint64<SCALE> {
+    pub const fn modulus(&self) -> i64 { 10i64.pow(SCALE as u32) }
 
-    pub fn integer(&self) -> i64 { self.0 / 10i64.pow(PRECISION as u32) }
+    pub fn integer(&self) -> i64 { self.0 / 10i64.pow(SCALE as u32) }
 
-    pub fn fraction(&self) -> i64 { self.0 % 10i64.pow(PRECISION as u32) }
+    pub fn fraction(&self) -> i64 { self.0 % 10i64.pow(SCALE as u32) }
 }
 
-impl<const PRECISION: u64> From<FixedPoint64<PRECISION>> for f64 {
-    fn from(fp: FixedPoint64<PRECISION>) -> Self {
+impl<const SCALE: u64> From<FixedPoint64<SCALE>> for f64 {
+    fn from(fp: FixedPoint64<SCALE>) -> Self {
         fp.integer() as f64 + (fp.fraction() as f64 / fp.modulus() as f64)
     }
 }
 
 /// Wrapper type for Clickhouse `FixedPoint128` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
-pub struct FixedPoint128<const PRECISION: u64>(pub i128);
+pub struct FixedPoint128<const SCALE: u64>(pub i128);
 
-impl<const PRECISION: u64> ToSql for FixedPoint128<PRECISION> {
+impl<const SCALE: u64> ToSql for FixedPoint128<SCALE> {
     fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Decimal128(PRECISION as usize, self.0))
+        Ok(Value::Decimal128(SCALE as usize, self.0))
     }
 }
 
-impl<const PRECISION: u64> FromSql for FixedPoint128<PRECISION> {
+impl<const SCALE: u64> FromSql for FixedPoint128<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal128(x) if *x == PRECISION as usize) {
+        if !matches!(type_, Type::Decimal128(x) if *x == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -98,25 +98,25 @@ impl<const PRECISION: u64> FromSql for FixedPoint128<PRECISION> {
     }
 }
 
-impl<const PRECISION: u64> FixedPoint128<PRECISION> {
-    pub const fn modulus(&self) -> i128 { 10i128.pow(PRECISION as u32) }
+impl<const SCALE: u64> FixedPoint128<SCALE> {
+    pub const fn modulus(&self) -> i128 { 10i128.pow(SCALE as u32) }
 
-    pub fn integer(&self) -> i128 { self.0 / 10i128.pow(PRECISION as u32) }
+    pub fn integer(&self) -> i128 { self.0 / 10i128.pow(SCALE as u32) }
 
-    pub fn fraction(&self) -> i128 { self.0 % 10i128.pow(PRECISION as u32) }
+    pub fn fraction(&self) -> i128 { self.0 % 10i128.pow(SCALE as u32) }
 }
 
-impl<const PRECISION: u64> From<FixedPoint128<PRECISION>> for f64 {
-    fn from(fp: FixedPoint128<PRECISION>) -> Self {
+impl<const SCALE: u64> From<FixedPoint128<SCALE>> for f64 {
+    fn from(fp: FixedPoint128<SCALE>) -> Self {
         fp.integer() as f64 + (fp.fraction() as f64 / fp.modulus() as f64)
     }
 }
 
 /// Wrapper type for Clickhouse `FixedPoint256` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
-pub struct FixedPoint256<const PRECISION: u64>(pub i256);
+pub struct FixedPoint256<const SCALE: u64>(pub i256);
 
-impl<const PRECISION: u64> FixedPoint256<PRECISION> {
+impl<const SCALE: u64> FixedPoint256<SCALE> {
     /// The maximum value for [`FixedPoint256`]
     pub const MAX: Self = FixedPoint256(Self::max_i256());
     /// The minimum value for [`FixedPoint256`]
@@ -145,7 +145,7 @@ impl<const PRECISION: u64> FixedPoint256<PRECISION> {
     /// Create a fixed-point number from a value and decimal exponent
     /// e.g., (123, -2) represents 123 × 10^-2 = 1.23
     pub fn from_parts(value: i128, exponent: i32) -> Self {
-        let effective_scale = PRECISION as i32 - exponent;
+        let effective_scale = SCALE as i32 - exponent;
 
         if effective_scale > 38 {
             // Would overflow i128 - handle by converting to i256 first, then scaling
@@ -215,7 +215,7 @@ impl<const PRECISION: u64> FixedPoint256<PRECISION> {
         };
 
         // Create a decimal with the raw value and precision
-        rust_decimal::Decimal::try_from_i128_with_scale(raw_value, PRECISION as u32)
+        rust_decimal::Decimal::try_from_i128_with_scale(raw_value, SCALE as u32)
     }
 
     /// Check if the value is negative
@@ -225,15 +225,15 @@ impl<const PRECISION: u64> FixedPoint256<PRECISION> {
     }
 }
 
-impl<const PRECISION: u64> ToSql for FixedPoint256<PRECISION> {
+impl<const SCALE: u64> ToSql for FixedPoint256<SCALE> {
     fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Decimal256(PRECISION as usize, self.0))
+        Ok(Value::Decimal256(SCALE as usize, self.0))
     }
 }
 
-impl<const PRECISION: u64> FromSql for FixedPoint256<PRECISION> {
+impl<const SCALE: u64> FromSql for FixedPoint256<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal256(x) if *x == PRECISION as usize) {
+        if !matches!(type_, Type::Decimal256(x) if *x == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -244,19 +244,19 @@ impl<const PRECISION: u64> FromSql for FixedPoint256<PRECISION> {
 }
 
 // Implement standard From trait for user-friendly conversions
-impl<const PRECISION: u64> From<i128> for FixedPoint256<PRECISION> {
+impl<const SCALE: u64> From<i128> for FixedPoint256<SCALE> {
     fn from(value: i128) -> Self {
-        // Interpret value as already having PRECISION decimal places
+        // Interpret value as already having SCALE decimal places
         Self::from_raw(value)
     }
 }
 
-impl<const PRECISION: u64> From<(i128, i32)> for FixedPoint256<PRECISION> {
+impl<const SCALE: u64> From<(i128, i32)> for FixedPoint256<SCALE> {
     fn from(parts: (i128, i32)) -> Self { Self::from_parts(parts.0, parts.1) }
 }
 
 #[cfg(feature = "rust_decimal")]
-impl<const PRECISION: u64> From<rust_decimal::Decimal> for FixedPoint256<PRECISION> {
+impl<const SCALE: u64> From<rust_decimal::Decimal> for FixedPoint256<SCALE> {
     fn from(decimal: rust_decimal::Decimal) -> Self { Self::from_decimal(decimal) }
 }
 

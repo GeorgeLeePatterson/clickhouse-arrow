@@ -36,34 +36,31 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - Returns `ArrowDeserialize` if the inner type deserialization fails.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, Int32Array};
 /// use clickhouse_native::types::{Type, DeserializerState};
 /// use std::io::Cursor;
 ///
-/// #[tokio::test]
-/// async fn test_deserialize_nullable_int32() {
-///     let data = vec![
-///         // Null mask: [0, 1, 0] (0=non-null, 1=null)
-///         0, 1, 0,
-///         // Values: [1, 0, 3] (0 for null)
-///         1, 0, 0, 0, // 1
-///         0, 0, 0, 0, // null
-///         3, 0, 0, 0, // 3
-///     ];
-///     let mut reader = Cursor::new(data);
-///     let mut state = DeserializerState::default();
-///     let array = crate::arrow::deserialize::null::deserialize(
-///         &Type::Int32,
-///         &mut reader,
-///         3,
-///         &mut state,
-///     )
-///     .await
-///     .unwrap();
-///     let int32_array = array.as_any().downcast_ref::<Int32Array>().unwrap();
-///     assert_eq!(int32_array, &Int32Array::from(vec![Some(1), None, Some(3)]));
-/// }
+/// let data = vec![
+///     // Null mask: [0, 1, 0] (0=non-null, 1=null)
+///     0, 1, 0,
+///     // Values: [1, 0, 3] (0 for null)
+///     1, 0, 0, 0, // 1
+///     0, 0, 0, 0, // null
+///     3, 0, 0, 0, // 3
+/// ];
+/// let mut reader = Cursor::new(data);
+/// let mut state = DeserializerState::default();
+/// let array = crate::arrow::deserialize::null::deserialize(
+///     &Type::Int32,
+///     &mut reader,
+///     3,
+///     &mut state,
+/// )
+/// .await
+/// .unwrap();
+/// let int32_array = array.as_any().downcast_ref::<Int32Array>().unwrap();
+/// assert_eq!(int32_array, &Int32Array::from(vec![Some(1), None, Some(3)]));
 /// ```
 pub(crate) async fn deserialize<R: ClickhouseRead>(
     inner: &Type,

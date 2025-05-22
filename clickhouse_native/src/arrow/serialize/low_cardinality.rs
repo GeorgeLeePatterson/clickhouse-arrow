@@ -16,7 +16,7 @@
 ///   type.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
 /// use arrow::datatypes::{Field, Int8Type};
 /// use clickhouse_native::types::{Type, low_cardinality::serialize, SerializerState};

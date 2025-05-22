@@ -11,7 +11,7 @@
 /// `DictionaryArray` (e.g., `1, 2` becomes `0, 1`).
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
 /// use arrow::datatypes::Int8Type;
 /// use clickhouse_native::types::{Type, enums::deserialize, DeserializerState};

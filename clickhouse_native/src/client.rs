@@ -319,10 +319,10 @@ impl<T: ClientFormat> Client<T> {
     // TODO: Support other DB engines
     /// Issue a create DDL statement for a database
     #[instrument(
-            name = "clickhouse.create_database",
-            skip_all
-            fields(db.system = "clickhouse", db.operation = "create.database")
-        )]
+        name = "clickhouse.create_database",
+        skip_all
+        fields(db.system = "clickhouse", db.operation = "create.database")
+    )]
     pub async fn create_database(&self, database: Option<&str>, qid: Option<Qid>) -> Result<()> {
         let database = database.unwrap_or(self.conn.database());
         let database = database.to_lowercase();
@@ -338,10 +338,10 @@ impl<T: ClientFormat> Client<T> {
 
     /// Issue a drop DDL statement for a database
     #[instrument(
-            name = "clickhouse.drop_database",
-            skip_all
-            fields(db.system = "clickhouse", db.operation = "drop.database")
-        )]
+        name = "clickhouse.drop_database",
+        skip_all
+        fields(db.system = "clickhouse", db.operation = "drop.database")
+    )]
     pub async fn drop_database(&self, database: &str, sync: bool, qid: Option<Qid>) -> Result<()> {
         let database = database.to_lowercase();
         if &database == "default" {
@@ -657,6 +657,20 @@ impl Client<ArrowFormat> {
         crate::arrow::schema::fetch_databases(self, qid).await
     }
 
+    /// Fetch all tables
+    ///
+    /// # Returns
+    ///
+    /// A `HashMap` of database names to table names
+    #[instrument(
+        name = "clickhouse.fetch_all_tables",
+        skip_all
+        fields(db.system = "clickhouse", db.operation = "query")
+    )]
+    pub async fn fetch_all_tables(&self, qid: Option<Qid>) -> Result<HashMap<String, Vec<String>>> {
+        crate::arrow::schema::fetch_all_tables(self, qid).await
+    }
+
     /// Fetch tables
     ///
     /// # Returns
@@ -674,20 +688,6 @@ impl Client<ArrowFormat> {
     ) -> Result<Vec<String>> {
         let database = database.unwrap_or(self.conn.database());
         crate::arrow::schema::fetch_tables(self, database, qid).await
-    }
-
-    /// Fetch all tables
-    ///
-    /// # Returns
-    ///
-    /// A `HashMap` of database names to table names
-    #[instrument(
-        name = "clickhouse.fetch_all_tables",
-        skip_all
-        fields(db.system = "clickhouse", db.operation = "query")
-    )]
-    pub async fn fetch_all_tables(&self, qid: Option<Qid>) -> Result<HashMap<String, Vec<String>>> {
-        crate::arrow::schema::fetch_all_tables(self, qid).await
     }
 
     /// Fetch schemas providing a list of tables to filter on. An empty list will fetch all
@@ -718,8 +718,8 @@ impl Client<ArrowFormat> {
         skip_all
         fields(
             db.system = "clickhouse",
+            db.operation = "create.table",
             db.format = ArrowFormat::FORMAT,
-            db.operation = "create.table"
         )
     )]
     pub async fn create_table(

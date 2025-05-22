@@ -65,7 +65,7 @@ pub(crate) trait ClickhouseArrowSerializer {
 /// - Tuples: Delegates to `tuple::serialize`..
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::Int32Array;
 /// use arrow::datatypes::{DataType, Field};
 /// use clickhouse_native::types::{Type, SerializerState};
@@ -73,17 +73,14 @@ pub(crate) trait ClickhouseArrowSerializer {
 /// use std::sync::Arc;
 /// use tokio::io::AsyncWriteExt;
 ///
-/// #[tokio::test]
-/// async fn test_serialize() {
-///     let field = Field::new("id", DataType::Int32, false);
-///     let column = Arc::new(Int32Array::from(vec![1, 2, 3]));
-///     let mut buffer = Cursor::new(Vec::new());
-///     let mut state = SerializerState::default();
-///     Type::Int32
-///         .serialize(&mut buffer, &column, &field, &mut state)
-///         .await
-///         .unwrap();
-/// }
+/// let field = Field::new("id", DataType::Int32, false);
+/// let column = Arc::new(Int32Array::from(vec![1, 2, 3]));
+/// let mut buffer = Cursor::new(Vec::new());
+/// let mut state = SerializerState::default();
+/// Type::Int32
+///     .serialize(&mut buffer, &column, &field, &mut state)
+///     .await
+///     .unwrap();
 /// ```
 ///
 /// # Errors

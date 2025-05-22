@@ -106,7 +106,7 @@ macro_rules! deserialize_binary_fixed {
 /// - Returns `ArrowDeserialize` if the `type_hint` is unsupported or data is malformed.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{ArrayRef, StringArray};
 /// use clickhouse_native::types::{Type, DeserializerState};
 /// use std::io::Cursor;

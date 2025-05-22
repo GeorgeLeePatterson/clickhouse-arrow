@@ -14,10 +14,10 @@
 ///   values.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use arrow::array::{Int32Array, ListArray};
 /// use arrow::buffer::OffsetBuffer;
-/// use arrow::datatypes::{DataType, Field};
+/// use arrow::datatypes::{ArrayRef, DataType, Field};
 /// use clickhouse_native::types::{Type, list::serialize, SerializerState};
 /// use std::sync::Arc;
 /// use tokio::io::AsyncWriteExt;

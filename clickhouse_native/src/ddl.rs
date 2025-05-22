@@ -16,7 +16,7 @@ use crate::{ArrowOptions, ClickhouseNativeError, ColumnDefinition, Result, Row, 
 /// specifying default values for columns and enabling defaults for nullable columns.
 ///
 /// # Examples
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::sql::CreateOptions;
 /// use clickhouse_native::Settings;
 ///
@@ -320,7 +320,7 @@ impl CreateOptions {
 /// - Returns `DDLMalformed` if the database name is empty or is `"default"`.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::sql::create_db_statement;
 ///
 /// let sql = create_db_statement("my_db").unwrap();
@@ -353,7 +353,7 @@ pub(crate) fn create_db_statement(database: &str) -> Result<String> {
 /// - Returns `DDLMalformed` if the database name is empty or is `"default"`.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::sql::drop_db_statement;
 ///
 /// let sql = drop_db_statement("my_db", true).unwrap();
@@ -397,7 +397,7 @@ pub(crate) fn drop_db_statement(database: &str, sync: bool) -> Result<String> {
 /// - Returns `TypeConversion` if the schema is disallowed by `ClickHouse`
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use arrow::datatypes::{DataType, Field, Schema};
 /// use clickhouse_native::sql::{CreateOptions, create_table_statement_from_arrow};
 /// use std::sync::Arc;

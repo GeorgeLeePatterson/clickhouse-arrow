@@ -442,7 +442,7 @@ fn parse_scale(from: &str) -> Result<usize> {
 
 fn parse_precision(from: &str) -> Result<usize> {
     from.parse()
-        .map_err(|_| ClickhouseNativeError::TypeParseError("couldn't parse precision".to_string()))
+        .map_err(|_| ClickhouseNativeError::TypeParseError("could not parse precision".to_string()))
 }
 
 /// Core iterator for parsing comma-separated arguments within parentheses

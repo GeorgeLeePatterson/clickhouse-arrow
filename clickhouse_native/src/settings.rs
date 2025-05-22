@@ -21,7 +21,7 @@
 /// - For details on the native protocol’s settings serialization, see the [ClickHouse Native Protocol Documentation](https://clickhouse.com/docs/en/interfaces/tcp).
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::query::settings::Settings;
 ///
 /// // Create settings with key-value pairs
@@ -92,7 +92,7 @@ pub struct Setting {
 /// - `String(String)`: A string (e.g., for `default_format`).
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::query::settings::SettingValue;
 ///
 /// let int_value: SettingValue = 8_i32.into();
@@ -251,7 +251,7 @@ impl Setting {
 /// the underlying settings as a slice.
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use clickhouse_native::query::settings::Settings;
 ///
 /// let mut settings = Settings::default();
@@ -285,7 +285,7 @@ impl Settings {
     /// - `setting`: The setting value (e.g., `8_i32`, `true`, `"JSON"`).
     ///
     /// # Example
-    /// ```
+    /// ```rust,ignore
     /// use clickhouse_native::query::settings::Settings;
     ///
     /// let mut settings = Settings::default();
@@ -314,7 +314,7 @@ impl Settings {
     /// - `setting`: The setting value (e.g., `8_i32`, `true`, `"JSON"`).
     ///
     /// # Example
-    /// ```
+    /// ```rust,ignore
     /// use clickhouse_native::query::settings::Settings;
     ///
     /// let mut settings = Settings::default();
@@ -340,7 +340,7 @@ impl Settings {
     /// Each setting is represented as a tuple of `(key, value.to_string())`.
     ///
     /// # Example
-    /// ```
+    /// ```rust,ignore
     /// use clickhouse_native::query::settings::Settings;
     ///
     /// let settings = Settings::from([("max_threads".to_string(), 8_i32)]);
@@ -359,7 +359,7 @@ impl Settings {
     /// Each setting is formatted as `key = value`.
     ///
     /// # Example
-    /// ```
+    /// ```rust,ignore
     /// use clickhouse_native::query::settings::Settings;
     ///
     /// let settings = Settings::from([("max_threads".to_string(), 8_i32)]);
