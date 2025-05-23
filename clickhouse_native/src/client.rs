@@ -175,7 +175,7 @@ impl<T: ClientFormat> Client<T> {
         query: impl Into<ParsedQuery>,
         block: T::Data,
         qid: Option<Qid>,
-    ) -> Result<impl Stream<Item = Result<T::Data>> + '_> {
+    ) -> Result<impl Stream<Item = Result<()>> + '_> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
 
         // Create metadata channel
@@ -201,7 +201,7 @@ impl<T: ClientFormat> Client<T> {
 
         let qid = metadata.qid;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
-        Ok(self.stream_response(response, qid))
+        Ok(self.insert_response(response, qid))
     }
 
     /// Sends a query string with streaming associated data (i.e. insert) over native protocol.
@@ -223,7 +223,7 @@ impl<T: ClientFormat> Client<T> {
         query: impl Into<ParsedQuery>,
         batch: Vec<T::Data>,
         qid: Option<Qid>,
-    ) -> Result<impl Stream<Item = Result<T::Data>> + '_> {
+    ) -> Result<impl Stream<Item = Result<()>> + '_> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
 
         // Create metadata channel
@@ -249,7 +249,7 @@ impl<T: ClientFormat> Client<T> {
 
         let qid = metadata.qid;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
-        Ok(self.stream_response(response, qid))
+        Ok(self.insert_response(response, qid))
     }
 
     /// Sends a query and receive data (format specific) in raw format.
@@ -379,12 +379,12 @@ impl<T: ClientFormat> Client<T> {
         }
     }
 
-    fn stream_response(
+    fn insert_response(
         &self,
         rx: mpsc::Receiver<Response<T::Data>>,
         qid: Qid,
-    ) -> ClickhouseResponse<T::Data> {
-        ClickhouseResponse::<T::Data>::from_stream(create_response_stream::<T>(
+    ) -> ClickhouseResponse<()> {
+        ClickhouseResponse::<()>::from_stream(handle_insert_response::<T>(
             rx,
             Arc::clone(&self.events),
             qid,
@@ -413,7 +413,7 @@ impl Client<NativeFormat> {
         query: impl Into<ParsedQuery>,
         blocks: impl Iterator<Item = T> + Send + Sync + 'static,
         qid: Option<Qid>,
-    ) -> Result<ClickhouseResponse<T>> {
+    ) -> Result<ClickhouseResponse<()>> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
 
         // Create metadata channel
@@ -443,28 +443,13 @@ impl Client<NativeFormat> {
         let cid = self.client_id;
         trace!({ ATT_CID } = cid, { ATT_QID } = %qid, "sent query, awaiting response");
 
-        let stream = create_response_stream::<NativeFormat>(
+        let stream = handle_insert_response::<NativeFormat>(
             response,
             Arc::clone(&self.events),
             qid,
             self.client_id,
-        )
-        .flat_map(move |block| match block {
-            Ok(mut block) => stream::iter(
-                block
-                    .take_iter_rows()
-                    .filter(|x| !x.is_empty())
-                    .map(T::deserialize_row)
-                    .map(|maybe| {
-                        maybe.inspect_err(|error|
-                        error!(?error, { ATT_CID } = cid, { ATT_QID } = %qid, "deserializing row")
-                    )
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            Err(e) => stream::iter(vec![Err(e)]),
-        });
-        Ok(ClickhouseResponse::<T>::new(Box::pin(stream)))
+        );
+        Ok(ClickhouseResponse::<()>::new(Box::pin(stream)))
     }
 
     /// Runs a query against Clickhouse, returning a stream of deserialized rows.

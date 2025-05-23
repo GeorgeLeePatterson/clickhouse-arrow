@@ -335,6 +335,7 @@ pub struct DateTime64<const PRECISION: usize>(pub Tz, pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DynDateTime64(pub Tz, pub u64, pub usize);
 
+// TODO: Remove all panics, return error
 #[expect(clippy::cast_sign_loss)]
 impl DynDateTime64 {
     /// # Panics
@@ -352,7 +353,7 @@ impl DynDateTime64 {
     pub fn from_millis(ms: i64, tz: Option<Arc<str>>) -> Self {
         let tz = tz.map_or(UTC, |s| s.parse::<Tz>().unwrap());
         assert!(ms >= 0, "DynDateTime64 does not support negative milliseconds: {ms}");
-        DynDateTime64(tz, (ms as u64) * 1000, 3) // Precision 3 for milliseconds
+        DynDateTime64(tz, ms as u64, 3) // Precision 3 for milliseconds
     }
 
     /// # Panics
@@ -361,7 +362,7 @@ impl DynDateTime64 {
     pub fn from_micros(us: i64, tz: Option<Arc<str>>) -> Self {
         let tz = tz.map_or(UTC, |s| s.parse::<Tz>().unwrap());
         assert!(us >= 0, "DynDateTime64 does not support negative microseconds: {us}");
-        DynDateTime64(tz, (us as u64) * 1000, 6) // Precision 6 for microseconds
+        DynDateTime64(tz, us as u64, 6) // Precision 6 for microseconds
     }
 
     /// # Panics
@@ -370,7 +371,7 @@ impl DynDateTime64 {
     pub fn from_nanos(ns: i64, tz: Option<Arc<str>>) -> Self {
         let tz = tz.map_or(UTC, |s| s.parse::<Tz>().unwrap());
         assert!(ns >= 0, "DynDateTime64 does not support negative nanoseconds: {ns}");
-        DynDateTime64(tz, (ns as u64) / 1000, 9) // Precision 9, adjust for ClickHouse
+        DynDateTime64(tz, ns as u64, 9) // Precision 9, adjust for ClickHouse
     }
 }
 
@@ -770,6 +771,78 @@ mod chrono_tests {
 
             assert_eq!(chrono_time, out_time);
         }
+    }
+
+    #[test]
+    fn test_from_seconds() {
+        let dt = DynDateTime64::from_seconds(1000, Some(Arc::from("UTC")));
+        assert_eq!(dt.0, Tz::UTC);
+        assert_eq!(dt.1, 1000);
+        assert_eq!(dt.2, 0);
+    }
+
+    #[test]
+    fn test_from_millis() {
+        let dt = DynDateTime64::from_millis(1000, Some(Arc::from("UTC")));
+        assert_eq!(dt.0, Tz::UTC);
+        assert_eq!(dt.1, 1000); // 1000 ms
+        assert_eq!(dt.2, 3);
+    }
+
+    #[test]
+    fn test_from_micros() {
+        let dt = DynDateTime64::from_micros(1_000_000, Some(Arc::from("UTC")));
+        assert_eq!(dt.0, Tz::UTC);
+        assert_eq!(dt.1, 1_000_000); // 1,000,000 µs
+        assert_eq!(dt.2, 6);
+    }
+
+    #[test]
+    fn test_from_nanos() {
+        let dt = DynDateTime64::from_nanos(1_000_000_000, Some(Arc::from("UTC")));
+        assert_eq!(dt.0, Tz::UTC);
+        assert_eq!(dt.1, 1_000_000_000); // 1,000,000,000 ns
+        assert_eq!(dt.2, 9);
+    }
+
+    #[test]
+    fn test_from_seconds_zero() {
+        let dt = DynDateTime64::from_seconds(0, None);
+        assert_eq!(dt.0, Tz::UTC);
+        assert_eq!(dt.1, 0);
+        assert_eq!(dt.2, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "DynDateTime64 does not support negative seconds: -1")]
+    fn test_from_seconds_negative() {
+        let _ = DynDateTime64::from_seconds(-1, Some(Arc::from("UTC")));
+    }
+
+    #[test]
+    #[should_panic(expected = "DynDateTime64 does not support negative milliseconds: -1000")]
+    fn test_from_millis_negative() {
+        let _ = DynDateTime64::from_millis(-1000, Some(Arc::from("UTC")));
+    }
+
+    #[test]
+    #[should_panic(expected = "DynDateTime64 does not support negative microseconds: -1000000")]
+    fn test_from_micros_negative() {
+        let _ = DynDateTime64::from_micros(-1_000_000, Some(Arc::from("UTC")));
+    }
+
+    #[test]
+    #[should_panic(expected = "DynDateTime64 does not support negative nanoseconds: -1000000000")]
+    fn test_from_nanos_negative() {
+        let _ = DynDateTime64::from_nanos(-1_000_000_000, Some(Arc::from("UTC")));
+    }
+
+    #[test]
+    fn test_from_millis_custom_tz() {
+        let dt = DynDateTime64::from_millis(1000, Some(Arc::from("America/New_York")));
+        assert_eq!(dt.0, Tz::America__New_York);
+        assert_eq!(dt.1, 1000);
+        assert_eq!(dt.2, 3);
     }
 
     #[test]

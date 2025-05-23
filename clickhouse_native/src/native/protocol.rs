@@ -323,7 +323,7 @@ impl ProfileEvent {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CompressionMethod {
     None,
     #[default]

@@ -9,7 +9,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::trace;
 
 use super::{ClientFormat, ProfileEvent};
-use crate::prelude::ATT_CID;
+use crate::prelude::{ATT_CID, ATT_QID};
 use crate::{ClickhouseEvent, ClickhouseNativeError, Event, Progress, Qid, Result, ServerError};
 
 /// Internal response type
@@ -30,9 +30,47 @@ pub(crate) fn create_response_stream<T: ClientFormat>(
 ) -> impl Stream<Item = Result<T::Data>> + 'static {
     ReceiverStream::new(rx).map(move |packet| (packet, Arc::clone(&events))).filter_map(
         move |(response, events)| async move {
-            trace!(response = response.as_ref(), { ATT_CID } = client_id, "received response");
+            trace!(
+                response = response.as_ref(),
+                { ATT_CID } = client_id,
+                { ATT_QID } = %qid,
+                "received response"
+            );
             match response {
                 Response::Data(data) => Some(Ok(data)),
+                Response::Exception(exception) => Some(Err(exception.into())),
+                Response::ClientError(error) => Some(Err(error)),
+                Response::Progress(progress) => {
+                    let event = ClickhouseEvent::Progress(progress);
+                    let _ = events.send(Event { event, qid, client_id }).ok();
+                    None
+                }
+                Response::Profile(profile) => {
+                    let event = ClickhouseEvent::Profile(profile);
+                    let _ = events.send(Event { event, qid, client_id }).ok();
+                    None
+                }
+            }
+        },
+    )
+}
+
+pub(crate) fn handle_insert_response<T: ClientFormat>(
+    rx: mpsc::Receiver<Response<T::Data>>,
+    events: Arc<broadcast::Sender<Event>>,
+    qid: Qid,
+    client_id: u16,
+) -> impl Stream<Item = Result<()>> + 'static {
+    ReceiverStream::new(rx).map(move |packet| (packet, Arc::clone(&events))).filter_map(
+        move |(response, events)| async move {
+            trace!(
+                response = response.as_ref(),
+                { ATT_CID } = client_id,
+                { ATT_QID } = %qid,
+                "received insert response"
+            );
+            match response {
+                Response::Data(_) => None,
                 Response::Exception(exception) => Some(Err(exception.into())),
                 Response::ClientError(error) => Some(Err(error)),
                 Response::Progress(progress) => {

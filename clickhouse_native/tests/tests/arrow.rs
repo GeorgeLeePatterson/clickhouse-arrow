@@ -5,7 +5,8 @@ use arrow::array::*;
 use arrow::datatypes::*;
 use clickhouse_native::prelude::*;
 use clickhouse_native::{
-    ArrowOptions, ClientBuilder, CompressionMethod, CreateOptions, Result as ClickHouseResult, Type,
+    ArrowOptions, ClientBuilder, CompressionMethod, ConnectionStatus, CreateOptions,
+    Result as ClickHouseResult, Type,
 };
 use futures_util::StreamExt;
 use tracing::debug;
@@ -16,7 +17,7 @@ use crate::common::arrow_helpers::*;
 use crate::common::docker::ClickHouseContainer;
 use crate::common::header;
 
-async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOptions) {
+pub(super) async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOptions) {
     let native_url = ch.get_native_url();
     debug!("ClickHouse Native URL: {native_url}");
 
@@ -55,6 +56,7 @@ async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOpti
         .with_schema_conversions(schema_conversions);
 
     client.health_check(true).await.expect("Health check failed");
+    assert_eq!(client.status(), ConnectionStatus::Open);
 
     (client, options)
 }
@@ -85,6 +87,8 @@ pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
 
     // Drop schema
     drop_schema(&db, &table, &client).await.expect("Drop table");
+
+    client.shutdown().await.unwrap();
 }
 
 // Test arrow schema functions

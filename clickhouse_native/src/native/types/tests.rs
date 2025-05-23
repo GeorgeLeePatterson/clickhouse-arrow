@@ -1,5 +1,7 @@
 use std::io::Cursor;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
+use chrono_tz::Tz;
 use uuid::Uuid;
 
 use super::Type;
@@ -14,10 +16,6 @@ async fn roundtrip_values(type_: &Type, values: &[Value]) -> Result<Vec<Value>> 
     let mut state = SerializerState::default();
     type_.serialize_prefix(&mut output, &mut state).await?;
     type_.serialize_column(values.to_vec(), &mut output, &mut state).await?;
-    for x in &output {
-        print!("{x:02X}");
-    }
-    println!();
     let mut input = Cursor::new(output);
     let mut state = DeserializerState::default();
     type_.deserialize_prefix(&mut input, &mut state).await?;
@@ -242,6 +240,16 @@ async fn roundtrip_null_string() {
 }
 
 #[tokio::test]
+async fn roundtrip_object() {
+    let obj = "{\"a\":\"a\"}";
+    let values = &[Value::string(obj)];
+    assert_eq!(&values[..], roundtrip_values(&Type::String, &values[..]).await.unwrap());
+
+    let values = &[Value::Object(obj.as_bytes().to_vec())];
+    assert_eq!(&values[..], roundtrip_values(&Type::Object, &values[..]).await.unwrap());
+}
+
+#[tokio::test]
 async fn roundtrip_uuid() {
     let values = &[
         Value::Uuid(Uuid::from_u128(0)),
@@ -249,6 +257,18 @@ async fn roundtrip_uuid() {
         Value::Uuid(Uuid::from_u128(456_345_634_563_456)),
     ];
     assert_eq!(&values[..], roundtrip_values(&Type::Uuid, &values[..]).await.unwrap());
+}
+
+#[tokio::test]
+async fn roundtrip_ipv4() {
+    let values = &[Value::Ipv4(Ipv4Addr::new(0, 0, 0, 0).into())];
+    assert_eq!(&values[..], roundtrip_values(&Type::Ipv4, &values[..]).await.unwrap());
+}
+
+#[tokio::test]
+async fn roundtrip_ipv6() {
+    let values = &[Value::Ipv6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into())];
+    assert_eq!(&values[..], roundtrip_values(&Type::Ipv6, &values[..]).await.unwrap());
 }
 
 #[tokio::test]
@@ -284,6 +304,20 @@ async fn roundtrip_datetime64() {
 }
 
 //enum8, enum16, nested skipped
+
+#[tokio::test]
+async fn roundtrip_enum8() {
+    let type_ = Type::Enum8(vec![("hello".into(), 0)]);
+    let values = &[Value::Enum8("hello".into(), 0)];
+    assert_eq!(&values[..], roundtrip_values(&type_, &values[..]).await.unwrap());
+}
+
+#[tokio::test]
+async fn roundtrip_enum16() {
+    let type_ = Type::Enum16(vec![("hello".into(), 0)]);
+    let values = &[Value::Enum16("hello".into(), 0)];
+    assert_eq!(&values[..], roundtrip_values(&type_, &values[..]).await.unwrap());
+}
 
 #[tokio::test]
 async fn roundtrip_array() {
@@ -679,4 +713,47 @@ async fn roundtrip_geo() {
     let multipolygon = |x| MultiPolygon(vec![polygon(x), polygon(2.0 * x)]);
     let values = &[Value::MultiPolygon(multipolygon(1.0)), Value::MultiPolygon(multipolygon(3.0))];
     assert_eq!(&values[..], roundtrip_values(&Type::MultiPolygon, &values[..]).await.unwrap());
+}
+
+#[test]
+fn test_type_methods() {
+    let t = Type::Array(Box::new(Type::String));
+    assert_eq!(t.unarray(), Some(&Type::String));
+    assert!(Type::String.unarray().is_none());
+    assert_eq!(t.unwrap_array().unwrap(), &Type::String);
+    assert!(Type::String.unwrap_array().is_err());
+
+    let t = Type::Map(Box::new(Type::String), Box::new(Type::String));
+    assert_eq!(t.unmap(), Some((&Type::String, &Type::String)));
+    assert!(Type::String.unmap().is_none());
+    assert_eq!(t.unwrap_map().unwrap(), (&Type::String, &Type::String));
+    assert!(Type::String.unwrap_map().is_err());
+
+    let t = Type::Tuple(vec![Type::String]);
+    assert_eq!(t.untuple(), Some(&[Type::String] as &[_]));
+    assert!(Type::String.untuple().is_none());
+    assert_eq!(t.unwrap_tuple().unwrap(), &[Type::String] as &[_]);
+    assert!(Type::String.unwrap_tuple().is_err());
+
+    let t = Type::Nullable(Box::new(Type::String));
+    assert_eq!(t.unnull(), Some(&Type::String));
+    assert!(Type::String.unnull().is_none());
+
+    let t = Type::Nullable(Box::new(Type::String));
+    assert_eq!(&t.clone().into_nullable(), &t);
+    assert_eq!(Type::String.into_nullable(), t);
+}
+
+#[test]
+fn test_type_validate() {
+    assert!(Type::Decimal32(100).validate().is_err());
+    assert!(Type::Decimal128(100).validate().is_err());
+    assert!(Type::Decimal256(100).validate().is_err());
+    assert!(Type::DateTime64(100, Tz::UTC).validate().is_err());
+    assert!(Type::LowCardinality(Box::new(Type::MultiPolygon)).validate().is_err());
+    assert!(Type::LowCardinality(Box::new(Type::String)).validate().is_ok());
+    assert!(Type::Tuple(vec![Type::String]).validate().is_ok());
+    assert!(Type::Nullable(Box::new(Type::Nullable(Box::new(Type::String)))).validate().is_err());
+    assert!(Type::Map(Box::new(Type::String), Box::new(Type::String)).validate().is_ok());
+    assert!(Type::Map(Box::new(Type::Ipv4), Box::new(Type::String)).validate().is_err());
 }

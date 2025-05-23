@@ -236,7 +236,8 @@ mod tests {
         let result = deserialize(&Type::Enum8(pairs), &mut reader, 1, &[], &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowDeserialize(msg)) if msg.contains("Invalid Enum8 index: 3")
+            Err(ClickhouseNativeError::ArrowDeserialize(msg))
+            if msg.contains("Invalid Enum8 index: 3")
         ));
     }
 
@@ -248,7 +249,8 @@ mod tests {
         let result = deserialize(&Type::Int32, &mut reader, 0, &[], &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowDeserialize(msg)) if msg.contains("Expected enum, got Int32")
+            Err(ClickhouseNativeError::ArrowDeserialize(msg))
+            if msg.contains("Expected enum, got Int32")
         ));
     }
 }

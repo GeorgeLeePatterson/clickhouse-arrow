@@ -35,10 +35,15 @@ impl Deserializer for ObjectDeserializer {
         _state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
         match type_ {
-            Type::Object => {
+            Type::Object | Type::String | Type::Binary => {
                 let mut out = Vec::with_capacity(rows);
                 for _ in 0..rows {
-                    out.push(Value::String(reader.read_string().await?));
+                    let value = reader.read_string().await?;
+                    out.push(if matches!(type_, Type::Object) {
+                        Value::Object(value)
+                    } else {
+                        Value::String(value)
+                    });
                 }
                 Ok(out)
             }

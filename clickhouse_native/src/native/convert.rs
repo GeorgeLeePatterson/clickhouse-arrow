@@ -6,10 +6,7 @@ pub mod raw_row;
 pub mod std_deserialize;
 pub mod std_serialize;
 pub use raw_row::*;
-#[cfg(feature = "serde")]
-pub mod json;
 pub mod unit_value;
-pub mod vec_tuple;
 
 /// Type alias for the definition of a column for schema creation
 pub type ColumnDefinition<T = Value> = (String, Type, Option<T>);

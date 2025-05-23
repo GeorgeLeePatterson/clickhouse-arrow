@@ -61,8 +61,7 @@ impl Destination {
             DestinationInner::HostPort(host, _) => host.to_string(),
             DestinationInner::Endpoint(endpoint) => {
                 endpoint.split(':').next().map(ToString::to_string).unwrap_or(endpoint.to_string())
-            } /* DestinationInner::Ipv4Addr(host, _) => host.to_string(),
-               * DestinationInner::Ipv6Addr(host, _) => host.to_string(), */
+            }
         }
     }
 }

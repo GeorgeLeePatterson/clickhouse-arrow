@@ -428,6 +428,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_enum8_dictionary_invalid_array() {
+        let array = Arc::new(TimestampSecondArray::from(Vec::<i64>::new())) as ArrayRef;
+        let field = Field::new("", array.data_type().clone(), false);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(&Type::Enum8(vec![]), &field, &array, &mut writer, &mut state).await;
+        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_enum8_dictionary_invalid_value() {
+        let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+        let keys = Int8Array::from(Vec::<i8>::new());
+        let values = TimestampSecondArray::from(Vec::<i64>::new());
+        let array = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap())
+            as ArrayRef;
+        let field = Field::new("", array.data_type().clone(), false);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(&Type::Enum8(pairs), &field, &array, &mut writer, &mut state).await;
+        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_enum8_dictionary_invalid_value_length() {
+        let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+        let keys = Int8Array::from(vec![0, 1, 0]);
+        let values = StringArray::from(vec!["a", "b", "c"]);
+        let array = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap())
+            as ArrayRef;
+        let field = Field::new("", array.data_type().clone(), false);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(&Type::Enum8(pairs), &field, &array, &mut writer, &mut state).await;
+        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+    }
+
+    #[tokio::test]
     async fn test_serialize_enum16_uint_type_ok() {
         let pairs = vec![("x".to_string(), 10_i16), ("y".to_string(), 20_i16)];
         let array = Arc::new(UInt8Array::from(vec![10])) as ArrayRef;
@@ -517,5 +555,21 @@ mod tests {
                 .unwrap();
             assert_eq!(writer, vec![1, 2, 0]);
         }
+    }
+
+    #[tokio::test]
+    async fn test_serialize_enum_wrong_type() {
+        let field = Field::new("", DataType::Utf8, false);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(
+            &Type::String,
+            &field,
+            &(Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef),
+            &mut writer,
+            &mut state,
+        )
+        .await;
+        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
     }
 }

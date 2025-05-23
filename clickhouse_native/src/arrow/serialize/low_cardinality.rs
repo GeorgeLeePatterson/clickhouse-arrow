@@ -129,11 +129,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
                 DataType::UInt64 => {
                     write_values::<W, UInt64Type>(inner, values, writer, state).await?;
                 }
-                _ => {
-                    return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                        "Dictionary type key is not supported in `ClickHouse`: {key_type:?}"
-                    )));
-                }
+                _ => unreachable!("ArrowDictionaryKeyType"),
             },
             DataType::Utf8
             | DataType::LargeUtf8
@@ -286,11 +282,7 @@ async fn write_values<W: ClickhouseWrite, K: ArrowDictionaryKeyType>(
         DataType::UInt16 => write_dictionary_keys!(writer, flags, keys, UInt16Array, modifier),
         DataType::UInt32 => write_dictionary_keys!(writer, flags, keys, UInt32Array, modifier),
         DataType::UInt64 => write_dictionary_keys!(writer, flags, keys, UInt64Array, modifier),
-        _ => {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                "Unsupported dictionary key type: {key_data_type:?}"
-            )));
-        }
+        _ => unreachable!("ArrowDictionaryKeyType"),
     }
 
     Ok(())
@@ -339,12 +331,7 @@ async fn write_string_values<W: ClickhouseWrite>(
 
     macro_rules! handle_string_array {
         ($array_ty:ty, $coerce:expr) => {{
-            let array = values.as_any().downcast_ref::<$array_ty>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowSerialize(format!(
-                    "Failed to downcast to {}",
-                    stringify!($array_ty)
-                ))
-            })?;
+            let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
             for i in 0..array.len() {
                 if array.is_null(i) {
                     // TODO: Should a fallback be used here, shift the vec for instance?
@@ -476,6 +463,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_low_cardinality_dictionary_empty() {
+        let array = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(Vec::<i8>::new()),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            )
+            .unwrap(),
+        ) as ArrayRef;
+        let field = Field::new("", array.data_type().clone(), false);
+        let expected = vec![];
+        test_type_serializer(
+            expected,
+            &Type::LowCardinality(Box::new(Type::String)),
+            &field,
+            &array,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_serialize_low_cardinality_dictionary_other_keys() {
+        let strs = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
+        let arrays = vec![
+            Arc::new(
+                DictionaryArray::<Int64Type>::try_new(
+                    Int64Array::from(vec![0, 1, 0]),
+                    Arc::clone(&strs),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            Arc::new(
+                DictionaryArray::<UInt8Type>::try_new(
+                    UInt8Array::from(vec![0, 1, 0]),
+                    Arc::clone(&strs),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![0, 1, 0]),
+                    Arc::clone(&strs),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            Arc::new(
+                DictionaryArray::<UInt32Type>::try_new(
+                    UInt32Array::from(vec![0, 1, 0]),
+                    Arc::clone(&strs),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            Arc::new(
+                DictionaryArray::<UInt64Type>::try_new(
+                    UInt64Array::from(vec![0, 1, 0]),
+                    Arc::clone(&strs),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+        ];
+        let expected = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            1, b'a', // Dict: "a" (var_uint length)
+            1, b'b', // Dict: "b" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            0, 1, 0, // Keys: [0, 1, 0]
+        ];
+
+        for array in arrays {
+            let field = Field::new("", array.data_type().clone(), false);
+            test_type_serializer(
+                expected.clone(),
+                &Type::LowCardinality(Box::new(Type::String)),
+                &field,
+                &array,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
     async fn test_serialize_low_cardinality_dictionary_nullable() {
         let array = Arc::new(
             DictionaryArray::<Int32Type>::try_new(
@@ -547,6 +615,33 @@ mod tests {
         test_type_serializer(
             expected,
             &Type::LowCardinality(Box::new(Type::Nullable(Box::new(Type::String)))),
+            &field,
+            &array,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_serialize_low_cardinality_dictionary_invalid() {
+        let array = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(vec![0, 1, 0]),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            )
+            .unwrap(),
+        ) as ArrayRef;
+        let field = Field::new("", array.data_type().clone(), false);
+        let expected = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            1, b'a', // Dict: "a" (var_uint length)
+            1, b'b', // Dict: "b" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            0, 1, 0, // Keys: [0, 1, 0]
+        ];
+        test_type_serializer(
+            expected,
+            &Type::LowCardinality(Box::new(Type::String)),
             &field,
             &array,
         )
@@ -679,6 +774,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_low_cardinality_invalid_string() {
+        let array = Arc::new(TimestampSecondArray::from(vec![0_i64])) as ArrayRef;
+        let field = Field::new("", DataType::Utf8, false);
+        let mut values = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            1, b'a', // Dict: "a" (var_uint length)
+            1, b'b', // Dict: "b" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            0, 1, 0, // Keys: [0, 1, 0]
+        ];
+        let result = serialize(
+            &Type::LowCardinality(Box::new(Type::String)),
+            &field,
+            &array,
+            &mut values,
+            &mut SerializerState::default(),
+        )
+        .await;
+        eprintln!("Result: {result:?}");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn test_serialize_low_cardinality_invalid_type() {
         let array = Arc::new(Int8Array::from(vec![1, 2, 1])) as ArrayRef;
         let field = Field::new("", DataType::Int8, false);
@@ -730,5 +849,19 @@ mod tests {
             &array,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_serialize_low_cardinality_wrong_type() {
+        let array = Arc::new(Int8Array::from(vec![1, 2, 1])) as ArrayRef;
+        let field = Field::new("", DataType::Int8, false);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(&Type::String, &field, &array, &mut writer, &mut state).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            if msg.contains("Unsupported data type")
+        ));
     }
 }

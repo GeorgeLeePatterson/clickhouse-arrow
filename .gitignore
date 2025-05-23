@@ -1,13 +1,10 @@
 .DS_Store
 .vscode
 
-# Repo testing dirs
-test_data/
-.test_logs/
-
 /*.zip
 
-.vscode
+coverage/*
+
 # Pants
 /.pants.d/
 /dist/

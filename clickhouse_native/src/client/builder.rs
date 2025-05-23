@@ -287,3 +287,190 @@ impl ClientBuilder {
         dest_str
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+
+    fn default_builder() -> ClientBuilder { ClientBuilder::new() }
+
+    #[test]
+    fn test_accessors_empty() {
+        let builder = default_builder();
+        assert_eq!(builder.destination(), None);
+        assert!(!builder.options().use_tls);
+        assert_eq!(builder.settings(), None);
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_accessors_configured() {
+        let settings = Arc::new(Settings::default());
+        let builder = default_builder()
+            .with_socket_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000))
+            .with_settings(Arc::clone(&settings))
+            .with_options(ClientOptions { use_tls: true, ..Default::default() });
+        assert!(builder.destination().is_some());
+        assert!(builder.options().use_tls);
+        assert_eq!(builder.settings(), Some(&settings));
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_with_socket_addr() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000);
+        let builder = default_builder().with_socket_addr(addr);
+        assert_eq!(builder.destination(), Some(&Destination::from(addr)));
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_with_host_port() {
+        let builder = default_builder().with_host_port("localhost", 9000);
+        assert_eq!(
+            builder.destination(),
+            Some(&Destination::from(("localhost".to_string(), 9000)))
+        );
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_with_options() {
+        let options =
+            ClientOptions { username: "test".to_string(), use_tls: true, ..Default::default() };
+        let builder = default_builder().with_options(options.clone());
+        assert_eq!(builder.options(), &options);
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_with_tls() {
+        let builder = default_builder().with_tls(true);
+        assert!(builder.options().use_tls);
+        assert!(!builder.verified());
+
+        let builder = builder.with_tls(true); // Same value, no change
+        assert!(!builder.verified());
+
+        let builder = builder.with_tls(false); // Change value
+        assert!(!builder.options().use_tls);
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_with_cafile() {
+        let cafile = PathBuf::from("/path/to/ca.pem");
+        let builder = default_builder().with_cafile(&cafile);
+        assert_eq!(builder.options().cafile, Some(cafile));
+    }
+
+    #[test]
+    fn test_with_settings() {
+        let settings = Arc::new(Settings::default());
+        let builder = default_builder().with_settings(Arc::clone(&settings));
+        assert_eq!(builder.settings(), Some(&settings));
+    }
+
+    #[test]
+    fn test_with_database() {
+        let builder = default_builder().with_database("test_db");
+        assert_eq!(builder.options().default_database, "test_db");
+    }
+
+    #[test]
+    fn test_with_domain() {
+        let builder = default_builder().with_domain("example.com");
+        assert_eq!(builder.options().domain, Some("example.com".to_string()));
+        assert!(!builder.verified());
+    }
+
+    #[test]
+    fn test_with_cloud_timeout() {
+        let builder = default_builder().with_cloud_timeout(5000);
+        assert_eq!(builder.options().cloud.timeout, Some(5000));
+    }
+
+    #[test]
+    fn test_with_trace_context() {
+        let trace_context = TraceContext::default();
+        let builder = default_builder().with_trace_context(trace_context);
+        assert_eq!(builder.context.unwrap().trace, Some(trace_context));
+    }
+
+    #[test]
+    fn test_connection_identifier() {
+        let builder = default_builder()
+            .with_endpoint("localhost:9000")
+            .with_username("user")
+            .with_password("pass")
+            .with_database("db")
+            .with_domain("example.com");
+        let id = builder.connection_identifier();
+        assert!(id.contains("localhost"));
+        assert!(id.contains("user"));
+        assert!(id.contains("db"));
+        assert!(id.contains("example.com"));
+
+        let empty_builder = default_builder();
+        assert_eq!(empty_builder.connection_identifier(), "default13933120620573868840");
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn test_with_cloud_wakeup() {
+        let builder = default_builder().with_cloud_wakeup(true);
+        assert!(builder.options().cloud.wakeup);
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn test_with_cloud_track() {
+        use std::sync::atomic::Ordering;
+
+        let track = Arc::new(AtomicBool::new(false));
+        let builder = default_builder().with_cloud_track(Arc::clone(&track));
+        assert_eq!(
+            builder.context.unwrap().cloud.unwrap().load(Ordering::SeqCst),
+            track.load(Ordering::SeqCst)
+        );
+    }
+
+    #[cfg(feature = "pool")]
+    #[tokio::test]
+    async fn test_build_pool_manager() {
+        use crate::formats::ArrowFormat;
+
+        let builder = default_builder()
+            .with_endpoint("localhost:9000")
+            .with_username("user")
+            .verify()
+            .await
+            .unwrap();
+        let manager = builder.build_pool_manager::<ArrowFormat>(true).await;
+        assert!(manager.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_empty_addrs() {
+        let builder = default_builder()
+            .with_destination(Destination::from(vec![])) // Empty SocketAddrs
+            .verify()
+            .await;
+        assert!(matches!(
+            builder,
+            Err(ClickhouseNativeError::MalformedConnectionInformation(msg))
+            if msg.contains("Socket addresses cannot be empty")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_verify_no_connection_information() {
+        let builder = default_builder().verify().await;
+        assert!(matches!(builder, Err(ClickhouseNativeError::MissingConnectionInformation)));
+    }
+}

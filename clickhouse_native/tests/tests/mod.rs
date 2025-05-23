@@ -1,4 +1,5 @@
 pub mod arrow;
+pub mod compat;
 pub mod native;
 
 use std::panic::AssertUnwindSafe;

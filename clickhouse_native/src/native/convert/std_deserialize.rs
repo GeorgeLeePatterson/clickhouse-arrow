@@ -164,11 +164,19 @@ impl FromSql for f64 {
 
 impl FromSql for String {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::String | Type::FixedSizedString(_)) {
+        if !matches!(
+            type_,
+            Type::String
+                | Type::FixedSizedString(_)
+                | Type::Binary
+                | Type::FixedSizedBinary(_)
+                | Type::Object
+        ) {
             return Err(unexpected_type(type_));
         }
         match value {
             Value::String(x) => Ok(String::from_utf8(x)?),
+            Value::Object(x) => Ok(String::from_utf8(x)?),
             _ => Err(unexpected_type(type_)),
         }
     }

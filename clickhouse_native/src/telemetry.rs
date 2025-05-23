@@ -30,7 +30,7 @@ pub const ATT_FIELD_TYPE: &str = "clickhouse.field.type";
 /// A helper to link spans to various actions, namely connection. Sometimes, clients are spawned on
 /// separate tasks. This provides a simple way to link traces if a link is preferred in some
 /// situations over other types of instrumentation.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct TraceContext(Option<NonZeroU64>);
 
 impl TraceContext {

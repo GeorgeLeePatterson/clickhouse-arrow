@@ -571,6 +571,8 @@ impl Type {
             Type::LowCardinality(inner) => match inner.strip_null() {
                 Type::String
                 | Type::FixedSizedString(_)
+                | Type::Binary
+                | Type::FixedSizedBinary(_)
                 | Type::Date
                 | Type::Date32
                 | Type::DateTime(_)

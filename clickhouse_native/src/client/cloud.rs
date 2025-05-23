@@ -80,3 +80,20 @@ async fn cloud_service_wakeup(
     .await
     .map_err(|error| ureq::Error::Other(Box::new(error)))?
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_ping_cloud() {
+        let (_, c) = oneshot::channel();
+        ping_cloud(String::new(), None, None, c).await;
+
+        let track = Arc::new(AtomicBool::new(true));
+        let (_, c) = oneshot::channel();
+        ping_cloud(String::new(), None, Some(&track), c).await;
+    }
+}

@@ -19,7 +19,7 @@ use crate::{ClientOptions, Message, Operation, Response};
 type IoHandle<T> = JoinSet<VecDeque<PendingQuery<T>>>;
 
 /// The status of the underlying connection to `ClickHouse`
-#[derive(Debug, Clone, Copy, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum ConnectionStatus {
     Open,
     Closed,

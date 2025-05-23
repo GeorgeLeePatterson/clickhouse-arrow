@@ -187,4 +187,18 @@ mod tests {
         assert_eq!(array, &Int32Array::from(Vec::<i32>::new()));
         assert_eq!(array.nulls(), None);
     }
+
+    #[tokio::test]
+    async fn test_null_mask_length() {
+        assert!(
+            deserialize(
+                &Type::String,
+                &mut Cursor::new(vec![0_u8; 50]),
+                100,
+                &mut DeserializerState::default()
+            )
+            .await
+            .is_err()
+        );
+    }
 }

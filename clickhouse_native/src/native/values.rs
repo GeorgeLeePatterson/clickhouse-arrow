@@ -7,6 +7,9 @@ mod fixed_point;
 mod geo;
 mod int256;
 mod ip;
+#[cfg(feature = "serde")]
+pub mod json;
+pub mod vec_tuple;
 
 #[cfg(test)]
 mod tests;

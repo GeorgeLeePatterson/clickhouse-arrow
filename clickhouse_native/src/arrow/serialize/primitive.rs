@@ -119,9 +119,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
                         "UUID must be 16 bytes".into(),
                     ));
                 }
-                let bytes: [u8; 16] = value.try_into().map_err(|_| {
-                    ClickhouseNativeError::ArrowSerialize("UUID must be 16 bytes".into())
-                })?;
+                let bytes: [u8; 16] = value.try_into().unwrap();
                 let low = u64::from_le_bytes(bytes[..8].try_into().unwrap());
                 let high = u64::from_le_bytes(bytes[8..].try_into().unwrap());
                 writer.write_u64_le(high).await?; // High bits first
@@ -295,9 +293,7 @@ write_primitive_values!(write_u128_values, scalar u128::default(), write_u128_le
                 "FixedSizeBinary must be 16 bytes for UInt128".into(),
             ));
         }
-        Ok(u128::from_le_bytes(v.try_into().map_err(|_| {
-            ClickhouseNativeError::ArrowSerialize("Binary must be 16 bytes for UInt128".into())
-        })?))
+        Ok(u128::from_le_bytes(v.try_into().unwrap()))
     })
 ]);
 
@@ -325,12 +321,7 @@ write_primitive_values!(write_i256_values, array [u8; 32], write_all, [
                 "FixedSizeBinary must be 32 bytes for Int256".into(),
             ));
         }
-        let bytes: [u8; 32] = v
-            .try_into()
-            .map_err(|_| {
-                ClickhouseNativeError::ArrowSerialize("Binary must be 32 bytes for Int256".into())
-            })?;
-        Ok(swap_endian_256(bytes))
+        Ok(swap_endian_256(v.try_into().unwrap()))
     })
 ]);
 
@@ -355,12 +346,7 @@ write_primitive_values!(write_u256_values, array [u8; 32], write_all, [
                 "FixedSizeBinary must be 32 bytes for UInt256".into(),
             ));
         }
-        let bytes: [u8; 32] = v
-            .try_into()
-            .map_err(|_| {
-                ClickhouseNativeError::ArrowSerialize("Binary must be 32 bytes for UInt256".into())
-            })?;
-        Ok(swap_endian_256(bytes))
+        Ok(swap_endian_256(v.try_into().unwrap()))
     })
 ]);
 
@@ -874,6 +860,20 @@ mod tests {
             result,
             Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("Expected Int32Array")
         ));
+
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Decimal32(3), &column, &field, &mut writer).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("Expected one of")
+        ));
+
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Ipv6, &column, &field, &mut writer).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("Expected one of")
+        ));
     }
 
     #[tokio::test]
@@ -962,6 +962,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_uint256_binary() {
+        let val: &[u8; 32] = &[
+            123_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, // 123 (big-endian)
+        ];
+        let column = Arc::new(BinaryArray::from_vec(vec![val])) as ArrayRef;
+        let field = Field::new("uint", DataType::Binary, false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::UInt256, &column, &field, &mut writer).await.unwrap();
+        let expected = vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 123, // 123 (big-endian)
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
     async fn test_serialize_uint256_fixed_size_binary() {
         let column = Arc::new(
             FixedSizeBinaryArray::try_from_iter(
@@ -1030,6 +1047,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_i128_binary_invalid_length() {
+        let column = Arc::new(BinaryArray::from_iter(vec![Some(&[0_u8; 17])])) as ArrayRef;
+        let field = Field::new("int", DataType::Binary, false);
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Int128, &column, &field, &mut writer).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(e))
+            if e.to_string().contains("Binary must be 16 bytes")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_i256_binary() {
+        let val = vec![
+            133_u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, // -123
+        ];
+        let column = Arc::new(BinaryArray::from_vec(vec![&val])) as ArrayRef;
+        let field = Field::new("bin", DataType::Binary, false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::Int256, &column, &field, &mut writer).await.unwrap();
+        let expected = vec![
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 133, // -123
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_i256_fixed_binary() {
+        let val: &[u8; 32] = &[
+            133_u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, // -123
+        ];
+        let column = Arc::new(FixedSizeBinaryArray::from(vec![val])) as ArrayRef;
+        let field = Field::new("bin", DataType::FixedSizeBinary(32), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::Int256, &column, &field, &mut writer).await.unwrap();
+        let expected = vec![
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 133, // -123
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_i256_fixed_binary_invalid() {
+        let val: &[u8; 33] = &[
+            133_u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        ];
+        let column = Arc::new(FixedSizeBinaryArray::from(vec![val])) as ArrayRef;
+        let field = Field::new("bin", DataType::FixedSizeBinary(32), false);
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Int256, &column, &field, &mut writer).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(e))
+            if e.to_string().contains("FixedSizeBinary must be 32 bytes for Int256")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_serialize_i256_int64_negative() {
         let column = Arc::new(Int64Array::from(vec![-123])) as ArrayRef;
         let field = Field::new("int", DataType::Int64, false);
@@ -1038,6 +1119,23 @@ mod tests {
         let expected = vec![
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 133, // -123
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_decimal256() {
+        let column = Arc::new(
+            Decimal256Array::from(vec![i256::from(123_456)])
+                .with_precision_and_scale(76, 0)
+                .unwrap(),
+        ) as ArrayRef;
+        let field = Field::new("decimal", DataType::Decimal256(76, 0), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::Decimal256(0), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 226, 64, // 123456 (big-endian)
         ];
         assert_eq!(writer, expected);
     }
@@ -1068,6 +1166,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_datetime64_3_microsecond() {
+        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(3, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1,000,000 / 1,000 = 1,000 ms (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_3_nanosecond() {
+        let column = Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(3, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1,000,000,000 / 1,000,000 = 1,000 ms (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_3_second() {
+        let column = Arc::new(TimestampSecondArray::from(vec![1])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(3, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1 * 1,000 = 1,000 ms (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_6_millisecond() {
+        let column = Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(6, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1,000 * 1,000 = 1,000,000 µs (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_6_nanosecond() {
+        let column = Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(6, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1,000,000,000 / 1,000 = 1,000,000 µs (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_6_second() {
+        let column = Arc::new(TimestampSecondArray::from(vec![1])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(6, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1 * 1,000,000 = 1,000,000 µs (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
     async fn test_serialize_datetime64_6_microsecond() {
         let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
         let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
@@ -1088,17 +1246,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_datetime64_9_microsecond() {
+        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(9, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![0, 202, 154, 59, 0, 0, 0, 0]; // 1,000,000 * 1,000 = 1,000,000,000 ns (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_9_second() {
+        let column = Arc::new(TimestampSecondArray::from(vec![1])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(9, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![0, 202, 154, 59, 0, 0, 0, 0]; // 1 * 1,000,000,000 = 1,000,000,000 ns (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_unknown_millisecond() {
+        let column = Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(0, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0]; // 1,000 / 1,000 = 1 s (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_unknown_microsecond() {
+        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(0, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0]; // 1,000,000 / 1,000,000 = 1 s (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime64_unknown_nanosecond() {
+        let column = Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::DateTime64(0, Tz::UTC), &column, &field, &mut writer).await.unwrap();
+        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0]; // 1,000,000,000 / 1,000,000,000 = 1 s (big-endian)
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_datetime_out_of_range() {
+        let column =
+            Arc::new(TimestampSecondArray::from(vec![i64::from(u32::MAX) + 1])) as ArrayRef;
+        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::DateTime(Tz::UTC), &column, &field, &mut writer).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            if msg.contains("DateTime out of range for TimestampSecond")
+        ));
+    }
+    #[tokio::test]
+    async fn test_serialize_ipv4_invalid_length() {
+        let column = Arc::new(
+            FixedSizeBinaryArray::try_from_iter(vec![[0u8; 3].as_ref()].into_iter()).unwrap(),
+        ) as ArrayRef;
+        let field = Field::new("ip", DataType::FixedSizeBinary(3), false);
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Ipv4, &column, &field, &mut writer).await;
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            if msg.contains("IPv4 must be 4 bytes")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_serialize_ipv6() {
         let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1].as_ref()].into_iter(),
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                vec![Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1].as_ref()), None]
+                    .into_iter(),
+                16,
             )
             .unwrap(),
         ) as ArrayRef;
         let field = Field::new("ip", DataType::FixedSizeBinary(16), false);
         let mut writer = MockWriter::new();
         serialize(&Type::Ipv6, &column, &field, &mut writer).await.unwrap();
-        let expected = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]; // ::1
+        let expected = vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // ::1
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
         assert_eq!(writer, expected);
     }
 

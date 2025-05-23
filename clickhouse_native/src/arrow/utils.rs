@@ -1,9 +1,11 @@
+use std::sync::Arc;
+
 use arrow::array::*;
 use arrow::compute::cast;
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 
-use crate::{ClickhouseNativeError, Date, DateTime, Result, Type, Value};
+use crate::{ClickhouseNativeError, Date, DateTime, DynDateTime64, Result, Type, Value};
 
 /// Converts a [`RecordBatch`] to an iterator of rows, where each row is a Vec of Values.
 ///
@@ -56,8 +58,11 @@ pub fn array_to_values(
     data_type: &DataType,
     type_hint: Option<&Type>,
 ) -> Result<Vec<Value>> {
-    fn map_or_null<T>(iter: impl Iterator<Item = Option<T>>, conv: fn(T) -> Value) -> Vec<Value> {
-        iter.map(|v| v.map_or(Value::Null, conv)).collect::<Vec<Value>>()
+    fn map_or_null<T>(
+        iter: impl Iterator<Item = Option<T>>,
+        conv: impl Fn(T) -> Value,
+    ) -> Vec<Value> {
+        iter.map(|v| v.map_or(Value::Null, &conv)).collect::<Vec<Value>>()
     }
 
     Ok(match data_type {
@@ -144,7 +149,14 @@ pub fn array_to_values(
             map_or_null(array_to_i32_iter(column)?, |d| Value::Date(Date::from_days(d)))
         }
         DataType::Date64 => {
-            map_or_null(array_to_i64_iter(column)?, |ms| Value::Date(Date::from_millis(ms)))
+            let tz = type_hint.and_then(|t| match t {
+                Type::DateTime64(_, tz) => Some(Arc::from(tz.clone().to_string().as_str())),
+                Type::Date | Type::Date32 => Some(Arc::from("UTC")),
+                _ => None,
+            });
+            map_or_null(array_to_i64_iter(column)?, |ms| {
+                Value::DateTime64(DynDateTime64::from_millis(ms, tz.clone()))
+            })
         }
 
         // Timestamp/DateTime types
@@ -156,18 +168,18 @@ pub fn array_to_values(
             ),
             TimeUnit::Millisecond => map_or_null(
                 array_to_i64_iter(column)?
-                    .map(|opt| opt.map(|ms| DateTime::from_millis(ms, tz.clone()))),
-                Value::DateTime,
+                    .map(|opt| opt.map(|ms| DynDateTime64::from_millis(ms, tz.clone()))),
+                Value::DateTime64,
             ),
             TimeUnit::Microsecond => map_or_null(
                 array_to_i64_iter(column)?
-                    .map(|opt| opt.map(|us| DateTime::from_micros(us, tz.clone()))),
-                Value::DateTime,
+                    .map(|opt| opt.map(|us| DynDateTime64::from_micros(us, tz.clone()))),
+                Value::DateTime64,
             ),
             TimeUnit::Nanosecond => map_or_null(
                 array_to_i64_iter(column)?
-                    .map(|opt| opt.map(|ns| DateTime::from_nanos(ns, tz.clone()))),
-                Value::DateTime,
+                    .map(|opt| opt.map(|ns| DynDateTime64::from_nanos(ns, tz.clone()))),
+                Value::DateTime64,
             ),
         },
 
@@ -979,6 +991,17 @@ mod tests {
     }
 
     #[test]
+    fn test_decimal128_array_error() {
+        let array = StringArray::from(vec![""]);
+        let result = array_to_values(&array, &DataType::Decimal128(10, 2), None);
+        assert!(matches!(
+            result.unwrap_err(),
+            ClickhouseNativeError::ArrowDeserialize(err)
+            if err.to_string().contains("Expected Decimal128Array")
+        ));
+    }
+
+    #[test]
     fn test_decimal256_array() {
         let array =
             Decimal256Array::from_iter_values([i256::from_i128(12345), i256::from_i128(-67890)])
@@ -1003,10 +1026,50 @@ mod tests {
     }
 
     #[test]
+    fn test_decimal256_array_error() {
+        let array = StringArray::from(vec![""]);
+        let result = array_to_values(&array, &DataType::Decimal256(20, 2), None);
+        assert!(matches!(
+            result.unwrap_err(),
+            ClickhouseNativeError::ArrowDeserialize(err)
+            if err.to_string().contains("Expected Decimal256Array")
+        ));
+    }
+
+    #[test]
     fn test_date32_array() {
         let array = Date32Array::from(vec![Some(0), None, Some(1)]);
         let result = array_to_values(&array, &DataType::Date32, None).unwrap();
         assert_eq!(result, vec![Value::Date(Date(0)), Value::Null, Value::Date(Date(1))]);
+    }
+
+    #[test]
+    fn test_date64_array() {
+        let array = Date64Array::from(vec![Some(0), None, Some(1)]);
+        let result = array_to_values(&array, &DataType::Date64, None).unwrap();
+        assert_eq!(result, vec![
+            Value::DateTime64(DynDateTime64(Tz::UTC, 0, 3)),
+            Value::Null,
+            Value::DateTime64(DynDateTime64(Tz::UTC, 1, 3)),
+        ]);
+
+        // With timezone
+        let typ = Type::DateTime64(3, Tz::America__New_York);
+        let result = array_to_values(&array, &DataType::Date64, Some(&typ)).unwrap();
+        assert_eq!(result, vec![
+            Value::DateTime64(DynDateTime64(Tz::America__New_York, 0, 3)),
+            Value::Null,
+            Value::DateTime64(DynDateTime64(Tz::America__New_York, 1, 3)),
+        ]);
+
+        // With timezone default
+        let typ = Type::Date;
+        let result = array_to_values(&array, &DataType::Date64, Some(&typ)).unwrap();
+        assert_eq!(result, vec![
+            Value::DateTime64(DynDateTime64(Tz::UTC, 0, 3)),
+            Value::Null,
+            Value::DateTime64(DynDateTime64(Tz::UTC, 1, 3)),
+        ]);
     }
 
     #[test]
@@ -1059,6 +1122,39 @@ mod tests {
             Value::Tuple(vec![Value::Int32(1), Value::String(b"x".to_vec())]),
             Value::Tuple(vec![Value::Int32(2), Value::String(b"y".to_vec())]),
         ]);
+    }
+
+    #[test]
+    fn test_struct_array_with_nulls() {
+        let int_field = Arc::new(Field::new("a", DataType::Int32, false));
+        let str_field = Arc::new(Field::new("b", DataType::Utf8, true));
+        let struct_array = StructArray::from(vec![
+            (Arc::clone(&int_field), Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef),
+            (
+                Arc::clone(&str_field),
+                Arc::new(StringArray::from(vec![Some("x"), None])) as ArrayRef,
+            ),
+        ]);
+        let fields = Fields::from_iter(vec![int_field, str_field]);
+        let result = array_to_values(&struct_array, &DataType::Struct(fields), None).unwrap();
+        assert_eq!(result, vec![
+            Value::Tuple(vec![Value::Int32(1), Value::String(b"x".to_vec())]),
+            Value::Tuple(vec![Value::Int32(2), Value::Null]),
+        ]);
+    }
+
+    #[test]
+    fn test_struct_array_err() {
+        let int_field = Arc::new(Field::new("a", DataType::Int32, false));
+        let str_field = Arc::new(Field::new("b", DataType::Utf8, false));
+        let string_array = StringArray::from(vec![""]);
+        let fields = Fields::from_iter(vec![int_field, str_field]);
+        let result = array_to_values(&string_array, &DataType::Struct(fields), None);
+        assert!(matches!(
+            result,
+            Err(ClickhouseNativeError::ArrowDeserialize(e))
+            if e.to_string().contains("Could not downcast struct array")
+        ));
     }
 
     #[test]
@@ -1127,31 +1223,89 @@ mod tests {
     }
 
     #[test]
+    fn test_unhandled_array() {
+        let array = StringArray::from(vec![""]);
+        let result = array_to_values(&array, &DataType::Float16, None);
+        assert!(matches!(result, Err(ClickhouseNativeError::ArrowUnsupportedType(_))));
+    }
+
+    #[test]
     fn test_batch_to_rows_simple() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, false),
+            Field::new("v_0", DataType::Int8, false),
+            Field::new("v_1", DataType::Int16, false),
+            Field::new("v_2", DataType::Int32, false),
+            Field::new("v_3", DataType::Int64, false),
+            Field::new("v_4", DataType::UInt8, false),
+            Field::new("v_5", DataType::UInt16, false),
+            Field::new("v_6", DataType::UInt32, false),
+            Field::new("v_7", DataType::UInt64, false),
+            Field::new("v_8", DataType::Float32, false),
+            Field::new("v_9", DataType::Float64, false),
+            Field::new("v_10", DataType::Timestamp(TimeUnit::Second, None), false),
+            Field::new("v_11", DataType::Timestamp(TimeUnit::Millisecond, None), false),
+            Field::new("v_12", DataType::Timestamp(TimeUnit::Microsecond, None), false),
+            Field::new("v_13", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new("v_14", DataType::Utf8, false),
         ]));
+        let str_vals = vec!["a", "b", "c"];
         let batch = RecordBatch::try_new(schema, vec![
+            Arc::new(Int8Array::from(vec![1, 2, 3])),
+            Arc::new(Int16Array::from(vec![1, 2, 3])),
             Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(UInt8Array::from(vec![1, 2, 3])),
+            Arc::new(UInt16Array::from(vec![1, 2, 3])),
+            Arc::new(UInt32Array::from(vec![1, 2, 3])),
+            Arc::new(UInt64Array::from(vec![1, 2, 3])),
+            Arc::new(Float32Array::from(vec![1.0_f32, 2.0, 3.0])),
+            Arc::new(Float64Array::from(vec![1.0_f64, 2.0, 3.0])),
+            Arc::new(TimestampSecondArray::from(vec![1, 2, 3])),
+            Arc::new(TimestampMillisecondArray::from(vec![1000, 2 * 1000, 3 * 1000])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                1_000_000,
+                2 * 1_000_000,
+                3 * 1_000_000,
+            ])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                1_000_000_000,
+                2 * 1_000_000_000,
+                3 * 1_000_000_000,
+            ])),
+            Arc::new(StringArray::from(str_vals.clone())),
         ])
         .unwrap();
 
-        let mut result = batch_to_rows(&batch, None).unwrap().collect::<Vec<_>>();
+        let result = batch_to_rows(&batch, None).unwrap().collect::<Vec<_>>();
         assert_eq!(result.len(), 3);
-        assert_eq!(result.pop().unwrap().unwrap(), vec![
-            Value::Int32(3),
-            Value::String(b"c".to_vec())
-        ]);
-        assert_eq!(result.pop().unwrap().unwrap(), vec![
-            Value::Int32(2),
-            Value::String(b"b".to_vec())
-        ]);
-        assert_eq!(result.pop().unwrap().unwrap(), vec![
-            Value::Int32(1),
-            Value::String(b"a".to_vec())
-        ]);
+
+        // TODO: Remove
+        eprintln!("Result: {result:?}");
+
+        #[expect(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_wrap)]
+        for (i, row) in result.into_iter().enumerate() {
+            let row = row.unwrap();
+            let seed = i + 1;
+            assert_eq!(row, vec![
+                Value::Int8(seed as i8),
+                Value::Int16(seed as i16),
+                Value::Int32(seed as i32),
+                Value::Int64(seed as i64),
+                Value::UInt8(seed as u8),
+                Value::UInt16(seed as u16),
+                Value::UInt32(seed as u32),
+                Value::UInt64(seed as u64),
+                Value::Float32(seed as f32),
+                Value::Float64(seed as f64),
+                Value::DateTime(DateTime(Tz::UTC, seed as u32)),
+                Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1000, 3)),
+                Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1_000_000, 6)),
+                Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1_000_000_000, 9)),
+                Value::String(str_vals[i].as_bytes().to_vec())
+            ]);
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use super::CompressionMethod;
 use crate::prelude::Secret;
 
 /// Options set for a Clickhouse connection and arrow (de)serialization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClientOptions {
     /// Username credential
     pub username:         String,
@@ -49,7 +49,7 @@ impl Default for ClientOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CloudOptions {
     pub timeout: Option<u64>,
     pub wakeup:  bool,

@@ -1,15 +1,17 @@
-use chrono_tz::UTC;
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use chrono_tz::{Tz, UTC};
 use indexmap::IndexMap;
 use uuid::Uuid;
 
 use super::Value;
 use crate::{
-    Date, DateTime, DateTime64, FixedPoint32, FixedPoint64, FixedPoint128, FixedPoint256, FromSql,
-    MultiPolygon, Point, Polygon, Ring, ToSql, Type, i256, u256,
+    Bytes, Date, DateTime, DateTime64, FixedPoint32, FixedPoint64, FixedPoint128, FixedPoint256,
+    FromSql, Ipv4, Ipv6, MultiPolygon, Point, Polygon, Ring, ToSql, Type, i256, u256,
 };
 
 fn roundtrip<T: FromSql + ToSql>(item: T, type_: &Type) -> T {
-    let serialized = Value::from_value(item).expect("failed to serialize");
+    let serialized = item.to_sql(Some(type_)).expect("failed to serialize");
     serialized.to_value(type_).expect("failed to deserialize")
 }
 
@@ -104,8 +106,18 @@ fn roundtrip_f32() {
         f32::NEG_INFINITY,
     ];
 
+    const FIXED_POINTS: &[FixedPoint32<3>] =
+        &[FixedPoint32::<3>(0), FixedPoint32::<3>(5), FixedPoint32::<3>(-5)];
+
     for float in FLOATS {
         assert_eq!(float.to_bits(), roundtrip(*float, &Type::Float32).to_bits());
+    }
+
+    for fixed in FIXED_POINTS {
+        let float: f64 = f64::from(*fixed);
+        let fixed_float =
+            f64::from(fixed.integer()) + f64::from(fixed.fraction()) / f64::from(fixed.modulus());
+        assert!((float - fixed_float) < 0.1_f64);
     }
 }
 
@@ -123,8 +135,18 @@ fn roundtrip_f64() {
         f64::NEG_INFINITY,
     ];
 
+    const FIXED_POINTS: &[FixedPoint64<3>] =
+        &[FixedPoint64::<3>(0), FixedPoint64::<3>(5), FixedPoint64::<3>(-5)];
+
     for float in FLOATS {
         assert_eq!(float.to_bits(), roundtrip(*float, &Type::Float64).to_bits());
+    }
+
+    #[expect(clippy::cast_precision_loss)]
+    for fixed in FIXED_POINTS {
+        let float: f64 = f64::from(*fixed);
+        let fixed_float = fixed.integer() as f64 + fixed.fraction() as f64 / fixed.modulus() as f64;
+        assert!((float - fixed_float) < 0.1_f64);
     }
 }
 
@@ -155,6 +177,17 @@ fn roundtrip_d256() {
     assert_eq!(fixed, roundtrip(fixed, &Type::Decimal256(3)));
     let fixed = FixedPoint256::<3>(i256::from((5u128, 0u128)));
     assert_eq!(fixed, roundtrip(fixed, &Type::Decimal256(3)));
+}
+
+#[cfg(feature = "rust_decimal")]
+#[test]
+fn roundtrip_decimal() {
+    let fixed = rust_decimal::Decimal::new(123_456, 4);
+    assert_eq!(fixed, roundtrip(fixed, &Type::Decimal32(4)));
+    let fixed = rust_decimal::Decimal::new(12_345_678, 6);
+    assert_eq!(fixed, roundtrip(fixed, &Type::Decimal64(6)));
+    let fixed = rust_decimal::Decimal::new(1_234_567_890, 8);
+    assert_eq!(fixed, roundtrip(fixed, &Type::Decimal128(8)));
 }
 
 #[test]
@@ -195,6 +228,30 @@ fn roundtrip_uuid() {
 }
 
 #[test]
+fn roundtrip_ipv4() {
+    let fixed = Ipv4::from(Ipv4Addr::new(0, 0, 0, 0));
+    assert_eq!(fixed, roundtrip(fixed, &Type::Ipv4));
+}
+
+#[test]
+fn roundtrip_ipv6() {
+    let fixed = Ipv6::from(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff));
+    assert_eq!(fixed, roundtrip(fixed, &Type::Ipv6));
+}
+
+#[test]
+fn roundtrip_bytes() {
+    let fixed = Bytes(b"hello".to_vec());
+    assert_eq!(fixed, roundtrip(fixed.clone(), &Type::String));
+}
+
+#[test]
+fn roundtrip_bytes2() {
+    let fixed = Bytes(b"hello".to_vec());
+    assert_eq!(fixed, roundtrip(fixed.clone(), &Type::Array(Box::new(Type::UInt8))));
+}
+
+#[test]
 fn roundtrip_date() {
     let fixed = Date(0);
     assert_eq!(fixed, roundtrip(fixed, &Type::Date));
@@ -220,6 +277,15 @@ fn roundtrip_datetime64() {
     assert_eq!(fixed, roundtrip(fixed, &Type::DateTime64(3, UTC)));
     let fixed = DateTime64::<3>(UTC, 45_345_345);
     assert_eq!(fixed, roundtrip(fixed, &Type::DateTime64(3, UTC)));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn roundtrip_json() {
+    use crate::json::Json;
+
+    let fixed = Json("hello".to_string());
+    assert_eq!(fixed, roundtrip(fixed.clone(), &Type::Object));
 }
 
 #[test]
@@ -406,4 +472,61 @@ async fn roundtrip_geo() {
     let multipolygon =
         MultiPolygon(vec![polygon.clone(), Polygon(vec![ring.clone(), Ring(vec![point])])]);
     assert_eq!(&multipolygon, &roundtrip(multipolygon.clone(), &Type::MultiPolygon));
+}
+
+#[test]
+fn test_value_methods() {
+    let inner = Value::String(b"hello".to_vec());
+    let val = Value::Array(vec![inner.clone()]);
+    assert_eq!(val.unwrap_array_ref().unwrap(), &[inner.clone()] as &[_]);
+    assert_eq!(val.clone().unwrap_array().unwrap(), vec![inner.clone()]);
+    assert_eq!(val.unarray().unwrap(), vec![inner.clone()]);
+    assert!(Value::Int8(0).unwrap_array_ref().is_err());
+    assert!(Value::Int8(0).unwrap_array().is_err());
+    assert_eq!(Value::Int8(0).unarray(), None);
+    assert_eq!(Value::from_value::<String>("hello".to_string()).unwrap(), inner.clone());
+
+    let val = Value::Tuple(vec![inner.clone()]);
+    assert_eq!(val.unwrap_tuple().unwrap(), vec![inner]);
+    assert!(Value::Int8(0).unwrap_tuple().is_err());
+
+    let val_types = [
+        Type::Int8,
+        Type::Int16,
+        Type::Int32,
+        Type::Int64,
+        Type::Int128,
+        Type::Int256,
+        Type::UInt8,
+        Type::UInt16,
+        Type::UInt32,
+        Type::UInt64,
+        Type::UInt128,
+        Type::UInt256,
+        Type::Float32,
+        Type::Float64,
+        Type::Decimal32(0),
+        Type::Decimal64(0),
+        Type::Decimal128(0),
+        Type::Decimal256(0),
+        Type::String,
+        Type::Uuid,
+        Type::Date,
+        Type::Date32,
+        Type::DateTime(Tz::UTC),
+        Type::DateTime64(3, Tz::UTC),
+        Type::Array(Box::new(Type::String)),
+        Type::Enum8(vec![(String::new(), 0)]),
+        Type::Enum16(vec![(String::new(), 0)]),
+        Type::Tuple(vec![Type::String]),
+        Type::Map(Box::new(Type::String), Box::new(Type::String)),
+        Type::Ipv4,
+        Type::Ipv6,
+        Type::Object,
+    ];
+
+    for type_ in val_types {
+        let def_val = type_.default_value();
+        assert_eq!(def_val.guess_type(), type_);
+    }
 }

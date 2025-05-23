@@ -94,5 +94,5 @@ mod aliases {
 // Silent lints for dev dependencies
 #[cfg(test)]
 mod dev_crates {
-    use {testcontainers as _, tracing_subscriber as _};
+    use {clickhouse as _, criterion as _, testcontainers as _, tracing_subscriber as _};
 }
