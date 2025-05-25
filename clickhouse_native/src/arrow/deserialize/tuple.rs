@@ -28,7 +28,7 @@ use crate::{Result, Type};
 ///
 /// # Returns
 /// A `Result` containing the deserialized `StructArray` as an `ArrayRef` or a
-/// `ClickhouseNativeError` if deserialization fails.
+/// `Error` if deserialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowDeserialize` if an inner type is unsupported or the data is malformed.
@@ -78,7 +78,7 @@ mod tests {
 
     use super::*;
     use crate::native::types::Type;
-    use crate::{ArrowOptions, ClickhouseNativeError};
+    use crate::{ArrowOptions, Error};
 
     // Helps keep all strings_as_strings
     fn get_state() -> DeserializerState {
@@ -311,6 +311,6 @@ mod tests {
         let mut state = get_state();
 
         let result = deserialize(&inner_types, &mut reader, rows, &nulls, &mut state).await;
-        assert!(matches!(result, Err(ClickhouseNativeError::ArrowDeserialize(_))));
+        assert!(matches!(result, Err(Error::ArrowDeserialize(_))));
     }
 }

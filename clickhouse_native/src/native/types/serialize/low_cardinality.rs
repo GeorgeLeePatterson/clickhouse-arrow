@@ -27,7 +27,7 @@ impl Serializer for LowCardinalitySerializer {
         let inner_type = match type_ {
             Type::LowCardinality(x) => &**x,
             _ => {
-                return Err(crate::ClickhouseNativeError::SerializeError(format!(
+                return Err(crate::Error::SerializeError(format!(
                     "LowCardinalitySerializer called with non-low-cardinality type: {type_:?}"
                 )));
             }

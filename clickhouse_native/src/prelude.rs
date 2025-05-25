@@ -9,7 +9,7 @@ pub use crate::native::values::*;
 pub use crate::query::{ParsedQuery, Qid};
 pub use crate::settings::*;
 pub use crate::telemetry::*;
-pub use crate::{ArrowClient, Client, ClientBuilder, NativeClient, Row};
+pub use crate::{ArrowClient, Client, ClientBuilder, CompressionMethod, NativeClient, Row};
 
 // TODO: Encrypt
 /// Newtype to protect secrets from being logged

@@ -1,6 +1,6 @@
 use super::{Serializer, SerializerState, Type, ValueSerializer};
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Value};
+use crate::{Error, Result, Value};
 
 pub(crate) struct ObjectSerializer;
 
@@ -42,7 +42,7 @@ impl ValueSerializer for ObjectSerializer {
                 writer.write_string(bytes).await?;
             }
             _ => {
-                return Err(ClickhouseNativeError::SerializeError(format!(
+                return Err(Error::SerializeError(format!(
                     "ObjectSerializer unimplemented: {type_:?} for value = {value:?}",
                 )));
             }

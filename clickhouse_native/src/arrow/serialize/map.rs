@@ -4,7 +4,7 @@ use arrow::datatypes::{DataType, Field};
 use super::ClickhouseArrowSerializer;
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Serializes an Arrow `MapArray` to ClickHouse’s native format for `Map` types.
 ///
@@ -21,7 +21,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - `state`: A mutable `SerializerState` for serialization context.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if the `column` is not a `MapArray`, the data type is not `Map`, or
@@ -38,26 +38,23 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
     // Unwrap the type hint to get the key and value types
     let (key_type, value_type) = type_hint.unwrap_map()?;
 
-    let map_array = column.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-        ClickhouseNativeError::ArrowSerialize("Expected MapArray for Map type".into())
-    })?;
+    let map_array = column
+        .as_any()
+        .downcast_ref::<MapArray>()
+        .ok_or_else(|| Error::ArrowSerialize("Expected MapArray for Map type".into()))?;
 
     // Validate the data type is Map
     let DataType::Map(struct_field, _ordered) = field.data_type() else {
-        return Err(ClickhouseNativeError::ArrowSerialize(
-            "Expected Map data type for MapArray".into(),
-        ));
+        return Err(Error::ArrowSerialize("Expected Map data type for MapArray".into()));
     };
 
     // Validate the inner struct has exactly two fields (key, value)
     let DataType::Struct(fields) = struct_field.data_type() else {
-        return Err(ClickhouseNativeError::ArrowSerialize(
-            "MapArray field must be a Struct".into(),
-        ));
+        return Err(Error::ArrowSerialize("MapArray field must be a Struct".into()));
     };
 
     if fields.len() != 2 {
-        return Err(ClickhouseNativeError::ArrowSerialize(
+        return Err(Error::ArrowSerialize(
             "MapArray struct must have exactly two fields (key, value)".into(),
         ));
     }
@@ -357,7 +354,7 @@ mod tests {
         .await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Expected MapArray for Map type")
         ));
     }
@@ -396,7 +393,7 @@ mod tests {
         .await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Expected Map data type for MapArray")
         ));
     }

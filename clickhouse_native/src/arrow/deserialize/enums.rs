@@ -41,7 +41,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Enum8` or `Enum16` type into an Arrow `DictionaryArray`.
 ///
@@ -62,7 +62,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 ///
 /// # Returns
 /// A `Result` containing the deserialized `DictionaryArray` as an `ArrayRef` or a
-/// `ClickhouseNativeError` if deserialization fails.
+/// `Error` if deserialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowDeserialize` if:
@@ -95,7 +95,7 @@ pub(super) async fn deserialize<R: ClickhouseRead>(
                 } else {
                     // Find index in pairs
                     let pos = pairs.iter().position(|(_, key)| *key == idx).ok_or_else(|| {
-                        ClickhouseNativeError::ArrowDeserialize(format!(
+                        Error::ArrowDeserialize(format!(
                             "Invalid Enum8 index: {idx} not found in pairs"
                         ))
                     })?;
@@ -123,7 +123,7 @@ pub(super) async fn deserialize<R: ClickhouseRead>(
                 } else {
                     // Find index in pairs
                     let pos = pairs.iter().position(|(_, key)| *key == idx).ok_or_else(|| {
-                        ClickhouseNativeError::ArrowDeserialize(format!(
+                        Error::ArrowDeserialize(format!(
                             "Invalid Enum16 index: {idx} not found in pairs"
                         ))
                     })?;
@@ -142,9 +142,7 @@ pub(super) async fn deserialize<R: ClickhouseRead>(
             let array = DictionaryArray::<Int16Type>::try_new(Int16Array::from(keys), value_array)?;
             Ok(Arc::new(array))
         }
-        _ => Err(ClickhouseNativeError::ArrowDeserialize(format!(
-            "Expected enum, got {type_hint:?}"
-        ))),
+        _ => Err(Error::ArrowDeserialize(format!("Expected enum, got {type_hint:?}"))),
     }
 }
 
@@ -236,7 +234,7 @@ mod tests {
         let result = deserialize(&Type::Enum8(pairs), &mut reader, 1, &[], &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowDeserialize(msg))
+            Err(Error::ArrowDeserialize(msg))
             if msg.contains("Invalid Enum8 index: 3")
         ));
     }
@@ -249,7 +247,7 @@ mod tests {
         let result = deserialize(&Type::Int32, &mut reader, 0, &[], &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowDeserialize(msg))
+            Err(Error::ArrowDeserialize(msg))
             if msg.contains("Expected enum, got Int32")
         ));
     }

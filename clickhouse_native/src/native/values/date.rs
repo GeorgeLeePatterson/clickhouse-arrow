@@ -4,7 +4,7 @@ use std::sync::Arc;
 use chrono::{Duration, FixedOffset, NaiveDate, ParseError, TimeZone, Utc};
 use chrono_tz::{Tz, UTC};
 
-use crate::{ClickhouseNativeError, FromSql, Result, ToSql, Type, Value, unexpected_type};
+use crate::{Error, FromSql, Result, ToSql, Type, Value, unexpected_type};
 
 /// Wrapper type for Clickhouse `Date` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
@@ -465,7 +465,7 @@ impl ToSql for chrono::DateTime<Utc> {
         Ok(Value::DateTime64(DynDateTime64(
             UTC,
             self.timestamp_micros().try_into().map_err(|e| {
-                ClickhouseNativeError::DeserializeError(format!(
+                Error::DeserializeError(format!(
                     "failed to convert DateTime64: {e:?}"
                 ))
             })?,
@@ -490,14 +490,14 @@ impl FromSql for chrono::DateTime<Utc> {
                     .try_into()
                     .and_then(|k| Ok((k, units_ns.try_into()?)))
                     .map_err(|e| {
-                        ClickhouseNativeError::DeserializeError(format!(
+                        Error::DeserializeError(format!(
                             "failed to convert DateTime: {e:?}"
                         ))
                     })?;
                 Ok(datetime.0.timestamp_opt(seconds, units_ns).unwrap().with_timezone(&Utc))
             }
             Value::DateTime(date) => Ok(date.try_into().map_err(|e| {
-                ClickhouseNativeError::DeserializeError(format!(
+                Error::DeserializeError(format!(
                     "failed to convert DateTime: {e:?}"
                 ))
             })?),
@@ -545,7 +545,7 @@ impl ToSql for chrono::DateTime<Tz> {
         Ok(Value::DateTime64(DynDateTime64(
             self.timezone(),
             self.timestamp_micros().try_into().map_err(|e| {
-                ClickhouseNativeError::DeserializeError(format!(
+                Error::DeserializeError(format!(
                     "failed to convert DateTime64: {e:?}"
                 ))
             })?,
@@ -570,14 +570,14 @@ impl FromSql for chrono::DateTime<Tz> {
                     .try_into()
                     .and_then(|k| Ok((k, units_ns.try_into()?)))
                     .map_err(|e| {
-                        ClickhouseNativeError::DeserializeError(format!(
+                        Error::DeserializeError(format!(
                             "failed to convert DateTime: {e:?}"
                         ))
                     })?;
                 Ok(datetime.0.timestamp_opt(seconds, units_ns).unwrap())
             }
             Value::DateTime(date) => Ok(date.try_into().map_err(|e| {
-                ClickhouseNativeError::DeserializeError(format!(
+                Error::DeserializeError(format!(
                     "failed to convert DateTime: {e:?}"
                 ))
             })?),

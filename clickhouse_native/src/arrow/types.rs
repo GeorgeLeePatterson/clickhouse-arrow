@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::*;
 
-use crate::{ArrowOptions, ClickhouseNativeError, Result, Type};
+use crate::{ArrowOptions, Error, Result, Type};
 
 /// Type alias for schema conversions
 pub type SchemaConversions = std::collections::HashMap<String, Type>;
@@ -45,7 +45,7 @@ macro_rules! convert_to_enum {
                     let new_inner = $enum_typ($values);
                     if nullable { new_inner.into_nullable() } else { new_inner }
                 } else {
-                    return Err($crate::ClickhouseNativeError::TypeConversion(format!(
+                    return Err($crate::Error::TypeConversion(format!(
                         "expected LowCardinality(String), found {}",
                         $low_card
                     )));
@@ -57,7 +57,7 @@ macro_rules! convert_to_enum {
                 if nullable { new_inner.into_nullable() } else { new_inner }
             }
             _ => {
-                return Err($crate::ClickhouseNativeError::TypeConversion(format!(
+                return Err($crate::Error::TypeConversion(format!(
                     "expected LowCardinality(String) or String/Binary, found {}",
                     $low_card
                 )));
@@ -101,7 +101,7 @@ pub(crate) fn schema_conversion(
         Some(conv @ (Type::Date | Type::Date32)) => {
             let type_ = arrow_to_ch_type(data_type, is_nullable, Some(conversion_opts))?;
             if !matches!(type_, Type::Date | Type::Date32) {
-                return Err(ClickhouseNativeError::TypeConversion(format!(
+                return Err(Error::TypeConversion(format!(
                     "expected Date or Date32, found {type_}",
                 )));
             }
@@ -259,7 +259,7 @@ pub(crate) fn arrow_to_ch_type(
         | DataType::FixedSizeList(f, _) => {
             // Reject Nullable(Array(T)) unless configured to ignore
             if is_nullable && options.is_some_and(|o| o.array_nullable_error && !o.strict_schema_conversion) {
-                return Err(ClickhouseNativeError::TypeConversion(
+                return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Lists".to_string(),
                 ));
             }
@@ -270,7 +270,7 @@ pub(crate) fn arrow_to_ch_type(
         }
         DataType::Dictionary(_, value_type) => {
             if is_nullable && options.is_some_and(|o| o.low_cardinality_nullable_error) {
-                return Err(ClickhouseNativeError::TypeConversion(
+                return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Dictionary".to_string(),
                 ));
             }
@@ -289,7 +289,7 @@ pub(crate) fn arrow_to_ch_type(
         }
         DataType::Map(key, _) => {
             let DataType::Struct(inner) = key.data_type() else {
-                return Err(ClickhouseNativeError::ArrowDeserialize(format!(
+                return Err(Error::ArrowDeserialize(format!(
                     "Unexpected key type for map: {key:?}"
                 )));
             };
@@ -297,7 +297,7 @@ pub(crate) fn arrow_to_ch_type(
             let (key_field, value_field) = if inner.len() >= 2 {
                 (&inner[0], &inner[1])
             } else {
-                return Err(ClickhouseNativeError::ArrowDeserialize(
+                return Err(Error::ArrowDeserialize(
                     "Map inner fields malformed".into(),
                 ));
             };
@@ -320,7 +320,7 @@ pub(crate) fn arrow_to_ch_type(
         | DataType::Union(_, _)
         // TODO: Support RunEndEncoded
         | DataType::RunEndEncoded(_, _) => {
-            return Err(ClickhouseNativeError::ArrowUnsupportedType(format!(
+            return Err(Error::ArrowUnsupportedType(format!(
                 "Arrow data type is not supported: {data_type:?}"
             )));
         }
@@ -376,7 +376,7 @@ pub(crate) fn ch_to_arrow_type(
             4..=6 => DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from(tz.name()))),
             7..=9 => DataType::Timestamp(TimeUnit::Nanosecond, Some(Arc::from(tz.name()))),
             _ => {
-                return Err(ClickhouseNativeError::ArrowUnsupportedType(format!(
+                return Err(Error::ArrowUnsupportedType(format!(
                     "DateTime64 precision must be 0-9, received {p}"
                 )));
             }
@@ -384,7 +384,7 @@ pub(crate) fn ch_to_arrow_type(
         Type::Ipv4 => DataType::FixedSizeBinary(4),
         Type::Array(inner_type) => {
             if is_null && options.is_some_and(|o| o.array_nullable_error) {
-                return Err(ClickhouseNativeError::TypeConversion(
+                return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Arrays".to_string(),
                 ));
             }
@@ -423,7 +423,7 @@ pub(crate) fn ch_to_arrow_type(
         }
         Type::LowCardinality(inner_type) => {
             if is_null && options.is_some_and(|o| o.low_cardinality_nullable_error) {
-                return Err(ClickhouseNativeError::TypeConversion(
+                return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable LowCardinality".to_string(),
                 ));
             }

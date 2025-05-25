@@ -47,13 +47,13 @@ pub(crate) async fn fetch_all_tables(
         // 'database' as Utf8
         let database_col = cast(batch.column(0), &DataType::Utf8)?;
         let database_col =
-            database_col.as_string_opt::<i32>().ok_or(ClickhouseNativeError::ArrowDeserialize(
+            database_col.as_string_opt::<i32>().ok_or(Error::ArrowDeserialize(
                 "Could not deserialize table column for schema".into(),
             ))?;
         // 'name' as Utf8
         let name_col = cast(batch.column(1), &DataType::Utf8)?;
         let name_col =
-            name_col.as_string_opt::<i32>().ok_or(ClickhouseNativeError::ArrowDeserialize(
+            name_col.as_string_opt::<i32>().ok_or(Error::ArrowDeserialize(
                 "Could not deserialize name column for schema".into(),
             ))?;
         for i in 0..batch.num_rows() {
@@ -118,19 +118,19 @@ pub(crate) async fn fetch_schema(
         // 'table' as Utf8
         let table_col = cast(batch.column(0), &DataType::Utf8)?;
         let table_col =
-            table_col.as_string_opt::<i32>().ok_or(ClickhouseNativeError::ArrowDeserialize(
+            table_col.as_string_opt::<i32>().ok_or(Error::ArrowDeserialize(
                 "Could not deserialize table column for schema".into(),
             ))?;
         // 'name' as Utf8
         let name_col = cast(batch.column(1), &DataType::Utf8)?;
         let name_col =
-            name_col.as_string_opt::<i32>().ok_or(ClickhouseNativeError::ArrowDeserialize(
+            name_col.as_string_opt::<i32>().ok_or(Error::ArrowDeserialize(
                 "Could not deserialize name column for schema".into(),
             ))?;
         // 'type' as Utf8
         let type_col = cast(batch.column(2), &DataType::Utf8)?;
         let type_col =
-            type_col.as_string_opt::<i32>().ok_or(ClickhouseNativeError::ArrowDeserialize(
+            type_col.as_string_opt::<i32>().ok_or(Error::ArrowDeserialize(
                 "Could not deserialize type column for schema".into(),
             ))?;
 

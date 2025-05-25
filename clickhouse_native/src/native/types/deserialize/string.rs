@@ -36,7 +36,7 @@ impl Deserializer for StringDeserializer {
                 }
                 Ok(out)
             }
-            _ => Err(crate::ClickhouseNativeError::DeserializeError(
+            _ => Err(crate::Error::DeserializeError(
                 "StringDeserializer called with non-string type".to_string(),
             )),
         }

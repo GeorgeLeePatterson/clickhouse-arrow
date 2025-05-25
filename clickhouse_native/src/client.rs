@@ -1,3 +1,11 @@
+/// The `client` module provides the primary interface for interacting with `ClickHouse`
+/// over its native protocol, with full support for Apache Arrow interoperability.
+/// The main entry point is the [`Client`] struct, which supports both native `ClickHouse`
+/// data formats ([`NativeClient`]) and Arrow-compatible formats ([`ArrowClient`]).
+///
+/// This module is designed to be thread-safe, with [`Client`] instances that can be
+/// cloned and shared across threads. It supports querying, inserting data, managing
+/// database schemas, and handling `ClickHouse` events like progress and profiling.
 mod builder;
 #[cfg(feature = "cloud")]
 mod cloud;
@@ -35,7 +43,7 @@ use crate::native::block::Block;
 use crate::native::protocol::{CompressionMethod, ProfileEvent};
 use crate::prelude::*;
 use crate::query::ParsedQuery;
-use crate::{ClickhouseNativeError, Progress, Result, Row};
+use crate::{Error, Progress, Result, Row};
 
 static CLIENT_ID: AtomicU16 = AtomicU16::new(0);
 
@@ -44,6 +52,14 @@ pub type NativeClient = Client<NativeFormat>;
 /// Implementation of [`Client`] with arrow compatibility.
 pub type ArrowClient = Client<ArrowFormat>;
 
+/// Configuration for a `ClickHouse` connection, including tracing and cloud-specific settings.
+///
+/// This struct is used to pass optional context to [`Client::connect`], enabling features
+/// like distributed tracing or cloud instance tracking.
+///
+/// # Fields
+/// - `trace`: Optional tracing context for logging and monitoring.
+/// - `cloud`: Optional cloud-specific configuration (requires the `cloud` feature).
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionContext {
     pub trace: Option<TraceContext>,
@@ -66,8 +82,45 @@ pub enum ClickhouseEvent {
     Profile(Vec<ProfileEvent>),
 }
 
-/// Client handle for a Clickhouse connection, has internal reference to connection,
-/// and can be freely cloned and sent across threads.
+/// A thread-safe handle for interacting with a `ClickHouse` database over its native protocol.
+///
+/// The `Client` struct is the primary interface for executing queries, inserting data, and
+/// managing database schemas. It supports two data formats:
+/// - [`NativeClient`]: Uses `ClickHouse`'s native [`Block`] format for data exchange.
+/// - [`ArrowClient`]: Uses Apache Arrow's [`RecordBatch`] for seamless interoperability with Arrow
+///   ecosystems.
+///
+/// `Client` instances are lightweight and can be cloned and shared across threads. Each instance
+/// maintains a reference to an underlying connection, which is managed automatically. The client
+/// also supports event subscription for receiving progress and profiling information from
+/// `ClickHouse`.
+///
+/// # Usage
+/// Create a `Client` using the [`ClientBuilder`] for a fluent configuration experience, or use
+/// [`Client::connect`] for direct connection setup.
+///
+/// # Examples
+/// ```rust,ignore
+/// use clickhouse_native::prelude::*;
+/// use clickhouse_native::arrow;
+/// use futures_util::StreamExt;
+///
+/// let client = Client::builder()
+///     .destination("localhost:9000")
+///     .username("default")
+///     .build::<ArrowFormat>()
+///     .await?;
+///
+/// // Execute a query
+/// let batch = client
+///     .query("SELECT 1")
+///     .await?
+///     .collect::<Vec<_>>()
+///     .await
+///     .into_iter()
+///     .collect::<Result<Vec<_>>>()?;
+/// arrow::util::pretty::print_batches(batch)?;
+/// ```
 #[derive(Clone, Debug)]
 pub struct Client<T: ClientFormat> {
     pub client_id: u16,
@@ -77,7 +130,66 @@ pub struct Client<T: ClientFormat> {
 }
 
 impl<T: ClientFormat> Client<T> {
-    /// Connects to a specific socket address over plaintext TCP for Clickhouse.
+    /// Get an instance of [`ClientBuilder`] which allows creating a `Client` using a builder
+    /// Creates a new [`ClientBuilder`] for configuring and building a `ClickHouse` client.
+    ///
+    /// This method provides a fluent interface to set up a `Client` with custom connection
+    /// parameters, such as the server address, credentials, TLS, and compression. The
+    /// builder can create either a single [`Client`] or a connection pool (with the `pool`
+    /// feature enabled).
+    ///
+    /// Use this method when you need fine-grained control over the client configuration.
+    /// For simple connections, you can also use [`Client::connect`] directly.
+    ///
+    /// # Returns
+    /// A [`ClientBuilder`] instance ready for configuration.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let builder = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .with_username("default")
+    ///     .with_password("");
+    /// ```
+    pub fn builder() -> ClientBuilder { ClientBuilder::new() }
+
+    /// Establishes a connection to a `ClickHouse` server over TCP, with optional TLS support.
+    ///
+    /// This method creates a new [`Client`] instance connected to the specified `destination`.
+    /// The connection can be configured using [`ClientOptions`], which allows setting parameters
+    /// like username, password, TLS, and compression. Optional `settings` can be provided to
+    /// customize `ClickHouse` session behavior, and a `context` can be used for tracing or
+    /// cloud-specific configurations.
+    ///
+    /// # Parameters
+    /// - `destination`: The `ClickHouse` server address (e.g., `"localhost:9000"` or a
+    ///   [`Destination`]).
+    /// - `options`: Configuration for the connection, including credentials, TLS, and cloud
+    ///   settings.
+    /// - `settings`: Optional `ClickHouse` session settings (e.g., query timeouts, max rows).
+    /// - `context`: Optional connection context for tracing or cloud-specific behavior.
+    ///
+    /// # Returns
+    /// A [`Result`] containing the connected [`Client`] instance, or an error if the connection
+    /// fails.
+    ///
+    /// # Errors
+    /// - Fails if the destination cannot be resolved or the connection cannot be established.
+    /// - Fails if authentication or TLS setup encounters an issue.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::client::{Client, ClientOptions};
+    ///
+    /// let options = ClientOptions::default()
+    ///     .username("default")
+    ///     .password("")
+    ///     .use_tls(false);
+    ///
+    /// let client = Client::connect("localhost:9000", options, None, None).await?;
+    /// ```
     #[instrument(
         level = "debug",
         name = "clickhouse.connect",
@@ -122,42 +234,183 @@ impl<T: ClientFormat> Client<T> {
 
         let (event_tx, _) = broadcast::channel(EVENTS_CAPACITY);
         let events = Arc::new(event_tx);
+        let conn_ev = Arc::clone(&events);
 
         let conn =
-            Arc::new(connection::Connection::connect(client_id, addrs, options, trace_ctx).await?);
+            connection::Connection::connect(client_id, addrs, options, conn_ev, trace_ctx).await?;
+        let conn = Arc::new(conn);
+
         debug!("created connection successfully");
 
         Ok(Client { client_id, conn, events, settings })
     }
 
+    /// Retrieves the status of the underlying `ClickHouse` connection.
+    ///
+    /// This method returns the current [`ConnectionStatus`] of the client's connection,
+    /// indicating whether it is active, idle, or disconnected. Useful for monitoring
+    /// the health of the connection before executing queries.
+    ///
+    /// # Returns
+    /// A [`ConnectionStatus`] enum describing the connection state.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::<ArrowFormat>::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let status = client.status();
+    /// println!("Connection status: {status:?}");
+    /// ```
     pub fn status(&self) -> ConnectionStatus { self.conn.status() }
 
-    /// Receive progress and profile on queries as they execute.
+    /// Subscribes to progress and profile events from `ClickHouse` queries.
+    ///
+    /// This method returns a [`broadcast::Receiver`] that delivers [`Event`] instances
+    /// containing progress updates ([`Progress`]) or profiling information ([`ProfileEvent`])
+    /// as queries execute. Events are generated asynchronously and can be used to monitor
+    /// query execution in real time.
+    ///
+    /// # Returns
+    /// A [`broadcast::Receiver<Event>`] for receiving `ClickHouse` events.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use tokio::sync::broadcast::error::RecvError;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let mut receiver = client.subscribe_events();
+    /// let handle = tokio::spawn(async move {
+    ///     while let Ok(event) = receiver.recv().await {
+    ///         println!("Received event: {:?}", event);
+    ///     }
+    /// });
+    ///
+    /// // Execute a query to generate events
+    /// client.query("SELECT * FROM large_table").await.unwrap();
+    /// ```
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> { self.events.subscribe() }
 
-    /// Check the health of the underlying connection.
+    /// Checks the health of the underlying `ClickHouse` connection.
+    ///
+    /// This method verifies that the connection is active and responsive. If `ping` is
+    /// `true`, it sends a lightweight ping to the `ClickHouse` server to confirm
+    /// connectivity. Otherwise, it checks the connection's internal state.
+    ///
+    /// # Parameters
+    /// - `ping`: If `true`, performs an active ping to the server; if `false`, checks the
+    ///   connection state without network activity.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating whether the connection is healthy.
     ///
     /// # Errors
+    /// - Fails if the connection is disconnected or unresponsive.
+    /// - Fails if the ping operation times out or encounters a network error.
     ///
-    /// Returns an error if the health check fails.
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build::<ArrowFormat>()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// client.health_check(true).await.unwrap();
+    /// println!("Connection is healthy!");
+    /// ```
     pub async fn health_check(&self, ping: bool) -> Result<()> {
         trace!({ ATT_CID } = self.client_id, "sending health check w/ ping={ping}");
         self.conn.check_connection(ping).await
     }
 
-    /// Shutdown the client.
+    /// Shuts down the `ClickHouse` client and closes its connection.
+    ///
+    /// This method gracefully terminates the underlying connection, ensuring that any
+    /// pending operations are completed or canceled. After shutdown, the client cannot
+    /// be used for further operations.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating whether the shutdown was successful.
     ///
     /// # Errors
+    /// - Fails if the connection cannot be closed due to network issues or internal errors.
     ///
-    /// Returns an error if the shutdown fails.
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build::<ArrowFormat>()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// client.shutdown().await.unwrap();
+    /// println!("Client shut down successfully!");
+    /// ```
     pub async fn shutdown(&self) -> Result<()> {
         trace!("shutting down client");
         self.conn.shutdown().await
     }
 
-    /// Sends a query string with streaming associated data (i.e. insert) over native protocol.
-    /// Once all outgoing blocks are written (EOF of `blocks` stream), then any response blocks from
-    /// Clickhouse are read.
+    /// Inserts a block of data into `ClickHouse` using the native protocol.
+    ///
+    /// This method sends an insert query with a single block of data, formatted according to
+    /// the client's data format (`T: ClientFormat`). For [`NativeClient`], the data is a
+    /// [`Block`]; for [`ArrowClient`], it is a [`RecordBatch`]. The query is executed
+    /// asynchronously, and any response data, progress events, or errors are streamed back.
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]). The returned stream yields `()` on success or an
+    /// error if the insert fails.
+    ///
+    /// # Parameters
+    /// - `query`: The insert query (e.g., `"INSERT INTO my_table VALUES"`).
+    /// - `block`: The data to insert, in the format specified by `T` ([`Block`] or
+    ///   [`RecordBatch`]).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a stream of [`Result<()>`], where each item indicates
+    /// the success or failure of processing response data.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or the data format is invalid.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., schema mismatch).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use arrow::record_batch::RecordBatch;
+    ///
+    /// let client = Client::builder()
+    ///     .destination("localhost:9000")
+    ///     .build_arrow()
+    ///     .await?;
+    ///
+    /// let qid = Qid::new();
+    /// // Assume `batch` is a valid RecordBatch
+    /// let batch: RecordBatch = // ...;
+    /// let stream = client.insert("INSERT INTO my_table VALUES", batch, Some(qid)).await?;
+    /// while let Some(result) = stream.next().await {
+    ///     result?; // Check for errors
+    /// }
+    /// ```
     #[instrument(
         level = "trace",
         name = "clickhouse.insert",
@@ -181,32 +434,76 @@ impl<T: ClientFormat> Client<T> {
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
 
-        let response = self
-            .conn
+        self.conn
             .send_request(
-                Operation::Insert {
+                Operation::Query {
                     query,
-                    data: block,
                     settings: self.settings.clone(),
-                    metadata: tx,
+                    response: tx,
+                    header: None,
                 },
                 qid,
             )
             .await?;
 
-        let Ok(metadata) = rx.await else {
-            error!("Failed receive Header block");
-            return Err(ClickhouseNativeError::InternalChannelError);
-        };
-
-        let qid = metadata.qid;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
-        Ok(self.insert_response(response, qid))
+        let responses = rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
+        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+
+        let (tx, rx) = oneshot::channel();
+        self.conn.send_request(Operation::Insert { data: block, response: tx }, qid).await?;
+        rx.await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from insert".into()))??;
+        Ok(self.insert_response(responses, qid))
     }
 
-    /// Sends a query string with streaming associated data (i.e. insert) over native protocol.
-    /// Once all outgoing blocks are written (EOF of `blocks` stream), then any response blocks from
-    /// Clickhouse are read.
+    /// Inserts multiple blocks of data into `ClickHouse` using the native protocol.
+    ///
+    /// This method sends an insert query with a collection of data blocks, formatted
+    /// according to the client's data format (`T: ClientFormat`). For [`NativeClient`],
+    /// the data is a `Vec<Block>`; for [`ArrowClient`], it is a `Vec<RecordBatch>`.
+    /// The query is executed asynchronously, and any response data, progress events,
+    /// or errors are streamed back.
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]). The returned stream yields `()` on success or an
+    /// error if the insert fails. Use this method when inserting multiple batches of
+    /// data to reduce overhead compared to multiple [`Client::insert`] calls.
+    ///
+    /// # Parameters
+    /// - `query`: The insert query (e.g., `"INSERT INTO my_table VALUES"`).
+    /// - `batch`: A vector of data blocks to insert, in the format specified by `T`.
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a stream of [`Result<()>`], where each item indicates
+    /// the success or failure of processing response data.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or any data block is invalid.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., schema mismatch).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use arrow::record_batch::RecordBatch;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build::<ArrowFormat>()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `batches` is a Vec<RecordBatch>
+    /// let batches: Vec<RecordBatch> = vec![/* ... */];
+    /// let stream = client.insert_many("INSERT INTO my_table VALUES", batches, None).await.unwrap();
+    /// while let Some(result) = stream.next().await {
+    ///     result.unwrap(); // Check for errors
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.insert_many",
         fields(
@@ -229,34 +526,72 @@ impl<T: ClientFormat> Client<T> {
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
 
-        let response = self
-            .conn
+        self.conn
             .send_request(
-                Operation::InsertMany {
+                Operation::Query {
                     query,
-                    data: batch,
                     settings: self.settings.clone(),
-                    metadata: tx,
+                    response: tx,
+                    header: None,
                 },
                 qid,
             )
             .await?;
 
-        let Ok(metadata) = rx.await else {
-            error!("Failed receive Header block");
-            return Err(ClickhouseNativeError::InternalChannelError);
-        };
-
-        let qid = metadata.qid;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
-        Ok(self.insert_response(response, qid))
+        let responses = rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
+        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+
+        let (tx, rx) = oneshot::channel();
+        self.conn.send_request(Operation::InsertMany { data: batch, response: tx }, qid).await?;
+        rx.await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from insert".into()))??;
+        Ok(self.insert_response(responses, qid))
     }
 
-    /// Sends a query and receive data (format specific) in raw format.
+    /// Executes a raw `ClickHouse` query and streams raw data in the client's format.
+    ///
+    /// This method sends a query to `ClickHouse` and returns a stream of raw data blocks
+    /// in the format specified by `T: ClientFormat` ([`Block`] for [`NativeClient`],
+    /// [`RecordBatch`] for [`ArrowClient`]). It is a low-level method suitable for
+    /// custom processing of query results. For higher-level interfaces, consider
+    /// [`Client::query`] or [`Client::query_rows`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM my_table"`).
+    /// - `qid`: A unique query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a stream of [`Result<T::Data>`], where each item is a
+    /// data block or an error.
     ///
     /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
     ///
-    /// Returns an error if the query fails.
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build::<ArrowFormat>()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let qid = Qid::new();
+    /// let mut stream = client.query_raw("SELECT * FROM my_table", qid).await.unwrap();
+    /// while let Some(block) = stream.next().await {
+    ///     let batch = block.unwrap();
+    ///     println!("Received batch with {} rows", batch.num_rows());
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.query",
         skip_all
@@ -275,27 +610,61 @@ impl<T: ClientFormat> Client<T> {
     ) -> Result<impl Stream<Item = Result<T::Data>> + 'static> {
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
-        let response = self
-            .conn
+
+        self.conn
             .send_request(
-                Operation::Query { query, settings: self.settings.clone(), metadata: tx },
+                Operation::Query {
+                    query,
+                    settings: self.settings.clone(),
+                    response: tx,
+                    header: None,
+                },
                 qid,
             )
             .await?;
 
-        let Ok(metadata) = rx.await else {
-            error!("Failed receive Header block");
-            return Err(ClickhouseNativeError::InternalChannelError);
-        };
+        let responses = rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
+        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
 
-        let qid = metadata.qid;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
-        Ok(create_response_stream::<T>(response, Arc::clone(&self.events), qid, self.client_id))
+        Ok(create_response_stream::<T>(responses, qid, self.client_id))
     }
 
-    /// Same as `query`, but discards all returns blocks. Waits until the first block returns from
-    /// the server to check for errors. Waiting for the first response block or EOS also
-    /// prevents the server from aborting the query potentially due to client disconnection.
+    /// Executes a `ClickHouse` query and discards all returned data.
+    ///
+    /// This method sends a query to `ClickHouse` and processes the response stream to
+    /// check for errors, but discards any returned data blocks. It is useful for
+    /// queries that modify data (e.g., `INSERT`, `UPDATE`, `DELETE`) or DDL statements
+    /// where the result data is not needed. For queries that return data, use
+    /// [`Client::query`] or [`Client::query_raw`].
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"DROP TABLE my_table"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating whether the query executed successfully.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., permission denied).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// client.execute("DROP TABLE IF EXISTS my_table", None).await.unwrap();
+    /// println!("Table dropped successfully!");
+    /// ```
     #[instrument(skip_all, fields(clickhouse.client.id = self.client_id))]
     pub async fn execute(&self, query: impl Into<ParsedQuery>, qid: Option<Qid>) -> Result<()> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
@@ -307,8 +676,37 @@ impl<T: ClientFormat> Client<T> {
         Ok(())
     }
 
-    /// Same as `execute`, but doesn't wait for a server response. The query could get aborted if
-    /// the connection is closed quickly.
+    /// Executes a `ClickHouse` query without processing the response stream.
+    ///
+    /// This method sends a query to `ClickHouse` and immediately discards the response
+    /// stream without checking for errors or processing data. It is a lightweight
+    /// alternative to [`Client::execute`], suitable for fire-and-forget scenarios where
+    /// the query's outcome is not critical. For safer execution, use [`Client::execute`].
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"INSERT INTO my_table VALUES (1)"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating whether the query was sent successfully.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build::<ArrowFormat>()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// client.execute_now("INSERT INTO logs VALUES ('event')", None).await.unwrap();
+    /// println!("Log event sent!");
+    /// ```
     #[instrument(skip_all, fields(clickhouse.client.id = self.client_id))]
     pub async fn execute_now(&self, query: impl Into<ParsedQuery>, qid: Option<Qid>) -> Result<()> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
@@ -316,8 +714,36 @@ impl<T: ClientFormat> Client<T> {
         Ok(())
     }
 
-    // TODO: Support other DB engines
-    /// Issue a create DDL statement for a database
+    /// Creates a new database in `ClickHouse` using a DDL statement.
+    ///
+    /// This method issues a `CREATE DATABASE` statement for the specified database. If no
+    /// database is provided, it uses the client's default database from the connection
+    /// metadata. The `default` database cannot be created, as it is reserved by `ClickHouse`.
+    ///
+    /// # Parameters
+    /// - `database`: Optional name of the database to create. If `None`, uses the client's default
+    ///   database.
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating success or failure of the operation.
+    ///
+    /// # Errors
+    /// - Fails if the database name is invalid or reserved (e.g., `default`).
+    /// - Fails if the query execution encounters a `ClickHouse` error.
+    /// - Fails if the connection is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::client::{Client, ClientBuilder};
+    ///
+    /// let client = ClientBuilder::new()
+    ///     .destination("localhost:9000")
+    ///     .build_native()
+    ///     .await?;
+    ///
+    /// client.create_database(Some("my_db"), None).await?;
+    /// ```
     #[instrument(
         name = "clickhouse.create_database",
         skip_all
@@ -336,7 +762,39 @@ impl<T: ClientFormat> Client<T> {
         Ok(())
     }
 
-    /// Issue a drop DDL statement for a database
+    /// Drops a database in `ClickHouse` using a DDL statement.
+    ///
+    /// This method issues a `DROP DATABASE` statement for the specified database. The
+    /// `default` database cannot be dropped, as it is reserved by `ClickHouse`. If the client
+    /// is connected to a non-default database, dropping a different database is not allowed
+    /// to prevent accidental data loss.
+    ///
+    /// # Parameters
+    /// - `database`: Name of the database to drop.
+    /// - `sync`: If `true`, the operation waits for `ClickHouse` to complete the drop
+    ///   synchronously.
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating success or failure of the operation.
+    ///
+    /// # Errors
+    /// - Fails if the database is `default` (reserved).
+    /// - Fails if the client is connected to a non-default database different from `database`.
+    /// - Fails if the query execution encounters a `ClickHouse` error.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .destination("localhost:9000")
+    ///     .database("default") // Must be connected to default to drop 'other' databases
+    ///     .build::<NativeFormat>()
+    ///     .await?;
+    ///
+    /// client.drop_database("my_db", true, None).await?;
+    /// ```
     #[instrument(
         name = "clickhouse.drop_database",
         skip_all
@@ -357,7 +815,7 @@ impl<T: ClientFormat> Client<T> {
             && current_database != database
         {
             error!("Cannot drop database {database} while connected to {current_database}");
-            return Err(ClickhouseNativeError::InsufficientDDLScope(current_database.into()));
+            return Err(Error::InsufficientDDLScope(current_database.into()));
         }
 
         let stmt = drop_db_statement(&database, sync)?;
@@ -367,6 +825,8 @@ impl<T: ClientFormat> Client<T> {
 }
 
 impl<T: ClientFormat> Client<T> {
+    /// # Feature
+    /// Requires the `cloud` feature to be enabled.
     #[cfg(feature = "cloud")]
     #[instrument(level = "trace", name = "clickhouse.cloud.ping")]
     async fn ping_cloud(domain: &str, timeout: Option<u64>, track: Option<&AtomicBool>) {
@@ -381,22 +841,58 @@ impl<T: ClientFormat> Client<T> {
 
     fn insert_response(
         &self,
-        rx: mpsc::Receiver<Response<T::Data>>,
+        rx: mpsc::Receiver<Result<T::Data>>,
         qid: Qid,
     ) -> ClickhouseResponse<()> {
-        ClickhouseResponse::<()>::from_stream(handle_insert_response::<T>(
-            rx,
-            Arc::clone(&self.events),
-            qid,
-            self.client_id,
-        ))
+        ClickhouseResponse::<()>::from_stream(handle_insert_response::<T>(rx, qid, self.client_id))
     }
 }
 
 impl Client<NativeFormat> {
-    /// Sends a query string with streaming associated data (i.e. insert) over native protocol.
-    /// Once all outgoing blocks are written (EOF of `blocks` stream), then any response blocks
-    /// Clickhouse are read.
+    /// Inserts rows into `ClickHouse` using the native protocol.
+    ///
+    /// This method sends an insert query with a collection of rows, where each row is
+    /// a type `T` implementing [`Row`]. The rows are converted into a `ClickHouse`
+    /// [`Block`] and sent over the native protocol. The query is executed asynchronously,
+    /// and any response data, progress events, or errors are streamed back.
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]). The returned [`ClickhouseResponse`] yields `()`
+    /// on success or an error if the insert fails.
+    ///
+    /// # Parameters
+    /// - `query`: The insert query (e.g., `"INSERT INTO my_table VALUES"`).
+    /// - `blocks`: An iterator of rows to insert, where each row implements [`Row`].
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`ClickhouseResponse<()>`] that streams the operation's
+    /// outcome.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or the row data is invalid.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., schema mismatch).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_native()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `MyRow` implements `Row`
+    /// let rows = vec![MyRow { /* ... */ }, MyRow { /* ... */ }];
+    /// let response = client.insert_rows("INSERT INTO my_table VALUES", rows.into_iter(), None)
+    ///     .await
+    ///     .unwrap();
+    /// while let Some(result) = response.next().await {
+    ///     result.unwrap(); // Check for errors
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.insert_rows",
         fields(
@@ -414,47 +910,85 @@ impl Client<NativeFormat> {
         blocks: impl Iterator<Item = T> + Send + Sync + 'static,
         qid: Option<Qid>,
     ) -> Result<ClickhouseResponse<()>> {
-        let (query, qid) = record_query(qid, query.into(), self.client_id);
+        let cid = self.client_id;
+        let (query, qid) = record_query(qid, query.into(), cid);
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
-        let get_data =
-            Box::new(move |h: Vec<(String, crate::Type)>| Block::from_rows(blocks.collect(), h));
+        let (header_tx, header_rx) = oneshot::channel();
 
-        let response = self
-            .conn
+        self.conn
             .send_request(
-                Operation::InsertRows {
+                Operation::Query {
                     query,
-                    get_data,
                     settings: self.settings.clone(),
-                    metadata: tx,
+                    response: tx,
+                    header: Some(header_tx),
                 },
                 qid,
             )
             .await?;
 
-        let metadata = rx.await.map_err(|_| ClickhouseNativeError::InternalChannelError);
-
-        let Ok(qid) = metadata.map(|m| m.qid) else {
-            return Err(ClickhouseNativeError::InternalChannelError);
-        };
-
-        let cid = self.client_id;
         trace!({ ATT_CID } = cid, { ATT_QID } = %qid, "sent query, awaiting response");
+        let responses = rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
+        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
 
-        let stream = handle_insert_response::<NativeFormat>(
-            response,
-            Arc::clone(&self.events),
-            qid,
-            self.client_id,
-        );
-        Ok(ClickhouseResponse::<()>::new(Box::pin(stream)))
+        let header = header_rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive header from query".into()))?;
+        let data = Block::from_rows(blocks.collect(), header)?;
+
+        let (tx, rx) = oneshot::channel();
+        self.conn.send_request(Operation::Insert { data, response: tx }, qid).await?;
+        rx.await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from insert".into()))??;
+
+        Ok(self.insert_response(responses, qid))
     }
 
-    /// Runs a query against Clickhouse, returning a stream of deserialized rows.
-    /// Note that no rows are returned until Clickhouse sends a full block (but it usually sends
-    /// more than one block).
+    /// Executes a `ClickHouse` query and streams deserialized rows.
+    ///
+    /// This method sends a query to `ClickHouse` and returns a stream of rows, where
+    /// each row is deserialized into type `T` implementing [`Row`]. Rows are grouped
+    /// into `ClickHouse` blocks, and the stream yields rows as they are received. Use
+    /// this method for type-safe access to query results in native format.
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM my_table"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`ClickhouseResponse<T>`] that streams deserialized
+    /// rows of type `T`.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if row deserialization fails (e.g., schema mismatch).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_native()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `MyRow` implements `Row`
+    /// let mut response = client.query::<MyRow>("SELECT * FROM my_table", None).await.unwrap();
+    /// while let Some(row) = response.next().await {
+    ///     let row = row.unwrap();
+    ///     println!("Row: {:?}", row);
+    /// }
+    /// ```
     #[instrument(skip_all, fields(db.system = "clickhouse", db.operation = "query"))]
     pub async fn query<T: Row + Send + 'static>(
         &self,
@@ -478,7 +1012,48 @@ impl Client<NativeFormat> {
         }))))
     }
 
-    /// Same as `query`, but returns the first row and discards the rest.
+    /// Executes a `ClickHouse` query and returns the first row, discarding the rest.
+    ///
+    /// This method sends a query to `ClickHouse` and returns the first row deserialized
+    /// into type `T` implementing [`Row`], or `None` if the result is empty. It is
+    /// useful for queries expected to return a single row (e.g., `SELECT COUNT(*)`).
+    /// For streaming multiple rows, use [`Client::query`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT name FROM users WHERE id = 1"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing an `Option<T>`, where `T` is the deserialized row, or
+    /// `None` if no rows are returned.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if row deserialization fails (e.g., schema mismatch).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_native()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `MyRow` implements `Row`
+    /// let row = client.query_one::<MyRow>("SELECT name FROM users WHERE id = 1", None)
+    ///     .await
+    ///     .unwrap();
+    /// if let Some(row) = row {
+    ///     println!("Found row: {:?}", row);
+    /// }
+    /// ```
     #[instrument(skip_all, fields(db.system = "clickhouse", db.operation = "query"))]
     pub async fn query_one<T: Row + Send + 'static>(
         &self,
@@ -514,9 +1089,45 @@ impl Client<NativeFormat> {
 }
 
 impl Client<ArrowFormat> {
-    // TODO: As a convenience, add a method to go from T: Row to RecordBatch for inserts
-
-    /// Runs a query against Clickhouse, returning a stream of [`RecordBatch`].
+    // Executes a `ClickHouse` query and streams Arrow [`RecordBatch`] results.
+    ///
+    /// This method sends a query to `ClickHouse` and returns a stream of [`RecordBatch`]
+    /// instances, each containing a chunk of the query results in Apache Arrow format.
+    /// Use this method for efficient integration with Arrow-based data processing
+    /// pipelines. For row-based access, consider [`Client::query_rows`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM my_table"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`ClickhouseResponse<RecordBatch>`] that streams
+    /// query results.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let mut response = client.query("SELECT * FROM my_table", None).await.unwrap();
+    /// while let Some(batch) = response.next().await {
+    ///     let batch = batch.unwrap();
+    ///     println!("Received batch with {} rows", batch.num_rows());
+    /// }
+    /// ```
     #[instrument(
         skip_all,
         fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
@@ -530,7 +1141,45 @@ impl Client<ArrowFormat> {
         Ok(ClickhouseResponse::new(Box::pin(self.query_raw(query, qid).await?)))
     }
 
-    /// Same as `query`, but returns rows transposed to columns and wrapped in internal types
+    /// Executes a `ClickHouse` query and streams rows as column-major values.
+    ///
+    /// This method sends a query to `ClickHouse` and returns a stream of rows, where
+    /// each row is represented as a `Vec<Value>` containing column values. The data is
+    /// transposed from Arrow [`RecordBatch`] format to row-major format, making it
+    /// convenient for row-based processing. For direct Arrow access, use
+    /// [`Client::query`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM my_table"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`ClickhouseResponse<Vec<Value>>`] that streams rows.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let mut response = client.query_rows("SELECT * FROM my_table", None).await.unwrap();
+    /// while let Some(row) = response.next().await {
+    ///     let row = row.unwrap();
+    ///     println!("Row values: {:?}", row);
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.query_rows",
         fields(
@@ -551,40 +1200,82 @@ impl Client<ArrowFormat> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
-        let response = self
-            .conn
+        let (header_tx, header_rx) = oneshot::channel();
+
+        self.conn
             .send_request(
-                Operation::Query { query, settings: self.settings.clone(), metadata: tx },
+                Operation::Query {
+                    query,
+                    settings: self.settings.clone(),
+                    response: tx,
+                    header: Some(header_tx),
+                },
                 qid,
             )
             .await?;
 
-        let Ok(metadata) = rx.await else {
-            error!("Failed receive Header block");
-            return Err(ClickhouseNativeError::InternalChannelError);
-        };
-
-        let qid = metadata.qid;
-        let header = metadata.header;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
-        let response = create_response_stream::<ArrowFormat>(
-            response,
-            Arc::clone(&self.events),
-            qid,
-            self.client_id,
-        )
-        .map(move |batch| (header.clone(), batch))
-        .map(|(header, batch)| {
-            let batch = batch?;
-            let batch_iter = batch_to_rows(&batch, header.as_deref())?;
-            Ok::<_, ClickhouseNativeError>(stream::iter(batch_iter))
-        })
-        .try_flatten();
+        let responses = rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
+        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+
+        let header = header_rx
+            .await
+            .map_err(|_| Error::ProtocolError("Failed to receive header from query".into()))?;
+
+        let response = create_response_stream::<ArrowFormat>(responses, qid, self.client_id)
+            .map(move |batch| (header.clone(), batch))
+            .map(|(header, batch)| {
+                let batch = batch?;
+                let batch_iter = batch_to_rows(&batch, Some(&header))?;
+                Ok::<_, Error>(stream::iter(batch_iter))
+            })
+            .try_flatten();
 
         Ok(ClickhouseResponse::from_stream(response))
     }
 
-    /// Same as `query`, but returns a column of data
+    /// Executes a `ClickHouse` query and returns the first column of the first batch.
+    ///
+    /// This method sends a query to `ClickHouse` and returns the first column of the
+    /// first [`RecordBatch`] as an Arrow [`ArrayRef`], or `None` if the result is empty.
+    /// It is useful for queries that return a single column (e.g., `SELECT id FROM
+    /// my_table`). For full batch access, use [`Client::query`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT id FROM my_table"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing an `Option<ArrayRef>`, representing the first column of
+    /// the first batch, or `None` if no data is returned.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let column = client.query_column("SELECT id FROM my_table", None)
+    ///     .await
+    ///     .unwrap();
+    /// if let Some(col) = column {
+    ///     println!("Column data: {:?}", col);
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.query_column",
         skip_all,
@@ -603,7 +1294,47 @@ impl Client<ArrowFormat> {
         if batch.num_rows() == 0 { Ok(None) } else { Ok(Some(Arc::clone(batch.column(0)))) }
     }
 
-    /// Same as `query`, but returns the first row and discards the rest.
+    /// Executes a `ClickHouse` query and returns the first row as a [`RecordBatch`].
+    ///
+    /// This method sends a query to `ClickHouse` and returns the first row of the first
+    /// [`RecordBatch`], or `None` if the result is empty. The returned [`RecordBatch`]
+    /// contains a single row. It is useful for queries expected to return a single row
+    /// (e.g., `SELECT * FROM users WHERE id = 1`). For streaming multiple rows, use
+    /// [`Client::query`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM users WHERE id = 1"`).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing an `Option<RecordBatch>`, representing the first row, or
+    /// `None` if no rows are returned.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let batch = client.query_one("SELECT * FROM users WHERE id = 1", None)
+    ///     .await
+    ///     .unwrap();
+    /// if let Some(row) = batch {
+    ///     println!("Row data: {:?}", row);
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.query_one",
         skip_all
@@ -628,11 +1359,35 @@ impl Client<ArrowFormat> {
         }
     }
 
-    /// Fetch schemas (databases)
+    /// Fetches the list of database names (schemas) in `ClickHouse`.
+    ///
+    /// This method queries `ClickHouse` to retrieve the names of all databases
+    /// accessible to the client. It is useful for exploring the database structure or
+    /// validating database existence before performing operations.
+    ///
+    /// # Parameters
+    /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
+    /// A [`Result`] containing a `Vec<String>` of database names.
     ///
-    /// A `Vec` of database names
+    /// # Errors
+    /// - Fails if the query execution encounters a `ClickHouse` error (e.g., permission denied).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let schemas = client.fetch_schemas(None).await.unwrap();
+    /// println!("Databases: {:?}", schemas);
+    /// ```
     #[instrument(
         name = "clickhouse.fetch_schemas",
         skip_all
@@ -642,11 +1397,38 @@ impl Client<ArrowFormat> {
         crate::arrow::schema::fetch_databases(self, qid).await
     }
 
-    /// Fetch all tables
+    /// Fetches all tables across all databases in `ClickHouse`.
+    ///
+    /// This method queries `ClickHouse` to retrieve a mapping of database names to
+    /// their table names. It is useful for discovering the full schema structure of
+    /// the `ClickHouse` instance.
+    ///
+    /// # Parameters
+    /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
+    /// A [`Result`] containing a `HashMap<String, Vec<String>>`, where each key is a
+    /// database name and the value is a list of table names in that database.
     ///
-    /// A `HashMap` of database names to table names
+    /// # Errors
+    /// - Fails if the query execution encounters a `ClickHouse` error (e.g., permission denied).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let tables = client.fetch_all_tables(None).await.unwrap();
+    /// for (db, tables) in tables {
+    ///     println!("Database {} has tables: {:?}", db, tables);
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.fetch_all_tables",
         skip_all
@@ -656,11 +1438,37 @@ impl Client<ArrowFormat> {
         crate::arrow::schema::fetch_all_tables(self, qid).await
     }
 
-    /// Fetch tables
+    /// Fetches the list of table names in a specific `ClickHouse` database.
+    ///
+    /// This method queries `ClickHouse` to retrieve the names of all tables in the
+    /// specified database (or the client's default database if `None`). It is useful
+    /// for exploring the schema of a specific database.
+    ///
+    /// # Parameters
+    /// - `database`: Optional database name. If `None`, uses the client's default database.
+    /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
+    /// A [`Result`] containing a `Vec<String>` of table names.
     ///
-    /// A `Vec` of table names
+    /// # Errors
+    /// - Fails if the database does not exist or is inaccessible.
+    /// - Fails if the query execution encounters a `ClickHouse` error (e.g., permission denied).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let tables = client.fetch_tables(Some("my_db"), None).await.unwrap();
+    /// println!("Tables in my_db: {:?}", tables);
+    /// ```
     #[instrument(
         name = "clickhouse.fetch_tables",
         skip_all
@@ -675,12 +1483,44 @@ impl Client<ArrowFormat> {
         crate::arrow::schema::fetch_tables(self, database, qid).await
     }
 
-    /// Fetch schemas providing a list of tables to filter on. An empty list will fetch all
-    /// schemas.
+    /// Fetches the schema of specified tables in a `ClickHouse` database.
+    ///
+    /// This method queries `ClickHouse` to retrieve the Arrow schemas of the specified
+    /// tables in the given database (or the client's default database if `None`). If
+    /// the `tables` list is empty, it fetches schemas for all tables in the database.
+    /// The result is a mapping of table names to their corresponding Arrow [`SchemaRef`].
+    ///
+    /// # Parameters
+    /// - `database`: Optional database name. If `None`, uses the client's default database.
+    /// - `tables`: A list of table names to fetch schemas for. An empty list fetches all tables.
+    /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
+    /// A [`Result`] containing a `HashMap<String, SchemaRef>`, mapping table names to
+    /// their schemas.
     ///
-    /// A `HashMap` mapping table names to their corresponding schema.
+    /// # Errors
+    /// - Fails if the database or any table does not exist or is inaccessible.
+    /// - Fails if the query execution encounters a `ClickHouse` error (e.g., permission denied).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let schemas = client.fetch_schema(Some("my_db"), &["my_table"], None)
+    ///     .await
+    ///     .unwrap();
+    /// for (table, schema) in schemas {
+    ///     println!("Table {} schema: {:?}", table, schema);
+    /// }
+    /// ```
     #[instrument(
         name = "clickhouse.fetch_schema",
         skip_all
@@ -697,7 +1537,47 @@ impl Client<ArrowFormat> {
         crate::arrow::schema::fetch_schema(self, database, tables, qid, options).await
     }
 
-    /// Issue a create DDL statement for a table
+    /// Issues a `CREATE TABLE` DDL statement for a table using Arrow schema.
+    ///
+    /// Creates a table in the specified database (or the client's default database if
+    /// `None`) based on the provided Arrow [`SchemaRef`]. The `options` parameter allows
+    /// customization of table properties, such as engine type and partitioning. This
+    /// method is specific to [`ArrowClient`] for seamless integration with Arrow-based
+    /// data pipelines.
+    ///
+    /// # Parameters
+    /// - `database`: Optional database name. If `None`, uses the client's default database.
+    /// - `table`: Name of the table to create.
+    /// - `schema`: The Arrow schema defining the table's structure.
+    /// - `options`: Configuration for table creation (e.g., engine, partitioning).
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating success or failure of the operation.
+    ///
+    /// # Errors
+    /// - Fails if the provided schema is invalid or incompatible with `ClickHouse`.
+    /// - Fails if the database does not exist or is inaccessible.
+    /// - Fails if the query execution encounters a `ClickHouse` error.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use arrow::datatypes::{Schema, SchemaRef};
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `schema` is a valid Arrow schema
+    /// let schema: SchemaRef = Arc::new(Schema::new(vec![/* ... */]));
+    /// let options = CreateOptions::default();
+    /// client.create_table(Some("my_db"), "my_table", &schema, &options, None)
+    ///     .await
+    ///     .unwrap();
+    /// ```
     #[instrument(
         name = "clickhouse.create_table",
         skip_all

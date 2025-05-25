@@ -39,3 +39,33 @@ variant_size_differences = "warn"
 
 # Running collection of lints I find quite absurd, but alas it is pedantic
 # naive_bytecount = "allow"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = "full"
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+opt-level = 3
+codegen-units = 1
+
+[profile.instruments]
+inherits = "release"
+debug = "full"
+lto = "off"
+codegen-units = 16       # default
+opt-level = 2
+debug-assertions = false
+incremental = false
+
+[profile.release-lto.package."*"]
+inherits = "release"
+opt-level = 3
+codegen-units = 1
+
+[profile.release-with-debug.package."*"]
+debug = "full"
+
+[profile.instruments.package."*"]
+debug = "full"

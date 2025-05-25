@@ -18,7 +18,7 @@ macro_rules! parse_enum_options {
     ($opt_str:expr, $num_type:ty) => {{
         fn inner_parse(input: &str) -> Result<Vec<(String, $num_type)>> {
             if !input.starts_with('(') || !input.ends_with(')') {
-                return Err(ClickhouseNativeError::TypeParseError(
+                return Err(Error::TypeParseError(
                     "Enum arguments must be enclosed in parentheses".to_string(),
                 ));
             }
@@ -40,7 +40,7 @@ macro_rules! parse_enum_options {
                         if ch == '\'' {
                             state = EnumParseState::InName;
                         } else if !ch.is_whitespace() {
-                            return Err(ClickhouseNativeError::TypeParseError(format!(
+                            return Err(Error::TypeParseError(format!(
                                 "Expected single quote at start of variant name, found '{}'",
                                 ch
                             )));
@@ -62,7 +62,7 @@ macro_rules! parse_enum_options {
                         if ch == '=' {
                             state = EnumParseState::InValue;
                         } else if !ch.is_whitespace() {
-                            return Err(ClickhouseNativeError::TypeParseError(format!(
+                            return Err(Error::TypeParseError(format!(
                                 "Expected '=' after variant name, found '{}'",
                                 ch
                             )));
@@ -71,9 +71,7 @@ macro_rules! parse_enum_options {
                     EnumParseState::InValue => {
                         if ch == ',' {
                             let parsed_value = value.parse::<$num_type>().map_err(|e| {
-                                ClickhouseNativeError::TypeParseError(format!(
-                                    "Invalid enum value '{value}': {e}"
-                                ))
+                                Error::TypeParseError(format!("Invalid enum value '{value}': {e}"))
                             })?;
                             options.push((name, parsed_value));
                             name = String::new();
@@ -89,19 +87,17 @@ macro_rules! parse_enum_options {
             match state {
                 EnumParseState::InValue if !value.is_empty() => {
                     let parsed_value = value.parse::<$num_type>().map_err(|e| {
-                        ClickhouseNativeError::TypeParseError(format!(
-                            "Invalid enum value '{value}': {e}"
-                        ))
+                        Error::TypeParseError(format!("Invalid enum value '{value}': {e}"))
                     })?;
                     options.push((name, parsed_value));
                 }
                 EnumParseState::ExpectQuote if !input.is_empty() => {
-                    return Err(ClickhouseNativeError::TypeParseError(
+                    return Err(Error::TypeParseError(
                         "Expected enum variant, found end of input".to_string(),
                     ));
                 }
                 EnumParseState::InName | EnumParseState::ExpectEqual => {
-                    return Err(ClickhouseNativeError::TypeParseError(
+                    return Err(Error::TypeParseError(
                         "Incomplete enum variant at end of input".to_string(),
                     ));
                 }
@@ -109,9 +105,7 @@ macro_rules! parse_enum_options {
             }
 
             if input.ends_with(',') {
-                return Err(ClickhouseNativeError::TypeParseError(
-                    "Trailing comma in enum variants".to_string(),
-                ));
+                return Err(Error::TypeParseError("Trailing comma in enum variants".to_string()));
             }
 
             Ok(options)
@@ -132,16 +126,14 @@ enum EnumParseState {
 }
 
 impl FromStr for Type {
-    type Err = ClickhouseNativeError;
+    type Err = Error;
 
     #[expect(clippy::too_many_lines)]
     fn from_str(s: &str) -> Result<Self> {
         let (ident, following) = eat_identifier(s);
 
         if ident.is_empty() {
-            return Err(ClickhouseNativeError::TypeParseError(format!(
-                "invalid empty identifier for type: '{s}'"
-            )));
+            return Err(Error::TypeParseError(format!("invalid empty identifier for type: '{s}'")));
         }
 
         let following = following.trim();
@@ -150,7 +142,7 @@ impl FromStr for Type {
                 "Decimal" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if count != 2 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Decimal expects 2 args, got {count}: {args:?}"
                         )));
                     }
@@ -162,7 +154,7 @@ impl FromStr for Type {
                         || (p <= 38 && s > 38)
                         || (p <= 76 && s > 76)
                     {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for precision {p}"
                         )));
                     }
@@ -175,7 +167,7 @@ impl FromStr for Type {
                     } else if p <= 76 {
                         Type::Decimal256(s)
                     } else {
-                        return Err(ClickhouseNativeError::TypeParseError(
+                        return Err(Error::TypeParseError(
                             "bad decimal spec, cannot exceed 76 precision".to_string(),
                         ));
                     }
@@ -183,13 +175,13 @@ impl FromStr for Type {
                 "Decimal32" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "bad arg count for Decimal32, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: usize = parse_scale(args[0])?;
                     if s == 0 || s > 9 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal32, must be 1..=9"
                         )));
                     }
@@ -198,13 +190,13 @@ impl FromStr for Type {
                 "Decimal64" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "bad arg count for Decimal64, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: usize = parse_scale(args[0])?;
                     if s == 0 || s > 18 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal64, must be 1..=18"
                         )));
                     }
@@ -213,13 +205,13 @@ impl FromStr for Type {
                 "Decimal128" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "bad arg count for Decimal128, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: usize = parse_scale(args[0])?;
                     if s == 0 || s > 38 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal128, must be 1..=38"
                         )));
                     }
@@ -228,13 +220,13 @@ impl FromStr for Type {
                 "Decimal256" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "bad arg count for Decimal256, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: usize = parse_scale(args[0])?;
                     if s == 0 || s > 76 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal256, must be 1..=76"
                         )));
                     }
@@ -243,13 +235,13 @@ impl FromStr for Type {
                 "FixedString" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "bad arg count for FixedString, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: usize = parse_scale(args[0])?;
                     if s == 0 {
-                        return Err(ClickhouseNativeError::TypeParseError(
+                        return Err(Error::TypeParseError(
                             "FixedString size must be greater than 0".to_string(),
                         ));
                     }
@@ -258,7 +250,7 @@ impl FromStr for Type {
                 "DateTime" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count > 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "DateTime expects 0 or 1 arg: {args:?}"
                         )));
                     }
@@ -267,12 +259,12 @@ impl FromStr for Type {
                     } else {
                         let tz_str = args[0];
                         if !tz_str.starts_with('\'') || !tz_str.ends_with('\'') {
-                            return Err(ClickhouseNativeError::TypeParseError(format!(
+                            return Err(Error::TypeParseError(format!(
                                 "DateTime timezone must be quoted: '{tz_str}'"
                             )));
                         }
                         let tz = tz_str[1..tz_str.len() - 1].parse().map_err(|e| {
-                            ClickhouseNativeError::TypeParseError(format!(
+                            Error::TypeParseError(format!(
                                 "failed to parse timezone '{tz_str}': {e}"
                             ))
                         })?;
@@ -282,7 +274,7 @@ impl FromStr for Type {
                 "DateTime64" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if !(1..=2).contains(&count) {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "DateTime64 expects 1 or 2 args, got {count}: {args:?}"
                         )));
                     }
@@ -290,12 +282,12 @@ impl FromStr for Type {
                     let tz = if count == 2 {
                         let tz_str = args[1];
                         if !tz_str.starts_with('\'') || !tz_str.ends_with('\'') {
-                            return Err(ClickhouseNativeError::TypeParseError(format!(
+                            return Err(Error::TypeParseError(format!(
                                 "DateTime64 timezone must be quoted: '{tz_str}'"
                             )));
                         }
                         tz_str[1..tz_str.len() - 1].parse().map_err(|e| {
-                            ClickhouseNativeError::TypeParseError(format!(
+                            Error::TypeParseError(format!(
                                 "failed to parse timezone '{tz_str}': {e}"
                             ))
                         })?
@@ -309,7 +301,7 @@ impl FromStr for Type {
                 "LowCardinality" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "LowCardinality expected 1 arg and got {count}: {args:?}"
                         )));
                     }
@@ -318,7 +310,7 @@ impl FromStr for Type {
                 "Array" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Array expected 1 arg and got {count}: {args:?}"
                         )));
                     }
@@ -333,7 +325,7 @@ impl FromStr for Type {
                 "Nullable" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Nullable expects 1 arg: {args:?}"
                         )));
                     }
@@ -342,7 +334,7 @@ impl FromStr for Type {
                 "Map" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if count != 2 {
-                        return Err(ClickhouseNativeError::TypeParseError(format!(
+                        return Err(Error::TypeParseError(format!(
                             "Map expects 2 args, got {count}: {args:?}"
                         )));
                     }
@@ -353,12 +345,10 @@ impl FromStr for Type {
                 }
                 // Unsupported
                 "Nested" => {
-                    return Err(ClickhouseNativeError::TypeParseError(
-                        "unsupported Nested type".to_string(),
-                    ));
+                    return Err(Error::TypeParseError("unsupported Nested type".to_string()));
                 }
                 id => {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "invalid type with arguments: '{ident}' (ident = {id})"
                     )));
                 }
@@ -394,9 +384,7 @@ impl FromStr for Type {
             "MultiPolygon" => Type::MultiPolygon,
             "Object" | "Json" | "OBJECT" | "JSON" => Type::Object,
             _ => {
-                return Err(ClickhouseNativeError::TypeParseError(format!(
-                    "invalid type name: '{ident}'"
-                )));
+                return Err(Error::TypeParseError(format!("invalid type name: '{ident}'")));
             }
         })
     }
@@ -427,7 +415,7 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 
     // Check for excess arguments
     if iter.next().is_some() {
-        return Err(ClickhouseNativeError::TypeParseError("too many arguments".to_string()));
+        return Err(Error::TypeParseError("too many arguments".to_string()));
     }
     Ok((out, count))
 }
@@ -436,29 +424,21 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 fn parse_variable_args(input: &str) -> Result<Vec<&str>> { parse_args_iter(input)?.collect() }
 
 fn parse_scale(from: &str) -> Result<usize> {
-    from.parse()
-        .map_err(|_| ClickhouseNativeError::TypeParseError("couldn't parse scale".to_string()))
+    from.parse().map_err(|_| Error::TypeParseError("couldn't parse scale".to_string()))
 }
 
 fn parse_precision(from: &str) -> Result<usize> {
-    from.parse()
-        .map_err(|_| ClickhouseNativeError::TypeParseError("could not parse precision".to_string()))
+    from.parse().map_err(|_| Error::TypeParseError("could not parse precision".to_string()))
 }
 
 /// Core iterator for parsing comma-separated arguments within parentheses
-fn parse_args_iter(
-    input: &str,
-) -> Result<impl Iterator<Item = Result<&str, ClickhouseNativeError>>> {
+fn parse_args_iter(input: &str) -> Result<impl Iterator<Item = Result<&str, Error>>> {
     if !input.starts_with('(') || !input.ends_with(')') {
-        return Err(ClickhouseNativeError::TypeParseError(
-            "Malformed arguments to type".to_string(),
-        ));
+        return Err(Error::TypeParseError("Malformed arguments to type".to_string()));
     }
     let input = input[1..input.len() - 1].trim();
     if input.ends_with(',') {
-        return Err(ClickhouseNativeError::TypeParseError(
-            "Trailing comma in argument list".to_string(),
-        ));
+        return Err(Error::TypeParseError("Trailing comma in argument list".to_string()));
     }
 
     Ok(ArgsIterator { input, last_start: 0, in_parens: 0, in_quotes: false, done: false })
@@ -473,7 +453,7 @@ struct ArgsIterator<'a> {
 }
 
 impl<'a> Iterator for ArgsIterator<'a> {
-    type Item = Result<&'a str, ClickhouseNativeError>;
+    type Item = Result<&'a str, Error>;
 
     #[allow(unused_assignments)]
     fn next(&mut self) -> Option<Self::Item> {
@@ -508,7 +488,7 @@ impl<'a> Iterator for ArgsIterator<'a> {
                 ',' if self.in_parens == 0 => {
                     let slice = self.input[self.last_start..i].trim();
                     if slice.is_empty() {
-                        return Some(Err(ClickhouseNativeError::TypeParseError(
+                        return Some(Err(Error::TypeParseError(
                             "Empty argument in list".to_string(),
                         )));
                     }
@@ -522,9 +502,7 @@ impl<'a> Iterator for ArgsIterator<'a> {
 
         if self.in_parens != 0 {
             self.done = true;
-            return Some(Err(ClickhouseNativeError::TypeParseError(
-                "Mismatched parentheses".to_string(),
-            )));
+            return Some(Err(Error::TypeParseError("Mismatched parentheses".to_string())));
         }
         if self.last_start <= self.input.len() {
             let slice = self.input[self.last_start..].trim();
@@ -534,7 +512,7 @@ impl<'a> Iterator for ArgsIterator<'a> {
             }
             if slice == "," {
                 self.done = true;
-                return Some(Err(ClickhouseNativeError::TypeParseError(
+                return Some(Err(Error::TypeParseError(
                     "Trailing comma in argument list".to_string(),
                 )));
             }

@@ -1,9 +1,9 @@
 use clickhouse_native::prelude::*;
+use clickhouse_native::test_utils::ClickHouseContainer;
 use clickhouse_native::{CompressionMethod, CreateOptions, Result as ClickHouseResult};
 use futures_util::StreamExt;
 use tracing::debug;
 
-use crate::common::docker::ClickHouseContainer;
 use crate::common::header;
 use crate::common::native_helpers::*;
 

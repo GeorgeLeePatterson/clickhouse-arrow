@@ -6,15 +6,15 @@ ClickHouse access in rust over ClickHouse's native protocol.
 
 The crate supports two "modes" of operation:
 
-### `ArrowFormat` 
+### `ArrowFormat`
 
 Support allowing interoperability with [arrow](https://docs.rs/arrow/latest/arrow/).
 
 ### `NativeFormat`
 
-Uses internal types and custom traits if a dependency on arrow is not required. 
+Uses internal types and custom traits if a dependency on arrow is not required.
 
-> [!NOTE] I am considering on putting arrow behind a feature flag for a subset of features without arrow dependencies. If that sounds interesting to you, let me know. 
+> [!NOTE] I am considering putting arrow behind a feature flag to provide a subset of features without arrow dependencies. If that sounds interesting to you, let me know.
 
 ## Queries
 
@@ -24,7 +24,7 @@ The `clickhouse_native::query::settings` module allows configuring ClickHouse qu
 
 ## Arrow Round-Trip
 
-There are cases where a round trip may deserialize a different type by schema or array than the schema and array you used to create the table. 
+There are cases where a round trip may deserialize a different type by schema or array than the schema and array you used to create the table.
 
  will try to maintain an accurate and updated list as they occur. In addition, when possible, I will provide options or other functionality to alter this behavior.
 

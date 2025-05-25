@@ -3,14 +3,12 @@ use std::num::TryFromIntError;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 
-use thiserror::Error;
-
 use crate::Type;
 use crate::native::ServerError;
 
 /// Represents various library errors
-#[derive(Error, Debug)]
-pub enum ClickhouseNativeError {
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -26,8 +24,6 @@ pub enum ClickhouseNativeError {
     MalformedConnectionInformation(String),
     #[error("duplicate field {0} in struct")]
     DuplicateField(&'static str),
-    #[error("insert block retry")]
-    InsertBlockRetry(crate::native::block::Block),
     #[error("protocol error: {0}")]
     ProtocolError(String),
     #[error("Internal channel closed")]
@@ -104,19 +100,15 @@ pub enum ClickhouseNativeError {
     ArrowUnsupportedType(String),
 }
 
-impl ClickhouseNativeError {
+impl Error {
     #[must_use]
     pub fn with_column_name(self, name: &'static str) -> Self {
         match self {
-            ClickhouseNativeError::DeserializeError(e) => {
-                ClickhouseNativeError::DeserializeErrorWithColumn(name, e)
-            }
-            ClickhouseNativeError::UnexpectedType(e) => {
-                ClickhouseNativeError::UnexpectedTypeWithColumn(Cow::Borrowed(name), e)
-            }
+            Error::DeserializeError(e) => Error::DeserializeErrorWithColumn(name, e),
+            Error::UnexpectedType(e) => Error::UnexpectedTypeWithColumn(Cow::Borrowed(name), e),
             x => x,
         }
     }
 }
 
-pub type Result<T, E = ClickhouseNativeError> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;

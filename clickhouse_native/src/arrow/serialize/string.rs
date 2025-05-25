@@ -1,7 +1,7 @@
 use arrow::array::*;
 
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Serializes an Arrow array to ClickHouse’s native format for string or binary types.
 ///
@@ -19,7 +19,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - `writer`: The async writer to serialize to (e.g., a TCP stream).
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if the `type_hint` is unsupported or the Arrow array type is
@@ -36,9 +36,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
         Type::FixedSizedString(len) => write_fixed_string_values(values, writer, *len).await?,
         Type::FixedSizedBinary(len) => write_fixed_binary_values(values, writer, *len).await?,
         _ => {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                "Unsupported data type: {type_hint:?}"
-            )));
+            return Err(Error::ArrowSerialize(format!("Unsupported data type: {type_hint:?}")));
         }
     }
 
@@ -63,7 +61,7 @@ macro_rules! write_variable_values {
         /// - `writer`: The async writer to serialize to.
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if the array type is unsupported.
+        /// A `Result` indicating success or a `Error` if the array type is unsupported.
         async fn $name<W: ClickhouseWrite>(
             column: &::arrow::array::ArrayRef,
             writer: &mut W,
@@ -81,7 +79,8 @@ macro_rules! write_variable_values {
                     return Ok(());
                 }
             )*
-            Err($crate::ClickhouseNativeError::ArrowSerialize(
+
+            Err($crate::Error::ArrowSerialize(
                 concat!("Expected one of: ", $(stringify!($at), " "),*).into()
             ))
         }
@@ -108,7 +107,7 @@ macro_rules! write_fixed_values {
         /// - `len`: The fixed length expected by `ClickHouse`.
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if the array type is unsupported.
+        /// A `Result` indicating success or a `Error` if the array type is unsupported.
         async fn $name<W: ClickhouseWrite>(
             column: &::arrow::array::ArrayRef,
             writer: &mut W,
@@ -136,7 +135,7 @@ macro_rules! write_fixed_values {
                     return Ok(());
                 }
             )*
-            Err($crate::ClickhouseNativeError::ArrowSerialize(
+            Err($crate::Error::ArrowSerialize(
                 concat!("Expected one of: ", $(stringify!($at), " "),*).into()
             ))
         }
@@ -146,8 +145,8 @@ macro_rules! write_fixed_values {
 write_variable_values!(write_string_values, varlen write_string, &[], [
     (StringArray => as_bytes),
     (BinaryArray => pass_through),
-    (StringViewArray => as_bytes),
-    (BinaryViewArray => pass_through),
+    // (StringViewArray => as_bytes),
+    // (BinaryViewArray => pass_through),
     (LargeStringArray => as_bytes),
     (LargeBinaryArray => pass_through)
 ]);
@@ -155,8 +154,8 @@ write_variable_values!(write_string_values, varlen write_string, &[], [
 write_variable_values!(write_binary_values, varlen write_string, &[], [
     (BinaryArray => pass_through),
     (StringArray => as_bytes),
-    (StringViewArray => as_bytes),
-    (BinaryViewArray => pass_through),
+    // (StringViewArray => as_bytes),
+    // (BinaryViewArray => pass_through),
     (LargeBinaryArray => pass_through),
     (LargeStringArray => as_bytes)
 ]);
@@ -393,7 +392,7 @@ mod tests {
         let result = serialize(&Type::String, &column, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Expected one of")
         ));
     }
@@ -405,7 +404,7 @@ mod tests {
         let result = serialize(&Type::String, &column, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Expected one of")
         ));
     }

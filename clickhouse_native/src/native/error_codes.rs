@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use super::protocol::ServerException;
-use crate::ClickhouseNativeError;
+use crate::Error;
 
 /// Represents a server error mapped to internal severity
 #[derive(Debug, Clone)]
@@ -18,8 +18,8 @@ impl ServerError {
     pub(crate) fn is_fatal(&self) -> bool { matches!(self.error, Severity::Server(_)) }
 }
 
-impl From<ServerError> for ClickhouseNativeError {
-    fn from(error: ServerError) -> Self { ClickhouseNativeError::ServerException(error) }
+impl From<ServerError> for Error {
+    fn from(error: ServerError) -> Self { Error::ServerException(error) }
 }
 
 impl std::fmt::Display for ServerError {

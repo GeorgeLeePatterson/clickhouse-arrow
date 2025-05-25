@@ -10,7 +10,7 @@ use tokio::io::AsyncReadExt;
 use super::ClickhouseArrowDeserializer;
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Nullable` type into an Arrow array.
 ///
@@ -28,7 +28,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 ///
 /// # Returns
 /// A `Result` containing the deserialized `ArrayRef` with nulls marked according to the mask, or
-/// a `ClickhouseNativeError` if deserialization fails.
+/// a `Error` if deserialization fails.
 ///
 /// # Errors
 /// - Returns `Io` if reading the null mask fails (e.g., EOF).
@@ -71,7 +71,7 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
     let mut mask = vec![0u8; rows];
     let _ = reader.read_exact(&mut mask).await?;
     if mask.len() != rows {
-        return Err(ClickhouseNativeError::DeserializeError(format!(
+        return Err(Error::DeserializeError(format!(
             "Mask length {} does not match rows {rows}",
             mask.len()
         )));

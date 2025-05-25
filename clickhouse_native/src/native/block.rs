@@ -10,7 +10,7 @@ use crate::formats::{DeserializerState, SerializerState};
 use crate::io::{ClickhouseRead, ClickhouseWrite};
 use crate::native::values::Value;
 use crate::prelude::*;
-use crate::{ClickhouseNativeError, Result, Row, Type};
+use crate::{Error, Result, Row, Type};
 
 #[derive(Debug, Clone, Default)]
 /// A chunk of data in columnar form.
@@ -97,7 +97,7 @@ impl Block {
                         .iter()
                         .find(|(n, _)| n == &*key)
                         .ok_or_else(|| {
-                            ClickhouseNativeError::ProtocolError(format!(
+                            Error::ProtocolError(format!(
                                 "missing type for data in row {i}, column: {key}"
                             ))
                         })?
@@ -112,7 +112,7 @@ impl Block {
                         );
                     })?;
                     let column = columns.get_mut(key.as_ref()).ok_or(
-                        ClickhouseNativeError::ProtocolError(format!(
+                        Error::ProtocolError(format!(
                             "missing column for data in row {i}, column: {key}"
                         )),
                     )?;
@@ -219,7 +219,7 @@ impl ProtocolData<Self> for Block {
             values.extend(self.column_data.drain(..rows));
 
             if values.len() != rows {
-                return Err(ClickhouseNativeError::ProtocolError(format!(
+                return Err(Error::ProtocolError(format!(
                     "row and column length mismatch. {} != {}",
                     values.len(),
                     rows

@@ -8,7 +8,7 @@ use super::ClickhouseArrowDeserializer;
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
 use crate::native::types::low_cardinality::*;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Macro to deserializes indices for a `LowCardinality` column directly into an `Int32Array`.
 ///
@@ -30,7 +30,7 @@ macro_rules! indices {
             let val = $reader.$read_fn().await? as i32;
             if $null_mask.is_empty() || $null_mask[i] == 0 {
                 if $check && val > i32::MAX {
-                    return Err(ClickhouseNativeError::DeserializeError(format!(
+                    return Err(Error::DeserializeError(format!(
                         "LowCardinality: {} index {} exceeds i32::MAX",
                         stringify!($type),
                         val
@@ -73,7 +73,7 @@ macro_rules! indices {
 ///
 /// # Returns
 /// A `Result` containing an `ArrayRef` (a `DictionaryArray<Int32Type>`) or a
-/// `ClickhouseNativeError` if deserialization fails.
+/// `Error` if deserialization fails.
 ///
 /// # Errors
 /// - `DeserializeError` if:
@@ -139,9 +139,7 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
         TUINT32 => Type::UInt32,
         TUINT64 => Type::UInt64,
         x => {
-            return Err(ClickhouseNativeError::DeserializeError(format!(
-                "LowCardinality: bad index type: {x}"
-            )));
+            return Err(Error::DeserializeError(format!("LowCardinality: bad index type: {x}")));
         }
     };
 
@@ -164,15 +162,13 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
 
     // No dictionary found
     } else {
-        return Err(ClickhouseNativeError::DeserializeError(
-            "LowCardinality: no dictionary provided".to_string(),
-        ));
+        return Err(Error::DeserializeError("LowCardinality: no dictionary provided".to_string()));
     };
 
     // Read number of rows in this chunk
     let num_rows = reader.read_u64_le().await? as usize;
     if num_rows != rows {
-        return Err(ClickhouseNativeError::DeserializeError(format!(
+        return Err(Error::DeserializeError(format!(
             "LowCardinality must be read in full. Expect {rows} rows, got {num_rows}"
         )));
     }
@@ -183,7 +179,7 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
         Type::UInt32 => indices!(reader, num_rows, indices, nulls, read_u32_le, false),
         Type::UInt64 => indices!(reader, num_rows, indices, nulls, read_u64_le, true),
         _ => {
-            return Err(ClickhouseNativeError::DeserializeError(format!(
+            return Err(Error::DeserializeError(format!(
                 "LowCardinality: invalid index type {indexed_type:?}"
             )));
         }
@@ -445,7 +441,7 @@ mod tests {
         let result = deserialize(&inner_type, &mut reader, rows, &[], &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::DeserializeError(msg))
+            Err(Error::DeserializeError(msg))
             if msg.contains("LowCardinality must be read in full. Expect 3 rows, got 4")
         ));
     }
@@ -464,7 +460,7 @@ mod tests {
         let result = deserialize(&inner_type, &mut reader, rows, &[], &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::DeserializeError(msg)) if msg.contains("no dictionary provided")
+            Err(Error::DeserializeError(msg)) if msg.contains("no dictionary provided")
         ));
     }
 }

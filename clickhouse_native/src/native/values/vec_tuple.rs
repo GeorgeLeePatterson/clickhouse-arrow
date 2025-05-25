@@ -1,5 +1,5 @@
 use super::unexpected_type;
-use crate::{ClickhouseNativeError, FromSql, Result, ToSql, Type, Value};
+use crate::{Error, FromSql, Result, ToSql, Type, Value};
 
 /// A `Vec` wrapper that is encoded as a tuple in SQL as opposed to a Vec
 #[derive(Clone, Debug, Default)]
@@ -25,7 +25,7 @@ impl<T: FromSql> FromSql for VecTuple<T> {
         };
         let Value::Tuple(values) = value else { return Err(unexpected_type(type_)) };
         if values.len() != subtype.len() {
-            return Err(ClickhouseNativeError::DeserializeError(format!(
+            return Err(Error::DeserializeError(format!(
                 "unexpected type: mismatch tuple length expected {}, got {}",
                 subtype.len(),
                 values.len()

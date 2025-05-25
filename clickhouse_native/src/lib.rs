@@ -18,6 +18,8 @@ mod query;
 mod settings;
 pub mod spawn;
 pub mod telemetry;
+#[cfg(feature = "test_utils")]
+pub mod test_utils;
 
 #[cfg(feature = "derive")]
 /// Derive macro for the [Row] trait.
@@ -54,6 +56,7 @@ pub use client::*;
 pub use constants::DEBUG_ARROW_ENV_VAR;
 pub use ddl::CreateOptions;
 pub use errors::*;
+pub use formats::{ArrowFormat, ClientFormat, NativeFormat};
 pub use io::*;
 /// Contains useful top-level traits to interface with [`crate::prelude::NativeFormat`]
 pub use native::convert::*;
@@ -94,5 +97,5 @@ mod aliases {
 // Silent lints for dev dependencies
 #[cfg(test)]
 mod dev_crates {
-    use {clickhouse as _, criterion as _, testcontainers as _, tracing_subscriber as _};
+    use {clickhouse as _, criterion as _, klickhouse as _, tracing_subscriber as _};
 }

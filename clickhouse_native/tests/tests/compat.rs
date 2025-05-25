@@ -3,12 +3,12 @@ use std::sync::Arc;
 use arrow::array::*;
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
+use clickhouse_native::test_utils::ClickHouseContainer;
 use clickhouse_native::{Qid, Result as ClickHouseResult, Value};
 use futures_util::StreamExt;
 use tracing::error;
 
 use super::arrow::{bootstrap, create_schema, drop_schema};
-use crate::common::docker::ClickHouseContainer;
 use crate::common::header;
 
 /// Test arrow e2e using `ClientBuilder`.

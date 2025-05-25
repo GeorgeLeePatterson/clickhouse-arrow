@@ -22,7 +22,10 @@ serde = [
 cloud = ["dep:ureq"]
 pool = ["dep:bb8"]
 rust_decimal = ["dep:rust_decimal"]
-tests = ["serde", "rust_decimal"]
+test_utils = [
+    "dep:testcontainers",
+    "dep:tracing-subscriber"
+]
 
 [dependencies]
 arrow = { version = "55", features = [
@@ -37,7 +40,7 @@ chrono-tz = "0.10"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 indexmap = { version = "2" }
 lz4_flex = "0.11"
-opentelemetry-semantic-conventions = { version = "0.29", features = [
+opentelemetry-semantic-conventions = { version = "0.30", features = [
     "default",
     "semconv_experimental",
 ] }
@@ -69,16 +72,42 @@ geo-types = { version = "0.7", optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+testcontainers = { version = "0.24", optional = true }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.6", features = ["async_tokio", "html_reports"] }
 clickhouse = "0.13"
-testcontainers = { version = "0.24" }
+klickhouse = { version = "0.13", default-features = false, features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ureq = { version = "3", features = ["rustls", "gzip", "json"] }
 
+[[test]]
+name = "e2e_arrow"
+required-features = ["test_utils"]
+
+[[test]]
+name = "e2e_native"
+required-features = ["test_utils"]
+
+[[test]]
+name = "e2e_compat"
+required-features = ["test_utils"]
+
+[[example]]
+name = "client"
+required-features = ["test_utils"]
+
+[[bench]]
+name = "insert"
+harness = false
+required-features = ["test_utils"]
+
+[[bench]]
+name = "insert_many"
+harness = false
+required-features = ["test_utils"]
 
 [lints]
 workspace = true

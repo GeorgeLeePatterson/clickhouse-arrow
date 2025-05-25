@@ -1,6 +1,6 @@
 use super::{Serializer, SerializerState, Type, ValueSerializer};
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Value};
+use crate::{Error, Result, Value};
 
 pub(crate) struct SizedSerializer;
 
@@ -68,7 +68,7 @@ impl ValueSerializer for SizedSerializer {
             Value::Enum8(_, x) => writer.write_i8(*x).await?,
             Value::Enum16(_, x) => writer.write_i16_le(*x).await?,
             _ => {
-                return Err(ClickhouseNativeError::SerializeError(format!(
+                return Err(Error::SerializeError(format!(
                     "SizedSerializer unimplemented: {type_:?} for value = {value:?}",
                 )));
             }

@@ -5,7 +5,7 @@ use arrow::compute::cast;
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 
-use crate::{ClickhouseNativeError, Date, DateTime, DynDateTime64, Result, Type, Value};
+use crate::{Error, Date, DateTime, DynDateTime64, Result, Type, Value};
 
 /// Converts a [`RecordBatch`] to an iterator of rows, where each row is a Vec of Values.
 ///
@@ -21,7 +21,7 @@ use crate::{ClickhouseNativeError, Date, DateTime, DynDateTime64, Result, Type, 
 pub fn batch_to_rows(
     batch: &RecordBatch,
     type_hints: Option<&[(String, Type)]>,
-) -> Result<impl Iterator<Item = Result<Vec<Value>, ClickhouseNativeError>> + use<>> {
+) -> Result<impl Iterator<Item = Result<Vec<Value>, Error>> + use<>> {
     let row_len = batch.num_rows();
     let col_len = batch.num_columns();
     let columns = batch.columns();
@@ -119,7 +119,7 @@ pub fn array_to_values(
         // Decimal types
         DataType::Decimal128(precision, _) => {
             let arr = column.as_any().downcast_ref::<Decimal128Array>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize("Expected Decimal128Array".to_string())
+                Error::ArrowDeserialize("Expected Decimal128Array".to_string())
             })?;
             map_or_null(
                 (0..arr.len()).map(|i| {
@@ -130,7 +130,7 @@ pub fn array_to_values(
         }
         DataType::Decimal256(precision, _) => {
             let arr = column.as_any().downcast_ref::<Decimal256Array>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize("Expected Decimal256Array".to_string())
+                Error::ArrowDeserialize("Expected Decimal256Array".to_string())
             })?;
             map_or_null(
                 (0..arr.len()).map(|i| {
@@ -201,7 +201,7 @@ pub fn array_to_values(
         // Struct type (map to Tuple)
         DataType::Struct(fields) => {
             let struct_array = column.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize(
+                Error::ArrowDeserialize(
                     "Could not downcast struct array".to_string(),
                 )
             })?;
@@ -232,7 +232,7 @@ pub fn array_to_values(
         // Map type
         DataType::Map(_, _) => {
             let map_array = column.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize("Could not downcast map array".to_string())
+                Error::ArrowDeserialize("Could not downcast map array".to_string())
             })?;
             (0..map_array.len())
                 .map(|i| {
@@ -285,7 +285,7 @@ pub fn array_to_values(
                 _ => {}
             }
 
-            let unpacked = cast(column, value_type).map_err(ClickhouseNativeError::Arrow)?;
+            let unpacked = cast(column, value_type).map_err(Error::Arrow)?;
             array_to_values(&unpacked, value_type, type_hint)?
         }
 
@@ -294,7 +294,7 @@ pub fn array_to_values(
 
         // For all other types, return an error
         _ => {
-            return Err(ClickhouseNativeError::ArrowUnsupportedType(format!(
+            return Err(Error::ArrowUnsupportedType(format!(
                 "Unsupported Arrow data type: {data_type:?}"
             )));
         }
@@ -312,7 +312,7 @@ pub fn array_to_list_vec<T>(
     match array.data_type() {
         DataType::List(_) => {
             let array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize(
+                Error::ArrowDeserialize(
                     "Failed to downcast to ListArray".to_string(),
                 )
             })?;
@@ -320,7 +320,7 @@ pub fn array_to_list_vec<T>(
         }
         DataType::LargeList(_) => {
             let array = array.as_any().downcast_ref::<LargeListArray>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize(
+                Error::ArrowDeserialize(
                     "Failed to downcast to LargeListArray".to_string(),
                 )
             })?;
@@ -328,7 +328,7 @@ pub fn array_to_list_vec<T>(
         }
         DataType::ListView(_) => {
             let array = array.as_any().downcast_ref::<ListViewArray>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize(
+                Error::ArrowDeserialize(
                     "Failed to downcast to ListView".to_string(),
                 )
             })?;
@@ -336,13 +336,13 @@ pub fn array_to_list_vec<T>(
         }
         DataType::FixedSizeList(..) => {
             let array = array.as_any().downcast_ref::<FixedSizeListArray>().ok_or_else(|| {
-                ClickhouseNativeError::ArrowDeserialize(
+                Error::ArrowDeserialize(
                     "Failed to downcast to FixedSizeListArray".to_string(),
                 )
             })?;
             Ok(array.iter().map(caster).collect::<Result<Vec<_>>>()?)
         }
-        _ => Err(ClickhouseNativeError::ArrowUnsupportedType(format!(
+        _ => Err(Error::ArrowUnsupportedType(format!(
             "Could not cast array to list type: {:?}",
             array.data_type()
         ))),
@@ -360,11 +360,11 @@ pub fn array_to_string_iter(array: &dyn Array) -> Result<impl Iterator<Item = Op
 
     // Then try Binary
     } else {
-        let binary_array = cast(array, &DataType::Binary).map_err(ClickhouseNativeError::Arrow)?;
-        cast(&binary_array, &DataType::Utf8).map_err(ClickhouseNativeError::Arrow)?
+        let binary_array = cast(array, &DataType::Binary).map_err(Error::Arrow)?;
+        cast(&binary_array, &DataType::Utf8).map_err(Error::Arrow)?
     }
     .as_string_opt::<i32>()
-    .ok_or(ClickhouseNativeError::ArrowUnsupportedType(format!(
+    .ok_or(Error::ArrowUnsupportedType(format!(
         "Unable to downcast array to string: type hint={:?}",
         array.data_type(),
     )))?
@@ -385,9 +385,9 @@ pub fn array_to_string_iter(array: &dyn Array) -> Result<impl Iterator<Item = Op
 pub fn array_to_binary_iter(array: &dyn Array) -> Result<impl Iterator<Item = Option<Vec<u8>>>> {
     // First, cast the array to Binary type
     let binary_array = cast(array, &DataType::Binary)
-        .map_err(ClickhouseNativeError::Arrow)?
+        .map_err(Error::Arrow)?
         .as_binary_opt::<i32>()
-        .ok_or(ClickhouseNativeError::ArrowUnsupportedType(format!(
+        .ok_or(Error::ArrowUnsupportedType(format!(
             "Unable to downcast array to binary: type hint={:?}",
             array.data_type(),
         )))?
@@ -408,9 +408,9 @@ pub fn array_to_binary_iter(array: &dyn Array) -> Result<impl Iterator<Item = Op
 pub fn array_to_bool_iter(array: &dyn Array) -> Result<impl Iterator<Item = Option<bool>>> {
     // First, cast the array to Boolean type
     let bool_array = cast(array, &DataType::Boolean)
-        .map_err(ClickhouseNativeError::Arrow)?
+        .map_err(Error::Arrow)?
         .as_boolean_opt()
-        .ok_or(ClickhouseNativeError::ArrowUnsupportedType(format!(
+        .ok_or(Error::ArrowUnsupportedType(format!(
             "Unable to downcast array boolean: type hint={:?}",
             array.data_type(),
         )))?
@@ -433,9 +433,9 @@ where
     A::Native: Into<T>,
     T: Clone,
 {
-    let cast_array = cast(array, &A::DATA_TYPE).map_err(ClickhouseNativeError::Arrow)?;
+    let cast_array = cast(array, &A::DATA_TYPE).map_err(Error::Arrow)?;
     let primitive_array = cast_array.as_primitive_opt::<A>().ok_or(
-        ClickhouseNativeError::ArrowUnsupportedType(format!(
+        Error::ArrowUnsupportedType(format!(
             "Unable to downcast array {}: type hint={:?}",
             A::DATA_TYPE,
             array.data_type(),
@@ -996,7 +996,7 @@ mod tests {
         let result = array_to_values(&array, &DataType::Decimal128(10, 2), None);
         assert!(matches!(
             result.unwrap_err(),
-            ClickhouseNativeError::ArrowDeserialize(err)
+            Error::ArrowDeserialize(err)
             if err.to_string().contains("Expected Decimal128Array")
         ));
     }
@@ -1031,7 +1031,7 @@ mod tests {
         let result = array_to_values(&array, &DataType::Decimal256(20, 2), None);
         assert!(matches!(
             result.unwrap_err(),
-            ClickhouseNativeError::ArrowDeserialize(err)
+            Error::ArrowDeserialize(err)
             if err.to_string().contains("Expected Decimal256Array")
         ));
     }
@@ -1152,7 +1152,7 @@ mod tests {
         let result = array_to_values(&string_array, &DataType::Struct(fields), None);
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowDeserialize(e))
+            Err(Error::ArrowDeserialize(e))
             if e.to_string().contains("Could not downcast struct array")
         ));
     }
@@ -1226,7 +1226,7 @@ mod tests {
     fn test_unhandled_array() {
         let array = StringArray::from(vec![""]);
         let result = array_to_values(&array, &DataType::Float16, None);
-        assert!(matches!(result, Err(ClickhouseNativeError::ArrowUnsupportedType(_))));
+        assert!(matches!(result, Err(Error::ArrowUnsupportedType(_))));
     }
 
     #[test]
@@ -1278,9 +1278,6 @@ mod tests {
 
         let result = batch_to_rows(&batch, None).unwrap().collect::<Vec<_>>();
         assert_eq!(result.len(), 3);
-
-        // TODO: Remove
-        eprintln!("Result: {result:?}");
 
         #[expect(clippy::cast_precision_loss)]
         #[expect(clippy::cast_possible_truncation)]

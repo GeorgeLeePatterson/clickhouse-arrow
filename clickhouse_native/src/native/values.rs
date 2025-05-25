@@ -213,7 +213,7 @@ impl Value {
             #[expect(clippy::cast_possible_truncation)]
             Value::UInt64(x) => *x as usize,
             _ => {
-                return Err(crate::errors::ClickhouseNativeError::ProtocolError(format!(
+                return Err(crate::errors::Error::ProtocolError(format!(
                     "Expected integer, got {self}"
                 )));
             }
@@ -225,7 +225,7 @@ impl Value {
     pub fn unwrap_array_ref(&self) -> Result<&[Value]> {
         match self {
             Value::Array(a) => Ok(&a[..]),
-            _ => Err(crate::errors::ClickhouseNativeError::ProtocolError(format!(
+            _ => Err(crate::errors::Error::ProtocolError(format!(
                 "Expected array, got {self}"
             ))),
         }
@@ -236,7 +236,7 @@ impl Value {
     pub fn unwrap_array(self) -> Result<Vec<Value>> {
         match self {
             Value::Array(a) => Ok(a),
-            _ => Err(crate::errors::ClickhouseNativeError::ProtocolError(format!(
+            _ => Err(crate::errors::Error::ProtocolError(format!(
                 "Expected array, got {self}"
             ))),
         }
@@ -247,7 +247,7 @@ impl Value {
     pub fn unwrap_tuple(self) -> Result<Vec<Value>> {
         match self {
             Value::Tuple(a) => Ok(a),
-            _ => Err(crate::errors::ClickhouseNativeError::ProtocolError(format!(
+            _ => Err(crate::errors::Error::ProtocolError(format!(
                 "Expected tuple, got {self}"
             ))),
         }

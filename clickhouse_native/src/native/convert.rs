@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::{ClickhouseNativeError, Result, Type, Value};
+use crate::{Error, Result, Type, Value};
 
 pub mod raw_row;
 pub mod std_deserialize;
@@ -21,8 +21,8 @@ impl ToSql for Value {
     fn to_sql(self, _type_hint_: Option<&Type>) -> Result<Value> { Ok(self) }
 }
 
-pub fn unexpected_type(type_: &Type) -> ClickhouseNativeError {
-    ClickhouseNativeError::DeserializeError(format!("unexpected type: {type_}"))
+pub fn unexpected_type(type_: &Type) -> Error {
+    Error::DeserializeError(format!("unexpected type: {type_}"))
 }
 
 /// A type that can be converted from a raw Clickhouse SQL value.

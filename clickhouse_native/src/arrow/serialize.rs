@@ -13,7 +13,7 @@ use async_trait::async_trait;
 
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Trait for serializing Arrow arrays into ClickHouse's native protocol.
 ///
@@ -36,7 +36,7 @@ pub(crate) trait ClickhouseArrowSerializer {
     /// - `state`: A mutable `SerializerState` for maintaining serialization context.
     ///
     /// # Returns
-    /// A `Future` resolving to a `Result` indicating success or a `ClickhouseNativeError` if
+    /// A `Future` resolving to a `Result` indicating success or a `Error` if
     /// serialization fails.
     ///
     /// # Errors
@@ -160,9 +160,7 @@ impl ClickhouseArrowSerializer for Type {
                 tuple::serialize(self, column, writer, state).await?;
             }
             _ => {
-                return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                    "Unsupported type: {self:?}"
-                )));
+                return Err(Error::ArrowSerialize(format!("Unsupported type: {self:?}")));
             }
         }
 

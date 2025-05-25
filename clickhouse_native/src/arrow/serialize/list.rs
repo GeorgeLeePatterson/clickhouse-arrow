@@ -47,7 +47,7 @@ use arrow::datatypes::{DataType, Field};
 use super::ClickhouseArrowSerializer;
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Extracts the inner `Field` from a `List`, `ListView`, `LargeList`, `LargeListView`, or
 /// `FixedSizeList` data type.
@@ -56,7 +56,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - `field`: The Arrow `Field` to extract from.
 ///
 /// # Returns
-/// A `Result` containing the inner `Field` or a `ClickhouseNativeError` if the data type is not
+/// A `Result` containing the inner `Field` or a `Error` if the data type is not
 /// `List`, `ListView`, `LargeList`, `LargeListView`, or `FixedSizeList`.
 fn unwrap_array_field(field: &Field) -> Result<&Field> {
     match field.data_type() {
@@ -65,7 +65,7 @@ fn unwrap_array_field(field: &Field) -> Result<&Field> {
         | DataType::LargeList(f)
         | DataType::LargeListView(f)
         | DataType::FixedSizeList(f, _) => Ok(f),
-        _ => Err(ClickhouseNativeError::ArrowSerialize(format!(
+        _ => Err(Error::ArrowSerialize(format!(
             "Expected List or FixedSizeList, got {:?}",
             field.data_type()
         ))),
@@ -87,7 +87,7 @@ fn unwrap_array_field(field: &Field) -> Result<&Field> {
 /// - `state`: A mutable `SerializerState` for serialization context.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if the `values` is not a `ListArray`, `ListViewArray`,
@@ -157,7 +157,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
         return Ok(());
     }
 
-    Err(ClickhouseNativeError::ArrowSerialize(format!(
+    Err(Error::ArrowSerialize(format!(
         "Expected ListArray or FixedSizeListArray: type={inner_type:?}, field={field:?}"
     )))
 }

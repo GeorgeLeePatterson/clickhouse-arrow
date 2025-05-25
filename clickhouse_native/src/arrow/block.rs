@@ -332,7 +332,7 @@ mod tests {
                 .await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::TypeParseError(m))
+            Err(Error::TypeParseError(m))
             if &m == "invalid type name: 'InvalidType'"
         ));
     }
@@ -349,8 +349,8 @@ mod tests {
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, ArrowOptions::default())
                 .await;
 
-        assert!(matches!(result, Err(ClickhouseNativeError::Io(_))));
-        let ClickhouseNativeError::Io(e) = result.err().unwrap() else {
+        assert!(matches!(result, Err(Error::Io(_))));
+        let Error::Io(e) = result.err().unwrap() else {
             unreachable!();
         };
         assert!(matches!(e.kind(), std::io::ErrorKind::UnexpectedEof));
@@ -1148,7 +1148,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(e))
+            Err(Error::ArrowSerialize(e))
             if e.contains("Expected one of")
         ));
     }

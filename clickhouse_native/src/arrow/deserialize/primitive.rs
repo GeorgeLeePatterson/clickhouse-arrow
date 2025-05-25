@@ -22,7 +22,7 @@ use arrow::datatypes::*;
 
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 // For Date32: Days from 1900-01-01 to 1970-01-01
 const DAYS_1900_TO_1970: i32 = 25_567;
@@ -93,7 +93,7 @@ macro_rules! deserialize_primitive {
 /// - `_state`: A mutable `DeserializerState` for deserialization context (unused).
 ///
 /// # Returns
-/// A `Result` containing the deserialized `ArrayRef` or a `ClickhouseNativeError` if
+/// A `Result` containing the deserialized `ArrayRef` or a `Error` if
 /// deserialization fails.
 ///
 /// # Errors
@@ -314,9 +314,7 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
                 }
             )
         }
-        _ => Err(ClickhouseNativeError::ArrowDeserialize(format!(
-            "Expected primitive, got {type_hint:?}"
-        ))),
+        _ => Err(Error::ArrowDeserialize(format!("Expected primitive, got {type_hint:?}"))),
     }
 }
 

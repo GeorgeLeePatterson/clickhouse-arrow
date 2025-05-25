@@ -9,7 +9,7 @@ use tokio::time::timeout;
 use crate::prelude::*;
 use crate::settings::Settings;
 use crate::{
-    ClickhouseNativeError, Client, ClientBuilder, ClientOptions, ConnectionStatus, Destination,
+    Error, Client, ClientBuilder, ClientOptions, ConnectionStatus, Destination,
     Result,
 };
 
@@ -169,7 +169,7 @@ impl<T: ClientFormat> ConnectionManager<T> {
 
 impl<T: ClientFormat> ManageConnection for ConnectionManager<T> {
     type Connection = Client<T>;
-    type Error = ClickhouseNativeError;
+    type Error = Error;
 
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
         debug!("Connecting to ClickHouse...");
@@ -183,11 +183,11 @@ impl<T: ClientFormat> ManageConnection for ConnectionManager<T> {
         match conn.status() {
             ConnectionStatus::Error => {
                 error!("Connection validation failed: Error");
-                Err(ClickhouseNativeError::ConnectionGone("Connection in error state"))
+                Err(Error::ConnectionGone("Connection in error state"))
             }
             ConnectionStatus::Closed => {
                 warn!("Connection validation failed: Closed");
-                Err(ClickhouseNativeError::ConnectionGone("Connection in closed state"))
+                Err(Error::ConnectionGone("Connection in closed state"))
             }
             ConnectionStatus::Open => {
                 let id = conn.client_id;
@@ -201,7 +201,7 @@ impl<T: ClientFormat> ManageConnection for ConnectionManager<T> {
                         warn!(?error, { ATT_CID } = id, "Health check failed");
                         Err(error)
                     }
-                    Err(_) => Err(ClickhouseNativeError::ConnectionTimeout(
+                    Err(_) => Err(Error::ConnectionTimeout(
                         "Health check timed out".into(),
                     )),
                 };

@@ -16,7 +16,7 @@ use crate::native::protocol::{
     ServerHello, ServerPacket, ServerPacketId, TableColumns, TableStatus, TablesStatusResponse,
 };
 use crate::prelude::*;
-use crate::{ClickhouseNativeError, FxIndexMap, Result};
+use crate::{Error, FxIndexMap, Result};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Reader<R: ClickhouseRead> {
@@ -166,7 +166,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
     ) -> Result<Vec<ProfileEvent>> {
         let revision = metadata.revision;
         if revision < DBMS_MIN_PROTOCOL_VERSION_WITH_PROFILE_EVENTS_IN_INSERT {
-            return Err(ClickhouseNativeError::ProtocolError(format!(
+            return Err(Error::ProtocolError(format!(
                 "unexpected profile events for revision {revision}"
             )));
         }
@@ -186,7 +186,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
 
         #[expect(clippy::cast_possible_truncation)]
         if size as usize > MAX_STRING_SIZE {
-            return Err(ClickhouseNativeError::ProtocolError(format!(
+            return Err(Error::ProtocolError(format!(
                 "table status response size too large. {size} > {MAX_STRING_SIZE}"
             )));
         }
@@ -218,7 +218,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
         #[expect(clippy::cast_possible_truncation)]
         let len = reader.read_var_uint().await? as usize;
         if len > MAX_STRING_SIZE {
-            return Err(ClickhouseNativeError::ProtocolError(format!(
+            return Err(Error::ProtocolError(format!(
                 "PartUUIDs response size too large. {len} > {MAX_STRING_SIZE}"
             )));
         }
@@ -294,7 +294,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
         return match packet {
             ServerPacketId::Data => Self::read_block(reader, metadata)
                 .await?
-                .ok_or(ClickhouseNativeError::ProtocolError(
+                .ok_or(Error::ProtocolError(
                     "Expected valid block for header".into(),
                 ))
                 .map(ServerPacket::Header),
@@ -311,7 +311,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             ServerPacketId::Exception => {
                 Self::read_exception(reader).await.map(ServerPacket::Exception)
             }
-            packet => Err(ClickhouseNativeError::ProtocolError(format!(
+            packet => Err(Error::ProtocolError(format!(
                 "expected header packet, got: {}",
                 packet.as_ref()
             ))),
@@ -379,7 +379,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             ServerPacketId::ServerTreeReadTaskRequest => {
                 Ok(ServerPacket::ServerTreeReadTaskRequest)
             }
-            ServerPacketId::Ignore => Err(ClickhouseNativeError::ProtocolError(
+            ServerPacketId::Ignore => Err(Error::ProtocolError(
                 "Unknown packet received from server".into(),
             )),
         }

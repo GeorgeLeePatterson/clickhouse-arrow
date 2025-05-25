@@ -33,7 +33,7 @@ use arrow::array::*;
 use arrow::datatypes::{DataType, Field, i256};
 
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Serializes an Arrow array to ClickHouse’s native format for primitive types.
 ///
@@ -52,7 +52,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - `writer`: The async writer to serialize to (e.g., a TCP stream).
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if the `type_hint` is unsupported, the Arrow array type is
@@ -98,7 +98,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
             4..=6 => write_datetime64_6_values(values, writer).await?,
             7..=9 => write_datetime64_9_values(values, writer).await?,
             _ => {
-                return Err(ClickhouseNativeError::ArrowSerialize(format!(
+                return Err(Error::ArrowSerialize(format!(
                     "Unsupported precision for DateTime64: {p}"
                 )));
             }
@@ -106,18 +106,15 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
         Type::Ipv4 => write_ipv4_values(values, writer).await?,
         Type::Ipv6 => write_ipv6_values(values, writer).await?,
         Type::Uuid => {
-            let array = values.as_any().downcast_ref::<FixedSizeBinaryArray>().ok_or(
-                ClickhouseNativeError::ArrowSerialize(
-                    "Expected FixedSizeBinaryArray for Uuid".into(),
-                ),
-            )?;
+            let array = values
+                .as_any()
+                .downcast_ref::<FixedSizeBinaryArray>()
+                .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
 
             for i in 0..array.len() {
                 let value = if array.is_null(i) { &[0u8; 16] } else { array.value(i) };
                 if value.len() != 16 {
-                    return Err(ClickhouseNativeError::ArrowSerialize(
-                        "UUID must be 16 bytes".into(),
-                    ));
+                    return Err(Error::ArrowSerialize("UUID must be 16 bytes".into()));
                 }
                 let bytes: [u8; 16] = value.try_into().unwrap();
                 let low = u64::from_le_bytes(bytes[..8].try_into().unwrap());
@@ -127,9 +124,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
             }
         }
         _ => {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                "Unsupported data type: {type_hint:?}"
-            )));
+            return Err(Error::ArrowSerialize(format!("Unsupported data type: {type_hint:?}")));
         }
     }
 
@@ -155,7 +150,7 @@ macro_rules! write_primitive_values {
         /// - `writer`: The async writer to serialize to.
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if the array type is unsupported.
+        /// A `Result` indicating success or a `Error` if the array type is unsupported.
         #[allow(clippy::cast_sign_loss)]
         #[allow(clippy::cast_lossless)]
         #[allow(clippy::cast_possible_truncation)]
@@ -165,7 +160,7 @@ macro_rules! write_primitive_values {
             writer: &mut W,
         ) -> Result<()> {
             let array = column.as_any().downcast_ref::<$at>().ok_or_else(|| {
-                $crate::ClickhouseNativeError::ArrowSerialize(
+                $crate::Error::ArrowSerialize(
                     concat!("Expected ", stringify!($at)).into(),
                 )
             })?;
@@ -189,7 +184,7 @@ macro_rules! write_primitive_values {
         /// - `writer`: The async writer to serialize to.
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if the array type is unsupported.
+        /// A `Result` indicating success or a `Error` if the array type is unsupported.
         async fn $name<W: ClickhouseWrite>(
             column: &::arrow::array::ArrayRef,
             writer: &mut W,
@@ -207,7 +202,7 @@ macro_rules! write_primitive_values {
                     return Ok(());
                 }
             )*
-            Err($crate::ClickhouseNativeError::ArrowSerialize(
+            Err($crate::Error::ArrowSerialize(
                 concat!("Expected one of: ", $(stringify!($at), " "),*).into()
             ))
         }
@@ -224,7 +219,7 @@ macro_rules! write_primitive_values {
         /// - `writer`: The async writer to serialize to.
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if the array type is unsupported.
+        /// A `Result` indicating success or a `Error` if the array type is unsupported.
         async fn $name<W: ClickhouseWrite>(
             column: &::arrow::array::ArrayRef,
             writer: &mut W,
@@ -242,7 +237,7 @@ macro_rules! write_primitive_values {
                     return Ok(());
                 }
             )*
-            Err($crate::ClickhouseNativeError::ArrowSerialize(
+            Err($crate::Error::ArrowSerialize(
                 concat!("Expected one of: ", $(stringify!($at), " "),*).into()
             ))
         }
@@ -262,34 +257,34 @@ write_primitive_values!(write_u64_values, UInt64Array, u64, write_u64_le);
 
 // Large primitives
 write_primitive_values!(write_i128_values, scalar i128::default(), write_i128_le, [
-    (Int64Array, |v: i64| Ok::<_, ClickhouseNativeError>(i128::from(v))), // Cast i64 to i128
-    (BinaryArray, |v: &[u8]| Ok::<_, ClickhouseNativeError>(i128::from_le_bytes(
+    (Int64Array, |v: i64| Ok::<_, Error>(i128::from(v))), // Cast i64 to i128
+    (BinaryArray, |v: &[u8]| Ok::<_, Error>(i128::from_le_bytes(
         v.try_into().map_err(|_| {
-            ClickhouseNativeError::ArrowSerialize("Binary must be 16 bytes for Int128".into())
+            Error::ArrowSerialize("Binary must be 16 bytes for Int128".into())
         })?
     ))),
     (FixedSizeBinaryArray, |v: &[u8]| {
         if v.len() != 16 {
-            return Err(ClickhouseNativeError::ArrowSerialize(
+            return Err(Error::ArrowSerialize(
                 "FixedSizeBinary must be 16 bytes for Int128".into(),
             ));
         }
         Ok(i128::from_le_bytes(v.try_into().map_err(|_| {
-            ClickhouseNativeError::ArrowSerialize("Binary must be 16 bytes for Int128".into())
+            Error::ArrowSerialize("Binary must be 16 bytes for Int128".into())
         })?))
     })
 ]);
 
 write_primitive_values!(write_u128_values, scalar u128::default(), write_u128_le, [
-    (UInt64Array, |v: u64| Ok::<_, ClickhouseNativeError>(u128::from(v))), // Cast u64 to u128
-    (BinaryArray, |v: &[u8]| Ok::<_, ClickhouseNativeError>(u128::from_le_bytes(
+    (UInt64Array, |v: u64| Ok::<_, Error>(u128::from(v))), // Cast u64 to u128
+    (BinaryArray, |v: &[u8]| Ok::<_, Error>(u128::from_le_bytes(
         v.try_into().map_err(|_| {
-            ClickhouseNativeError::ArrowSerialize("Binary must be 16 bytes for UInt128".into())
+            Error::ArrowSerialize("Binary must be 16 bytes for UInt128".into())
         })?
     ))),
     (FixedSizeBinaryArray, |v: &[u8]| {
         if v.len() != 16 {
-            return Err(ClickhouseNativeError::ArrowSerialize(
+            return Err(Error::ArrowSerialize(
                 "FixedSizeBinary must be 16 bytes for UInt128".into(),
             ));
         }
@@ -298,7 +293,7 @@ write_primitive_values!(write_u128_values, scalar u128::default(), write_u128_le
 ]);
 
 write_primitive_values!(write_i256_values, array [u8; 32], write_all, [
-    (Int64Array, |v: i64| Ok::<_, ClickhouseNativeError>({
+    (Int64Array, |v: i64| Ok::<_, Error>({
         let mut bytes = [0u8; 32];
         let i128_bytes = i128::from(v).to_le_bytes(); // 16 bytes
         bytes[..16].copy_from_slice(&i128_bytes);
@@ -307,17 +302,17 @@ write_primitive_values!(write_i256_values, array [u8; 32], write_all, [
         } // Sign-extend
         swap_endian_256(bytes)
     })),
-    (BinaryArray, |v: &[u8]| Ok::<_, ClickhouseNativeError>({
+    (BinaryArray, |v: &[u8]| Ok::<_, Error>({
         let bytes: [u8; 32] = v
             .try_into()
             .map_err(|_| {
-                ClickhouseNativeError::ArrowSerialize("Binary must be 32 bytes for Int256".into())
+                Error::ArrowSerialize("Binary must be 32 bytes for Int256".into())
             })?;
         swap_endian_256(bytes)
     })),
     (FixedSizeBinaryArray, |v: &[u8]| {
         if v.len() != 32 {
-            return Err(ClickhouseNativeError::ArrowSerialize(
+            return Err(Error::ArrowSerialize(
                 "FixedSizeBinary must be 32 bytes for Int256".into(),
             ));
         }
@@ -326,23 +321,23 @@ write_primitive_values!(write_i256_values, array [u8; 32], write_all, [
 ]);
 
 write_primitive_values!(write_u256_values, array [u8; 32], write_all, [
-    (UInt64Array, |v: u64| Ok::<_, ClickhouseNativeError>({
+    (UInt64Array, |v: u64| Ok::<_, Error>({
         let mut bytes = [0u8; 32];
         bytes[..8].copy_from_slice(&v.to_le_bytes()); // Lower 8 bytes
         // Upper 24 bytes remain 0
         swap_endian_256(bytes)
     })),
-    (BinaryArray, |v: &[u8]| Ok::<_, ClickhouseNativeError>({
+    (BinaryArray, |v: &[u8]| Ok::<_, Error>({
         let bytes: [u8; 32] = v
             .try_into()
             .map_err(|_| {
-                ClickhouseNativeError::ArrowSerialize("Binary must be 32 bytes for UInt256".into())
+                Error::ArrowSerialize("Binary must be 32 bytes for UInt256".into())
             })?;
         swap_endian_256(bytes)
     })),
     (FixedSizeBinaryArray, |v: &[u8]| {
         if v.len() != 32 {
-            return Err(ClickhouseNativeError::ArrowSerialize(
+            return Err(Error::ArrowSerialize(
                 "FixedSizeBinary must be 32 bytes for UInt256".into(),
             ));
         }
@@ -354,33 +349,33 @@ write_primitive_values!(write_u256_values, array [u8; 32], write_all, [
 write_primitive_values!(write_decimal32_values, scalar i32::default(), write_i32_le, [
     (Decimal128Array, |v: i128| {
         if !(-999_999_999..=999_999_999).contains(&v) {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
+            return Err(Error::ArrowSerialize(format!(
                 "Decimal32 out of range of (max 9 digits): {v}"
             )));
         }
-        Ok::<_, ClickhouseNativeError>(v as i32) // Truncate to 9 digits
+        Ok::<_, Error>(v as i32) // Truncate to 9 digits
     })
 ]);
 write_primitive_values!(write_decimal64_values, scalar i64::default(), write_i64_le, [
     (Decimal128Array, |v: i128| {
         if !(-999_999_999_999_999_999..=999_999_999_999_999_999).contains(&v) {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
+            return Err(Error::ArrowSerialize(format!(
                 "Decimal64 out of range of (max 18 digits): {v}"
             )));
         }
-        Ok::<_, ClickhouseNativeError>(v as i64) // Truncate to 18 digits
+        Ok::<_, Error>(v as i64) // Truncate to 18 digits
     })
 ]);
 write_primitive_values!(write_decimal128_values, scalar i128::default(), write_i128_le, [
-    (Decimal128Array, |v: i128| Ok::<_, ClickhouseNativeError>(v)) // Up to 38 digits
+    (Decimal128Array, |v: i128| Ok::<_, Error>(v)) // Up to 38 digits
 ]);
 
 write_primitive_values!(write_decimal256_values, array [u8; 32], write_all, [
-    (Decimal256Array, |v: i256| Ok::<_, ClickhouseNativeError>({
+    (Decimal256Array, |v: i256| Ok::<_, Error>({
         let bytes = v.to_le_bytes(); // i256 provides 32 bytes in little-endian
         swap_endian_256(bytes) // Convert to ClickHouse's big-endian
     })),
-    (Decimal128Array, |v: i128| Ok::<_, ClickhouseNativeError>({
+    (Decimal128Array, |v: i128| Ok::<_, Error>({
         let mut bytes = [0u8; 32];
         let i128_bytes = v.to_le_bytes(); // 16 bytes
         bytes[..16].copy_from_slice(&i128_bytes);
@@ -395,79 +390,79 @@ write_primitive_values!(write_decimal256_values, array [u8; 32], write_all, [
 write_primitive_values!(write_date_values, scalar u16::default(), write_u16_le, [
     (Date32Array, |v: i32| {
         if v < 0 || v > i32::from(u16::MAX) {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
+            return Err(Error::ArrowSerialize(format!(
                 "Date out of range for Date32 (ClickHouse uses u16): {v}"
             )));
         }
-        Ok::<_, ClickhouseNativeError>(v as u16) // Days since epoch
+        Ok::<_, Error>(v as u16) // Days since epoch
     })
 ]);
 write_primitive_values!(write_date32_values, scalar i32::default(), write_i32_le, [
     (Date32Array, |v: i32| {
         const DAYS_1900_TO_1970: i32 = 25_567; // Days from 1900-01-01 to 1970-01-01
         let adjusted = v + DAYS_1900_TO_1970;
-        Ok::<_, ClickhouseNativeError>(adjusted) // Days since 1900-01-01
+        Ok::<_, Error>(adjusted) // Days since 1900-01-01
     })
 ]);
 write_primitive_values!(write_datetime_values, scalar u32::default(), write_u32_le, [
     (TimestampSecondArray, |v: i64| {
         #[expect(clippy::cast_lossless)]
         if v > u32::MAX as i64 {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
+            return Err(Error::ArrowSerialize(format!(
                 "DateTime out of range for TimestampSecond (ClickHouse uses u32): {v}"
             )));
         }
-        Ok::<_, ClickhouseNativeError>(v as u32)
+        Ok::<_, Error>(v as u32)
     }), // Seconds since epoch
 ]);
 
 write_primitive_values!(write_datetime64_3_values, scalar u64::default(), write_u64_le, [
-    (TimestampMillisecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64)), // Milliseconds
-    (TimestampMicrosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 / 1000)), // Convert to ms
-    (TimestampNanosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 / 1_000_000)), // Convert to ms
-    (TimestampSecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 * 1000)) // Convert to ms
+    (TimestampMillisecondArray, |v: i64| Ok::<_, Error>(v as u64)), // Milliseconds
+    (TimestampMicrosecondArray, |v: i64| Ok::<_, Error>(v as u64 / 1000)), // Convert to ms
+    (TimestampNanosecondArray, |v: i64| Ok::<_, Error>(v as u64 / 1_000_000)), // Convert to ms
+    (TimestampSecondArray, |v: i64| Ok::<_, Error>(v as u64 * 1000)) // Convert to ms
 ]);
 write_primitive_values!(write_datetime64_6_values, scalar u64::default(), write_u64_le, [
-    (TimestampMicrosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64)), // Microseconds
-    (TimestampMillisecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 * 1000)), // Convert to us
-    (TimestampNanosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 / 1000)), // Convert to us
-    (TimestampSecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 * 1_000_000)) // Convert to us
+    (TimestampMicrosecondArray, |v: i64| Ok::<_, Error>(v as u64)), // Microseconds
+    (TimestampMillisecondArray, |v: i64| Ok::<_, Error>(v as u64 * 1000)), // Convert to us
+    (TimestampNanosecondArray, |v: i64| Ok::<_, Error>(v as u64 / 1000)), // Convert to us
+    (TimestampSecondArray, |v: i64| Ok::<_, Error>(v as u64 * 1_000_000)) // Convert to us
 ]);
 write_primitive_values!(write_datetime64_9_values, scalar u64::default(), write_u64_le, [
-    (TimestampNanosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64)), // Nanoseconds
-    (TimestampMillisecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 * 1_000_000)), // Convert to ns
-    (TimestampMicrosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 * 1000)), // Convert to ns
-    (TimestampSecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 * 1_000_000_000)) // Convert to ns
+    (TimestampNanosecondArray, |v: i64| Ok::<_, Error>(v as u64)), // Nanoseconds
+    (TimestampMillisecondArray, |v: i64| Ok::<_, Error>(v as u64 * 1_000_000)), // Convert to ns
+    (TimestampMicrosecondArray, |v: i64| Ok::<_, Error>(v as u64 * 1000)), // Convert to ns
+    (TimestampSecondArray, |v: i64| Ok::<_, Error>(v as u64 * 1_000_000_000)) // Convert to ns
 ]);
 write_primitive_values!(write_datetime64_unknown_values, scalar u64::default(), write_u64_le, [
-    (TimestampSecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64)), // Seconds
-    (TimestampMillisecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 / 1000)), // Convert to s
-    (TimestampMicrosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 / 1_000_000)), // Convert to s
-    (TimestampNanosecondArray, |v: i64| Ok::<_, ClickhouseNativeError>(v as u64 / 1_000_000_000)) // Convert to s
+    (TimestampSecondArray, |v: i64| Ok::<_, Error>(v as u64)), // Seconds
+    (TimestampMillisecondArray, |v: i64| Ok::<_, Error>(v as u64 / 1000)), // Convert to s
+    (TimestampMicrosecondArray, |v: i64| Ok::<_, Error>(v as u64 / 1_000_000)), // Convert to s
+    (TimestampNanosecondArray, |v: i64| Ok::<_, Error>(v as u64 / 1_000_000_000)) // Convert to s
 ]);
 
 // IPs
 write_primitive_values!(write_ipv4_values, scalar u32::default(), write_u32_le, [
     (FixedSizeBinaryArray, |v: &[u8]| {
         if v.len() != 4 {
-            return Err(ClickhouseNativeError::ArrowSerialize(
+            return Err(Error::ArrowSerialize(
                 "IPv4 must be 4 bytes".into(),
             ));
         }
         Ok(u32::from_le_bytes(v.try_into().map_err(|_| {
-            ClickhouseNativeError::ArrowSerialize("IPv4 must be 4 bytes".into())
+            Error::ArrowSerialize("IPv4 must be 4 bytes".into())
         })?))
     })
 ]);
 write_primitive_values!(write_ipv6_values, array [u8; 16], write_all, [
     (FixedSizeBinaryArray, |v: &[u8]| {
         if v.len() != 16 {
-            return Err(ClickhouseNativeError::ArrowSerialize(
+            return Err(Error::ArrowSerialize(
                 "IPv6 must be 16 bytes".into(),
             ));
         }
         v.try_into().map_err(|_| {
-            ClickhouseNativeError::ArrowSerialize("IPv6 must be 16 bytes".into())
+            Error::ArrowSerialize("IPv6 must be 16 bytes".into())
         })
     })
 ]);
@@ -485,7 +480,7 @@ macro_rules! write_float_values {
         /// - `writer`: The async writer to serialize to.
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if the array type is unsupported.
+        /// A `Result` indicating success or a `Error` if the array type is unsupported.
         async fn $name<W: ClickhouseWrite>(
             column: &::arrow::array::ArrayRef,
             writer: &mut W,
@@ -499,7 +494,7 @@ macro_rules! write_float_values {
                     return Ok(());
                 }
             )*
-            Err($crate::ClickhouseNativeError::ArrowSerialize(
+            Err($crate::Error::ArrowSerialize(
                 concat!("Expected one of: ", $(stringify!($at), " "),*).into()
             ))
         }
@@ -815,7 +810,7 @@ mod tests {
             let result = serialize(&type_, &array, &field, &mut writer).await;
             assert!(matches!(
                 result,
-                Err(ClickhouseNativeError::ArrowSerialize(msg))
+                Err(Error::ArrowSerialize(msg))
                 if msg.contains(expected)
             ));
         }
@@ -843,7 +838,7 @@ mod tests {
             let result = serialize(&type_, &array, &field, &mut writer).await;
             assert!(matches!(
                 result,
-                Err(ClickhouseNativeError::ArrowSerialize(msg))
+                Err(Error::ArrowSerialize(msg))
                 if msg.contains(expected)
             ));
         }
@@ -858,21 +853,21 @@ mod tests {
         let result = serialize(&Type::Int32, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("Expected Int32Array")
+            Err(Error::ArrowSerialize(msg)) if msg.contains("Expected Int32Array")
         ));
 
         let mut writer = MockWriter::new();
         let result = serialize(&Type::Decimal32(3), &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("Expected one of")
+            Err(Error::ArrowSerialize(msg)) if msg.contains("Expected one of")
         ));
 
         let mut writer = MockWriter::new();
         let result = serialize(&Type::Ipv6, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("Expected one of")
+            Err(Error::ArrowSerialize(msg)) if msg.contains("Expected one of")
         ));
     }
 
@@ -886,7 +881,7 @@ mod tests {
         let result = serialize(&Type::Uuid, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("UUID must be 16 bytes")
+            Err(Error::ArrowSerialize(msg)) if msg.contains("UUID must be 16 bytes")
         ));
     }
 
@@ -943,7 +938,7 @@ mod tests {
         let result = serialize(&Type::UInt128, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("FixedSizeBinary must be 16 bytes for UInt128")
         ));
     }
@@ -1014,7 +1009,7 @@ mod tests {
         let result = serialize(&Type::UInt256, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("FixedSizeBinary must be 32 bytes for UInt256")
         ));
     }
@@ -1054,7 +1049,7 @@ mod tests {
         let result = serialize(&Type::Int128, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(e))
+            Err(Error::ArrowSerialize(e))
             if e.to_string().contains("Binary must be 16 bytes")
         ));
     }
@@ -1105,7 +1100,7 @@ mod tests {
         let result = serialize(&Type::Int256, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(e))
+            Err(Error::ArrowSerialize(e))
             if e.to_string().contains("FixedSizeBinary must be 32 bytes for Int256")
         ));
     }
@@ -1304,7 +1299,7 @@ mod tests {
         let result = serialize(&Type::DateTime(Tz::UTC), &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("DateTime out of range for TimestampSecond")
         ));
     }
@@ -1318,7 +1313,7 @@ mod tests {
         let result = serialize(&Type::Ipv4, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("IPv4 must be 4 bytes")
         ));
     }
@@ -1353,7 +1348,7 @@ mod tests {
         let result = serialize(&Type::Ipv6, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("IPv6 must be 16 bytes")
         ));
     }
@@ -1366,7 +1361,7 @@ mod tests {
         let result = serialize(&Type::DateTime64(10, Tz::UTC), &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Unsupported precision for DateTime64: 10")
         ));
     }
@@ -1379,7 +1374,7 @@ mod tests {
         let result = serialize(&Type::String, &column, &field, &mut writer).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Unsupported data type: String")
         ));
     }

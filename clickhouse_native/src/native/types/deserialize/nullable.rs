@@ -3,7 +3,7 @@ use tokio::io::AsyncReadExt;
 use super::{Deserializer, DeserializerState, Type};
 use crate::io::ClickhouseRead;
 use crate::native::values::Value;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 pub(crate) struct NullableDeserializer;
 
@@ -17,7 +17,7 @@ impl Deserializer for NullableDeserializer {
         let inner_type = match type_ {
             Type::Nullable(inner) => &**inner,
             _ => {
-                return Err(ClickhouseNativeError::DeserializeError(
+                return Err(Error::DeserializeError(
                     "Expected Nullable type".to_string(),
                 ));
             }

@@ -4,9 +4,10 @@ use std::sync::Arc;
 use arrow::array::*;
 use arrow::datatypes::*;
 use clickhouse_native::prelude::*;
+use clickhouse_native::test_utils::ClickHouseContainer;
 use clickhouse_native::{
-    ArrowOptions, ClientBuilder, CompressionMethod, ConnectionStatus, CreateOptions,
-    Result as ClickHouseResult, Type,
+    ArrowOptions, CompressionMethod, ConnectionStatus, CreateOptions, Result as ClickHouseResult,
+    Type,
 };
 use futures_util::StreamExt;
 use tracing::debug;
@@ -14,52 +15,7 @@ use tracing::debug;
 // assertions helpers for divergences from round trip precision
 use crate::common::arrow_helpers::assertions::*;
 use crate::common::arrow_helpers::*;
-use crate::common::docker::ClickHouseContainer;
 use crate::common::header;
-
-pub(super) async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOptions) {
-    let native_url = ch.get_native_url();
-    debug!("ClickHouse Native URL: {native_url}");
-
-    // Create ClientBuilder and ConnectionManager
-    let client = ClientBuilder::new()
-        .with_endpoint(native_url)
-        .with_username(&ch.user)
-        .with_password(&ch.password)
-        .with_compression(CompressionMethod::LZ4)
-        .with_ipv4_only(true)
-        // Use strings as strings to make sure that we are (de)serializing via strings
-        .with_arrow_options(
-            ArrowOptions::default()
-                // Deserialize strings as Utf8, not Binary
-                .with_strings_as_strings(true)
-                // Deserialize Date as Date32
-                .with_use_date32_for_date(true)
-                // Ignore fields that ClickHouse doesn't support.
-                .with_strict_schema_conversion(true),
-        )
-        .build()
-        .await
-        .expect("Building client");
-
-    // Settings allows converting from "default" types that are compatible
-    let schema_conversions = HashMap::from_iter([
-        (
-            "enum8_col".to_string(),
-            Type::Enum8(vec![("active".to_string(), 0_i8), ("inactive".to_string(), 1)]),
-        ),
-        ("enum16_col".to_string(), Type::Enum16(vec![("x".to_string(), 0), ("y".to_string(), 1)])),
-    ]);
-
-    let options = CreateOptions::new("MergeTree")
-        .with_order_by(&["id".to_string()])
-        .with_schema_conversions(schema_conversions);
-
-    client.health_check(true).await.expect("Health check failed");
-    assert_eq!(client.status(), ConnectionStatus::Open);
-
-    (client, options)
-}
 
 /// Test arrow e2e using `ClientBuilder`.
 ///
@@ -109,6 +65,7 @@ pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
     header(query_id, "Fetching databases");
     let databases = client.fetch_schemas(Some(query_id)).await.expect("Fetch databases failed");
     assert!(databases.contains(&db));
+    eprintln!("Databases: {databases:?}");
 
     // Test fetch all tables
     let query_id = Qid::new();
@@ -116,13 +73,16 @@ pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
     let tables = client.fetch_all_tables(Some(query_id)).await.expect("Fetch all tables failed");
     let db_tables = tables.get(&db);
     assert!(db_tables.is_some());
-    assert!(db_tables.unwrap().contains(&table));
+    let tables = db_tables.unwrap();
+    assert!(tables.contains(&table));
+    eprintln!("All tables: {tables:?}");
 
     // Test fetch tables
     let query_id = Qid::new();
     header(query_id, "Fetching db tables");
     let tables = client.fetch_tables(Some(&db), Some(query_id)).await.expect("Fetch tables failed");
     assert!(tables.contains(&table));
+    eprintln!("Tables: {tables:?}");
 
     // Test fetch schema unfiltered
     let query_id = Qid::new();
@@ -131,7 +91,9 @@ pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
         client.fetch_schema(Some(&db), &[], Some(query_id)).await.expect("Fetch schema failed");
     let table_schema = tables.get(&table);
     assert!(table_schema.is_some());
-    compare_schemas(table_schema.unwrap(), &schema);
+    let table_schema = table_schema.unwrap();
+    compare_schemas(table_schema, &schema);
+    eprintln!("Schema: {table_schema:?}");
 
     // Test fetch schema filtered
     let query_id = Qid::new();
@@ -142,10 +104,98 @@ pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
         .expect("Fetch schema filtered failed");
     let table_schema = tables.get(&table);
     assert!(table_schema.is_some());
-    compare_schemas(table_schema.unwrap(), &schema);
+    let table_schema = table_schema.unwrap();
+    compare_schemas(table_schema, &schema);
+    eprintln!("Table Schema: {table_schema:?}");
 
     // Drop schema
     drop_schema(&db, &table, &client).await.expect("Drop table");
+}
+
+/// # Panics
+pub async fn test_execute_queries(ch: &'static ClickHouseContainer) {
+    let (client, _) = bootstrap(ch).await;
+
+    let settings_query = "SET allow_experimental_object_type = 1;";
+
+    let query_id = Qid::new();
+    header(query_id, "Settings query - execute");
+    client
+        .execute(settings_query, Some(query_id))
+        .await
+        .inspect_err(|error| error!(?error, "Failed to execute settings query"))
+        .unwrap();
+
+    let query_id = Qid::new();
+    header(query_id, "Settings query - execute now");
+    client
+        .execute_now(settings_query, Some(query_id))
+        .await
+        .inspect_err(|error| error!(?error, "Failed to execute settings query now"))
+        .unwrap();
+
+    let query_id = Qid::new();
+    header(query_id, "Simple scalar query");
+    let query = "SELECT 1";
+    let mut results = client
+        .query(query, Some(query_id))
+        .await
+        .inspect_err(|error| error!(?error, "Failed to query simple scalar"))
+        .unwrap();
+    let response = results
+        .next()
+        .await
+        .expect("Expected data from simple scalar")
+        .expect("Expected no error for simple scalar");
+    arrow::util::pretty::print_batches(&[response]).unwrap();
+
+    client.shutdown().await.unwrap();
+}
+
+// Utility functions
+
+pub(super) async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOptions) {
+    let native_url = ch.get_native_url();
+    debug!("ClickHouse Native URL: {native_url}");
+
+    // Create ClientBuilder and ConnectionManager
+    let client = Client::<ArrowFormat>::builder()
+        .with_endpoint(native_url)
+        .with_username(&ch.user)
+        .with_password(&ch.password)
+        .with_compression(CompressionMethod::LZ4)
+        .with_ipv4_only(true)
+        // Use strings as strings to make sure that we are (de)serializing via strings
+        .with_arrow_options(
+            ArrowOptions::default()
+                // Deserialize strings as Utf8, not Binary
+                .with_strings_as_strings(true)
+                // Deserialize Date as Date32
+                .with_use_date32_for_date(true)
+                // Ignore fields that ClickHouse doesn't support.
+                .with_strict_schema_conversion(true),
+        )
+        .build()
+        .await
+        .expect("Building client");
+
+    // Settings allows converting from "default" types that are compatible
+    let schema_conversions = HashMap::from_iter([
+        (
+            "enum8_col".to_string(),
+            Type::Enum8(vec![("active".to_string(), 0_i8), ("inactive".to_string(), 1)]),
+        ),
+        ("enum16_col".to_string(), Type::Enum16(vec![("x".to_string(), 0), ("y".to_string(), 1)])),
+    ]);
+
+    let options = CreateOptions::new("MergeTree")
+        .with_order_by(&["id".to_string()])
+        .with_schema_conversions(schema_conversions);
+
+    client.health_check(true).await.expect("Health check failed");
+    assert_eq!(client.status(), ConnectionStatus::Open);
+
+    (client, options)
 }
 
 /// # Errors
@@ -272,36 +322,6 @@ pub async fn round_trip(
             };
             _ => { assert_eq!(col, inserted_column, "Column {i} mismatch"); }
         );
-
-        // list(field1, field2) => {
-        //     assert_lists(i, col, inserted_column, field1, field2);
-        // },
-        // utc_default() => {
-        //     assert_datetimes_utf_default(col, inserted_column);
-        // },
-
-        // match (col.data_type(), inserted_column.data_type()) {
-        //     // LowCardinality/Dictionaries
-        //     (DataType::Dictionary(k1, v1), DataType::Dictionary(_, _)) => {
-        //         assert_dictionaries(i, col, inserted_column, k1, v1);
-        //     }
-        //     // List LowCardinality/Dictionaries
-        //     (
-        //         DataType::List(field1) | DataType::LargeList(field1) |
-        // DataType::ListView(field1),         DataType::List(field2) |
-        // DataType::LargeList(field2) | DataType::ListView(field2),     ) => {
-        //         assert_lists(i, col, inserted_column, field1, field2);
-        //     }
-        //     // Dates
-        //     (
-        //         DataType::Timestamp(TimeUnit::Millisecond, Some(tz)),
-        //         DataType::Timestamp(TimeUnit::Millisecond, None),
-        //     ) if tz.as_ref() == "UTC" => {
-        //         assert_datetimes_utf_default(col, inserted_column);
-        //     }
-        //     // Default
-        //     _ => assert_eq!(col, inserted_column, "Column {i} mismatch"),
-        // }
     }
 
     Ok(())

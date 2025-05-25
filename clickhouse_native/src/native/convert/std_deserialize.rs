@@ -279,8 +279,10 @@ impl FromSql for serde_json::Value {
             return Err(unexpected_type(type_));
         }
         match value {
-            Value::Object(x) => Ok(serde_json::from_slice(&x)
-                .map_err(|e| ClickhouseNativeError::DeserializeError(e.to_string()))?),
+            Value::Object(x) => {
+                Ok(serde_json::from_slice(&x)
+                    .map_err(|e| Error::DeserializeError(e.to_string()))?)
+            }
             _ => Err(unexpected_type(type_)),
         }
     }
@@ -308,7 +310,7 @@ impl<T: FromSql + Default + Copy, const N: usize> FromSql for [T; N] {
         match value {
             Value::Array(x) => {
                 if x.len() != N {
-                    return Err(ClickhouseNativeError::DeserializeError(format!(
+                    return Err(Error::DeserializeError(format!(
                         "invalid length for array: {} expected {}",
                         x.len(),
                         N
@@ -342,10 +344,10 @@ macro_rules! tuple_impls {
                     };
                     let Value::Tuple(values) = value else { return Err(unexpected_type(type_)) };
                     if values.len() != subtype.len() {
-                        return Err(ClickhouseNativeError::DeserializeError(format!("unexpected type: mismatch tuple length expected {}, got {}", subtype.len(), values.len())));
+                        return Err(Error::DeserializeError(format!("unexpected type: mismatch tuple length expected {}, got {}", subtype.len(), values.len())));
                     }
                     if values.len() != $len {
-                        return Err(ClickhouseNativeError::DeserializeError(format!("unexpected type: mismatch tuple length expected {}, got {}", $len, values.len())));
+                        return Err(Error::DeserializeError(format!("unexpected type: mismatch tuple length expected {}, got {}", $len, values.len())));
                     }
                     let mut deque = ::std::collections::VecDeque::from(values);
                     Ok((

@@ -5,15 +5,15 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use strum::Display;
 use tokio::io::{BufReader, BufWriter};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_rustls::rustls;
 
 use super::internal::{InternalClient, PendingQuery};
-use super::{ArrowOptions, CompressionMethod};
+use super::{ArrowOptions, CompressionMethod, Event};
 use crate::io::{ClickhouseRead, ClickhouseWrite};
 use crate::prelude::*;
-use crate::{ClientOptions, Message, Operation, Response};
+use crate::{ClientOptions, Message, Operation};
 
 // Type alias for the JoinSet used to spawn inner connections
 type IoHandle<T> = JoinSet<VecDeque<PendingQuery<T>>>;
@@ -82,6 +82,7 @@ impl<T: ClientFormat> Connection<T> {
         client_id: u16,
         addrs: Vec<SocketAddr>,
         options: ClientOptions,
+        events: Arc<broadcast::Sender<Event>>,
         trace_ctx: TraceContext,
     ) -> Result<Self> {
         let span = Span::current();
@@ -95,9 +96,15 @@ impl<T: ClientFormat> Connection<T> {
         let status = Arc::new(RwLock::new(ConnectionStatus::Open));
 
         // Establish tcp connection, perform handshake, and spawn io task
-        let (metadata, channel) =
-            Self::connect_inner(client_id, &addrs, &mut io_task, Arc::clone(&status), &options)
-                .await?;
+        let (metadata, channel) = Self::connect_inner(
+            client_id,
+            &addrs,
+            &mut io_task,
+            events,
+            Arc::clone(&status),
+            &options,
+        )
+        .await?;
 
         // Initialize connection status and state
         let state = ConnectState { addrs: Arc::from(addrs.as_slice()), status, channel };
@@ -114,6 +121,7 @@ impl<T: ClientFormat> Connection<T> {
         client_id: u16,
         addrs: &[SocketAddr],
         io_task: &mut IoHandle<T::Data>,
+        events: Arc<broadcast::Sender<Event>>,
         status: Arc<RwLock<ConnectionStatus>>,
         options: &ClientOptions,
     ) -> Result<(ConnectionMetadata, mpsc::Sender<Message<T::Data>>)> {
@@ -129,12 +137,14 @@ impl<T: ClientFormat> Connection<T> {
             let stream = super::tcp::connect_socket(addrs).await?;
             let tls_stream = super::tcp::tls_stream(domain, stream).await?;
 
-            Self::establish_connection(client_id, tls_stream, io_task, status, options).await
+            Self::establish_connection(client_id, tls_stream, io_task, events, status, options)
+                .await
         } else {
             debug!(?addrs, "Initiating TCP connection");
             let tcp_stream = super::tcp::connect_socket(addrs).await?;
 
-            Self::establish_connection(client_id, tcp_stream, io_task, status, options).await
+            Self::establish_connection(client_id, tcp_stream, io_task, events, status, options)
+                .await
         }
     }
 
@@ -142,6 +152,7 @@ impl<T: ClientFormat> Connection<T> {
         client_id: u16,
         mut stream: RW,
         io_task: &mut IoHandle<T::Data>,
+        events: Arc<broadcast::Sender<Event>>,
         status: Arc<RwLock<ConnectionStatus>>,
         options: &ClientOptions,
     ) -> Result<(ConnectionMetadata, mpsc::Sender<Message<T::Data>>)> {
@@ -168,10 +179,11 @@ impl<T: ClientFormat> Connection<T> {
         drop(
             io_task.spawn(
                 async move {
-                    let reader = BufReader::new(reader);
-                    let writer = BufWriter::new(writer);
+                    let reader = BufReader::with_capacity(1024 * 1024, reader);
+                    let writer = BufWriter::with_capacity(10 * 1024 * 1024, writer);
+
                     // Create and run internal client
-                    let mut internal = InternalClient::<T>::new(metadata);
+                    let mut internal = InternalClient::<T>::new(metadata, events);
                     if let Err(error) = internal.run(reader, writer, op_rx).await {
                         error!(?error, "Internal connection lost");
                         *status.write() = ConnectionStatus::Error;
@@ -179,12 +191,10 @@ impl<T: ClientFormat> Connection<T> {
                         *status.write() = ConnectionStatus::Closed;
                     }
 
-                    // TODO: Use the return to reconnect and pass in progress queries
-                    //
-                    // Gather pending queries here for reconnect
-                    let data = internal.drain_pending();
-                    trace!("Exiting inner connection: pending = {data:?}");
-                    data
+                    trace!("Exiting inner connection");
+
+                    // TODO: Drain inner of pending queries
+                    VecDeque::new()
                 }
                 .instrument(trace_span!(
                     "clickhouse.connection.io",
@@ -206,26 +216,19 @@ impl<T: ClientFormat> Connection<T> {
 
     pub(crate) fn status(&self) -> ConnectionStatus { *self.state.status.read() }
 
-    pub(crate) async fn send_request(
-        &self,
-        op: Operation<T::Data>,
-        qid: Qid,
-    ) -> Result<mpsc::Receiver<Response<T::Data>>> {
+    pub(crate) async fn send_request(&self, op: Operation<T::Data>, qid: Qid) -> Result<()> {
         let client_id = self.metadata.client_id;
         let operation: &'static str = (&op).into();
 
-        // Create response channel
-        let (response, rx) = mpsc::channel(32);
-
         // First check if the underlying connection is ok (until re-connects are impelemented)
         if !matches!(self.status(), ConnectionStatus::Open) {
-            return Err(ClickhouseNativeError::Client("No active connection".into()));
+            return Err(Error::Client("No active connection".into()));
         }
 
         if self
             .state
             .channel
-            .send(Message::Operation { qid, op, response })
+            .send(Message::Operation { qid, op })
             .instrument(trace_span!(
                 "clickhouse.connection.send_request",
                 { ATT_CID } = client_id,
@@ -238,10 +241,10 @@ impl<T: ClientFormat> Connection<T> {
         {
             error!({ ATT_CID } = client_id, { ATT_QID } = %qid, "failed to send message");
             *self.state.status.write() = ConnectionStatus::Closed;
-            return Err(ClickhouseNativeError::ChannelClosed);
+            return Err(Error::ChannelClosed);
         }
 
-        Ok(rx)
+        Ok(())
     }
 
     pub(crate) async fn shutdown(&self) -> Result<()> {
@@ -250,7 +253,7 @@ impl<T: ClientFormat> Connection<T> {
         self.state.channel.send(Message::Shutdown).await.map_err(|_| {
             error!({ ATT_CID } = client_id, "Failed to send shutdown message");
             *self.state.status.write() = ConnectionStatus::Closed;
-            ClickhouseNativeError::ChannelClosed
+            Error::ChannelClosed
         })?;
 
         self.io_task.lock().abort_all();
@@ -261,7 +264,7 @@ impl<T: ClientFormat> Connection<T> {
     pub(crate) fn check_channel(&self) -> Result<()> {
         if self.state.channel.is_closed() {
             *self.state.status.write() = ConnectionStatus::Closed;
-            Err(ClickhouseNativeError::ChannelClosed)
+            Err(Error::ChannelClosed)
         } else {
             Ok(())
         }
@@ -276,26 +279,37 @@ impl<T: ClientFormat> Connection<T> {
         }
 
         // Then ping
-        let client_id = self.metadata.client_id;
-        let mut response =
-            self.send_request(Operation::Ping, Qid::default()).await.inspect_err(|error| {
-                error!(?error, { ATT_CID } = client_id, "Ping failed");
-                *self.state.status.write() = ConnectionStatus::Error;
-            })?;
+        let cid = self.metadata.client_id;
+        let qid = Qid::default();
 
-        trace!({ ATT_CID } = client_id, "Sent ping");
-
-        while let Some(packet) = response.recv().await {
-            match packet {
-                Response::Data(_) => return Ok(()),
-                Response::Exception(error) => {
-                    error!(?error, { ATT_CID } = client_id, "Ping failed");
-                    *self.state.status.write() = ConnectionStatus::Error;
-                    return Err(error.into());
-                }
-                _ => {}
-            }
+        let (response, rx) = tokio::sync::oneshot::channel();
+        if self
+            .state
+            .channel
+            .send(Message::Ping { response })
+            .instrument(trace_span!(
+                "clickhouse.connection.ping",
+                { ATT_CID } = cid,
+                { ATT_QID } = %qid,
+                db.system = "clickhouse",
+            ))
+            .await
+            .is_err()
+        {
+            error!({ ATT_CID } = cid, { ATT_QID } = %qid, "failed to send ping");
+            *self.state.status.write() = ConnectionStatus::Closed;
+            return Err(Error::ChannelClosed);
         }
+
+        let result = rx.await.map_err(|_| {
+            *self.state.status.write() = ConnectionStatus::Error;
+            Error::ChannelClosed
+        })?;
+
+        result.inspect_err(|error| error!(?error, { ATT_CID } = cid, "Ping failed"))?;
+
+        trace!({ ATT_CID } = cid, "Sent ping");
+
         Ok(())
     }
 }

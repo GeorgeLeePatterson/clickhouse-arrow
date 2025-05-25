@@ -20,7 +20,7 @@ use super::ClickhouseArrowDeserializer;
 use crate::arrow::types::LIST_ITEM_FIELD_NAME;
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Array` type into an Arrow `ListArray`.
 ///
@@ -39,7 +39,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 ///
 /// # Returns
 /// A `Result` containing the deserialized `ListArray` as an `ArrayRef` or a
-/// `ClickhouseNativeError` if deserialization fails.
+/// `Error` if deserialization fails.
 ///
 /// # Errors
 /// - Returns `Io` if reading from the reader fails (e.g., EOF).
@@ -118,7 +118,7 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
 
     // Verify length matches expected rows
     if list_array.len() != rows {
-        return Err(ClickhouseNativeError::DeserializeError(format!(
+        return Err(Error::DeserializeError(format!(
             "ListArray length {} does not match expected rows {}",
             list_array.len(),
             rows

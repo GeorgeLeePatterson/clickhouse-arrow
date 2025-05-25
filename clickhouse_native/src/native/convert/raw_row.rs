@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::{ClickhouseNativeError, FromSql, Result, Row, ToSql, Type, Value};
+use crate::{Error, FromSql, Result, Row, ToSql, Type, Value};
 
 /// A row of raw data returned from the database by a query.
 /// Or an unstructured runtime-defined row to upload to the server.
@@ -85,9 +85,9 @@ impl RawRow {
     pub fn try_get<I: RowIndex, T: FromSql>(&mut self, index: I) -> Result<T> {
         let index = index
             .get(self.0.iter().map(|x| x.as_ref().map_or("", |x| &*x.0)))
-            .ok_or(ClickhouseNativeError::OutOfBounds)?;
+            .ok_or(Error::OutOfBounds)?;
         let (_, type_, value) =
-            self.0.get_mut(index).unwrap().take().ok_or(ClickhouseNativeError::DoubleFetch)?;
+            self.0.get_mut(index).unwrap().take().ok_or(Error::DoubleFetch)?;
         T::from_sql(&type_, value)
     }
 

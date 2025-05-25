@@ -1,7 +1,7 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::native::protocol::MAX_STRING_SIZE;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 /// An extension trait on [`AsyncRead`] providing `ClickHouse` specific functionality.
 #[async_trait::async_trait]
@@ -34,7 +34,7 @@ impl<T: AsyncRead + Unpin + Send + Sync> ClickhouseRead for T {
         #[expect(clippy::cast_possible_truncation)]
         let len = self.read_var_uint().await? as usize;
         if len > MAX_STRING_SIZE {
-            return Err(ClickhouseNativeError::ProtocolError(format!(
+            return Err(Error::ProtocolError(format!(
                 "string too large: {len} > {MAX_STRING_SIZE}"
             )));
         }
@@ -62,18 +62,23 @@ pub trait ClickhouseWrite: AsyncWrite + AsyncWriteExt + Unpin + Send + Sync + 's
 #[async_trait::async_trait]
 impl<T: AsyncWrite + Unpin + Send + Sync + 'static> ClickhouseWrite for T {
     async fn write_var_uint(&mut self, mut value: u64) -> Result<()> {
-        for _ in 0..9u64 {
+        let mut buf = [0u8; 9]; // Max 9 bytes for u64
+        let mut pos = 0;
+
+        #[expect(clippy::cast_possible_truncation)]
+        while pos < 9 {
             let mut byte = value & 0x7F;
-            if value > 0x7F {
+            value >>= 7;
+            if value > 0 {
                 byte |= 0x80;
             }
-            #[expect(clippy::cast_possible_truncation)]
-            self.write_u8(byte as u8).await?;
-            value >>= 7;
+            buf[pos] = byte as u8;
+            pos += 1;
             if value == 0 {
                 break;
             }
         }
+        self.write_all(&buf[..pos]).await?;
         Ok(())
     }
 

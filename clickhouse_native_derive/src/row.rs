@@ -436,25 +436,25 @@ fn deserialize_map(
                 });
                 name_match_arms.push(quote_spanned! { span=>
                     full_name if full_name.starts_with(#deser_name_dotted) => {
-                        let values = _value.unarray().ok_or_else(|| ::clickhouse_native::ClickhouseNativeError::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(full_name.to_string()), _type_.clone()))?;
+                        let values = _value.unarray().ok_or_else(|| ::clickhouse_native::Error::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(full_name.to_string()), _type_.clone()))?;
                         if #deser_name_ext.is_empty() {
                             #deser_name_ext_len = values.len();
                         } else if #deser_name_ext_len != values.len() {
-                            return ::clickhouse_native::Result::Err(::clickhouse_native::ClickhouseNativeError::DeserializeError(format!("invalid length for nested columns, mismatches previous column {}: {} != {}", _name, #deser_name_ext_len, values.len())));
+                            return ::clickhouse_native::Result::Err(::clickhouse_native::Error::DeserializeError(format!("invalid length for nested columns, mismatches previous column {}: {} != {}", _name, #deser_name_ext_len, values.len())));
                         }
-                        #deser_name_ext.push((full_name.strip_prefix(#deser_name_dotted).unwrap(), _type_.unarray().ok_or_else(|| ::clickhouse_native::ClickhouseNativeError::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(full_name.to_string()), _type_.clone()))?));
+                        #deser_name_ext.push((full_name.strip_prefix(#deser_name_dotted).unwrap(), _type_.unarray().ok_or_else(|| ::clickhouse_native::Error::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(full_name.to_string()), _type_.clone()))?));
                         #deser_name_ext_iter.push(values.into_iter());
                     }
                 });
                 index_match_arms.push(quote_spanned! { span=>
                     x if x >= (#local_index) && x < (#current_index) => {
-                        let values = _value.unarray().ok_or_else(|| ::clickhouse_native::ClickhouseNativeError::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(_name.to_string()), _type_.clone()))?;
+                        let values = _value.unarray().ok_or_else(|| ::clickhouse_native::Error::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(_name.to_string()), _type_.clone()))?;
                         if #deser_name_ext.is_empty() {
                             #deser_name_ext_len = values.len();
                         } else if #deser_name_ext_len != values.len() {
-                            return ::clickhouse_native::Result::Err(::clickhouse_native::ClickhouseNativeError::DeserializeError(format!("invalid length for nested columns, mismatches previous column {}: {} != {}", _name, #deser_name_ext_len, values.len())));
+                            return ::clickhouse_native::Result::Err(::clickhouse_native::Error::DeserializeError(format!("invalid length for nested columns, mismatches previous column {}: {} != {}", _name, #deser_name_ext_len, values.len())));
                         }
-                        #deser_name_ext.push((_name, _type_.unarray().ok_or_else(|| ::clickhouse_native::ClickhouseNativeError::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(_name.to_string()), _type_.clone()))?));
+                        #deser_name_ext.push((_name, _type_.unarray().ok_or_else(|| ::clickhouse_native::Error::UnexpectedTypeWithColumn(::std::borrow::Cow::Owned(_name.to_string()), _type_.clone()))?));
                         #deser_name_ext_iter.push(values.into_iter());
                     }
                 });
@@ -495,7 +495,7 @@ fn deserialize_map(
             name_match_arms.push(quote_spanned! { span=>
                 #deser_name => {
                     if ::std::option::Option::is_some(&#name) {
-                        return ::clickhouse_native::Result::Err(::clickhouse_native::ClickhouseNativeError::DuplicateField(#deser_name));
+                        return ::clickhouse_native::Result::Err(::clickhouse_native::Error::DuplicateField(#deser_name));
                     }
                     #name = ::std::option::Option::Some(#visit);
                 }
@@ -503,7 +503,7 @@ fn deserialize_map(
             index_match_arms.push(quote_spanned! { span=>
                 x if x == (#local_index) => {
                         if ::std::option::Option::is_some(&#name) {
-                        return ::clickhouse_native::Result::Err(::clickhouse_native::ClickhouseNativeError::DuplicateField(#deser_name));
+                        return ::clickhouse_native::Result::Err(::clickhouse_native::Error::DuplicateField(#deser_name));
                     }
                     #name = ::std::option::Option::Some(#visit);
                 }
@@ -514,7 +514,7 @@ fn deserialize_map(
     let ignored_arm = if cattrs.deny_unknown_fields() {
         quote! {
             _ => {
-                return ::clickhouse_native::Result::Err(::clickhouse_native::ClickhouseNativeError::UnknownField(_name));
+                return ::clickhouse_native::Result::Err(::clickhouse_native::Error::UnknownField(_name));
             }
         }
     } else {
@@ -549,13 +549,13 @@ fn deserialize_map(
         let missing_names_error =
             format!("Flattened field {} should provide Row::column_names", name);
         // TODO: To give the actual field, we would need to change the type of
-        //       ClickhouseNativeError::MissingField from &'static str to Cow.
+        //       Error::MissingField from &'static str to Cow.
         let missing_col_error = format!("Flattened field {} has missing column", name);
         pull_flatten.push(quote! {
             for c in #ty::column_names()
-                    .ok_or_else(|| ::clickhouse_native::ClickhouseNativeError::DeserializeError(#missing_names_error.into()))? {
+                    .ok_or_else(|| ::clickhouse_native::Error::DeserializeError(#missing_names_error.into()))? {
                 let idx = map.iter().enumerate().find(|(_, (c2,_,_))| c2 == &c)
-                                    .ok_or(::clickhouse_native::ClickhouseNativeError::MissingField(#missing_col_error))?.0;
+                                    .ok_or(::clickhouse_native::Error::MissingField(#missing_col_error))?.0;
                 let (col, ty, val) = map.swap_remove(idx);
                 map_flattened_fields.insert(col, (ty, val));
             }
@@ -667,7 +667,7 @@ fn expr_is_missing(field: &Field, cattrs: &attr::Container) -> Fragment {
 
     let name = field.attrs.name().name();
     let span = field.original.span();
-    let func = quote_spanned!(span=> ::clickhouse_native::ClickhouseNativeError::MissingField);
+    let func = quote_spanned!(span=> ::clickhouse_native::Error::MissingField);
     quote_expr! {
         return ::clickhouse_native::Result::Err(#func(#name))
     }

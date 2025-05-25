@@ -5,7 +5,7 @@ use super::ClickhouseArrowSerializer;
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
 use crate::native::types::Type;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 /// Serializes an Arrow `StructArray` to ClickHouse’s native format for `Tuple` types.
 ///
@@ -20,7 +20,7 @@ use crate::{ClickhouseNativeError, Result};
 /// - `state`: A mutable `SerializerState` for serialization context.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if the `column` is not a `StructArray` or the number of fields
@@ -36,19 +36,18 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
     // Unwrap the tuple
     let inner_types = type_hint.strip_null().unwrap_tuple()?;
 
-    let struct_array = column.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
-        ClickhouseNativeError::ArrowSerialize("Expected StructArray for Tuple type".into())
-    })?;
+    let struct_array = column
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| Error::ArrowSerialize("Expected StructArray for Tuple type".into()))?;
 
     // Validate field count
     let DataType::Struct(fields) = struct_array.data_type() else {
-        return Err(ClickhouseNativeError::ArrowSerialize(
-            "StructArray must have Struct data type".into(),
-        ));
+        return Err(Error::ArrowSerialize("StructArray must have Struct data type".into()));
     };
 
     if fields.len() != inner_types.len() {
-        return Err(ClickhouseNativeError::ArrowSerialize(format!(
+        return Err(Error::ArrowSerialize(format!(
             "StructArray has {} fields, but Tuple expects {}",
             fields.len(),
             inner_types.len()
@@ -247,7 +246,7 @@ mod tests {
         let result = serialize(&type_hint, &column, &mut writer, &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Expected StructArray for Tuple type")
         ));
     }
@@ -266,7 +265,7 @@ mod tests {
         let result = serialize(&type_hint, &struct_array, &mut writer, &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("StructArray has 1 fields, but Tuple expects 2")
         ));
     }

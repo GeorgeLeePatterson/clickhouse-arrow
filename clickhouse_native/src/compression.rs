@@ -23,7 +23,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 use crate::io::ClickhouseRead;
 use crate::native::protocol::CompressionMethod;
-use crate::{ClickhouseNativeError, ClickhouseWrite, Result};
+use crate::{Error, ClickhouseWrite, Result};
 
 /// Compresses data and writes it to a writer in `ClickHouse`'s native protocol format.
 ///
@@ -101,7 +101,7 @@ pub(crate) async fn decompress_data(
         (u128::from(reader.read_u64_le().await?) << 64) | u128::from(reader.read_u64_le().await?);
     let type_byte = reader.read_u8().await?;
     if type_byte != compression.byte() {
-        return Err(ClickhouseNativeError::ArrowDeserialize(format!(
+        return Err(Error::ArrowDeserialize(format!(
             "Unexpected compression algorithm: {type_byte:02x}"
         )));
     }
@@ -114,13 +114,13 @@ pub(crate) async fn decompress_data(
     compressed[5..9].copy_from_slice(&decompressed_size.to_le_bytes()[..]);
     let calc_checksum = cityhash_rs::cityhash_102_128(&compressed[..]);
     if calc_checksum != checksum {
-        return Err(ClickhouseNativeError::ArrowDeserialize(format!(
+        return Err(Error::ArrowDeserialize(format!(
             "Checksum mismatch: {calc_checksum:032x} vs {checksum:032x}"
         )));
     }
 
     lz4_flex::decompress(&compressed[9..], max_capacity.unwrap_or(decompressed_size as usize))
-        .map_err(|e| ClickhouseNativeError::DeserializeError(format!("LZ4 decompress error: {e}")))
+        .map_err(|e| Error::DeserializeError(format!("LZ4 decompress error: {e}")))
 }
 
 type BlockReadingFuture<R> =

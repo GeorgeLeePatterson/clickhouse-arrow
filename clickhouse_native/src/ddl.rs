@@ -5,7 +5,7 @@ use tracing::error;
 
 use super::settings::{SettingValue, Settings};
 use crate::arrow::types::{SchemaConversions, schema_conversion};
-use crate::{ArrowOptions, ClickhouseNativeError, ColumnDefinition, Result, Row, Type};
+use crate::{ArrowOptions, ColumnDefinition, Error, Result, Row, Type};
 
 /// Options for creating a `ClickHouse` table, specifying engine, ordering, partitioning, and other
 /// settings.
@@ -222,7 +222,7 @@ impl CreateOptions {
     /// a subset of `ORDER BY` columns and sampling references a primary key.
     ///
     /// # Returns
-    /// A `Result` containing the SQL string for the table options or a `ClickhouseNativeError` if
+    /// A `Result` containing the SQL string for the table options or a `Error` if
     /// validation fails (e.g., empty engine, invalid primary keys).
     ///
     /// # Errors
@@ -231,9 +231,7 @@ impl CreateOptions {
     fn build(&self) -> Result<String> {
         let engine = self.engine.to_string();
         if engine.is_empty() {
-            return Err(ClickhouseNativeError::DDLMalformed(
-                "An engine is required, received empty string".into(),
-            ));
+            return Err(Error::DDLMalformed("An engine is required, received empty string".into()));
         }
 
         let mut options = vec![format!("ENGINE = {engine}")];
@@ -248,7 +246,7 @@ impl CreateOptions {
             // Validations
             if !self.primary_keys.is_empty() || !self.sampling.as_ref().is_none_or(String::is_empty)
             {
-                return Err(ClickhouseNativeError::DDLMalformed(
+                return Err(Error::DDLMalformed(
                     "Cannot specify primary keys or sampling when order by is empty".into(),
                 ));
             }
@@ -261,7 +259,7 @@ impl CreateOptions {
             if !self.primary_keys.is_empty()
                 && !self.primary_keys.iter().enumerate().all(|(i, k)| order_by.get(i) == Some(k))
             {
-                return Err(ClickhouseNativeError::DDLMalformed(format!(
+                return Err(Error::DDLMalformed(format!(
                     "Primary keys but be present in order by and the ordering must match: order \
                      by = {order_by:?}, primary keys = {:?}",
                     self.primary_keys
@@ -271,7 +269,7 @@ impl CreateOptions {
             // Validate sampling
             if let Some(sample) = self.sampling.as_ref() {
                 if !order_by.iter().any(|o| sample.contains(o.as_str())) {
-                    return Err(ClickhouseNativeError::DDLMalformed(format!(
+                    return Err(Error::DDLMalformed(format!(
                         "Sampling must refer to a primary key: order by = {order_by:?}, \
                          sampling={:?}",
                         self.sampling
@@ -313,7 +311,7 @@ impl CreateOptions {
 /// - `database`: The name of the database to create.
 ///
 /// # Returns
-/// A `Result` containing the SQL statement or a `ClickhouseNativeError` if the database name is
+/// A `Result` containing the SQL statement or a `Error` if the database name is
 /// invalid.
 ///
 /// # Errors
@@ -328,12 +326,12 @@ impl CreateOptions {
 /// ```
 pub(crate) fn create_db_statement(database: &str) -> Result<String> {
     if database.is_empty() {
-        return Err(ClickhouseNativeError::DDLMalformed("Database name cannot be empty".into()));
+        return Err(Error::DDLMalformed("Database name cannot be empty".into()));
     }
 
     let db = database.to_lowercase();
     if &db == "default" {
-        return Err(ClickhouseNativeError::DDLMalformed("Cannot create `default` database".into()));
+        return Err(Error::DDLMalformed("Cannot create `default` database".into()));
     }
 
     Ok(format!("CREATE DATABASE IF NOT EXISTS {db}"))
@@ -346,7 +344,7 @@ pub(crate) fn create_db_statement(database: &str) -> Result<String> {
 /// - `sync`: If `true`, adds the `SYNC` clause for synchronous dropping.
 ///
 /// # Returns
-/// A `Result` containing the SQL statement or a `ClickhouseNativeError` if the database name is
+/// A `Result` containing the SQL statement or a `Error` if the database name is
 /// invalid.
 ///
 /// # Errors
@@ -361,12 +359,12 @@ pub(crate) fn create_db_statement(database: &str) -> Result<String> {
 /// ```
 pub(crate) fn drop_db_statement(database: &str, sync: bool) -> Result<String> {
     if database.is_empty() {
-        return Err(ClickhouseNativeError::DDLMalformed("Database name cannot be empty".into()));
+        return Err(Error::DDLMalformed("Database name cannot be empty".into()));
     }
 
     let db = database.to_lowercase();
     if &db == "default" {
-        return Err(ClickhouseNativeError::DDLMalformed("Cannot create `default` database".into()));
+        return Err(Error::DDLMalformed("Cannot create `default` database".into()));
     }
 
     let mut ddl = "DROP DATABASE IF EXISTS ".to_string();
@@ -387,7 +385,7 @@ pub(crate) fn drop_db_statement(database: &str, sync: bool) -> Result<String> {
 /// - `options`: The `CreateOptions` specifying engine, ordering, and other settings.
 ///
 /// # Returns
-/// A `Result` containing the SQL statement or a `ClickhouseNativeError` if the schema is invalid or
+/// A `Result` containing the SQL statement or a `Error` if the schema is invalid or
 /// options fail validation.
 ///
 /// # Errors
@@ -419,13 +417,8 @@ pub(crate) fn create_table_statement_from_arrow(
     arrow_options: Option<ArrowOptions>,
 ) -> Result<String> {
     if schema.fields().is_empty() {
-        return Err(ClickhouseNativeError::DDLMalformed(
-            "Arrow Schema is empty, cannot create table".into(),
-        ));
+        return Err(Error::DDLMalformed("Arrow Schema is empty, cannot create table".into()));
     }
-    // TODO: Remove
-    eprintln!("Schema: {schema:?}");
-
     let definition = RecordBatchDefinition { arrow_options, schema, defaults: options.defaults() };
     create_table_statement(database, table, Some(definition), options)
 }
@@ -452,9 +445,7 @@ pub(crate) fn create_table_statement<T: ColumnDefine>(
         .or(T::definitions());
 
     let Some(definitions) = column_definitions.filter(|c| !c.is_empty()) else {
-        return Err(ClickhouseNativeError::DDLMalformed(
-            "Schema is empty, cannot create table".into(),
-        ));
+        return Err(Error::DDLMalformed("Schema is empty, cannot create table".into()));
     };
 
     let db_pre = database.map(|c| format!("{c}.")).unwrap_or_default();
@@ -565,20 +556,10 @@ impl ColumnDefine for RecordBatchDefinition<'_> {
     ) -> Result<Option<Vec<ColumnDefinition<String>>>> {
         let mut fields = Vec::with_capacity(self.schema.fields.len());
         for field in self.schema.fields() {
-            // TODO: Remove
-            eprintln!("Field: {field:?}");
-
-            let type_ = schema_conversion(field, conversions, self.arrow_options)
-                .inspect_err(|error| {
-                    // TODO: Remove
-                    eprintln!("Error: {error:?}");
-                })
-                .inspect_err(|error| {
+            let type_ =
+                schema_conversion(field, conversions, self.arrow_options).inspect_err(|error| {
                     error!("Arrow conversion failed for field {field:?}: {error}");
                 })?;
-
-            // TODO: Remove
-            eprintln!("Arrow field: field={field:?}, type_={type_:?}");
 
             let default_val = if let Some(d) = self.defaults.and_then(|d| d.get(field.name())) {
                 if !d.is_empty() && d != "NULL" { Some(d.clone()) } else { None }
@@ -740,7 +721,7 @@ mod tests {
     fn test_create_options_build_invalid_engine() {
         let options = CreateOptions::new("");
         let result = options.build();
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
     }
 
     #[test]
@@ -749,7 +730,7 @@ mod tests {
             .with_order_by(&["id".to_string()])
             .with_primary_keys(&["name".to_string()]);
         let result = options.build();
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
     }
 
     #[test]
@@ -758,7 +739,7 @@ mod tests {
             .with_order_by(&["id".to_string()])
             .with_sample_by("cityHash64(name)");
         let result = options.build();
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
     }
 
     #[test]
@@ -767,10 +748,10 @@ mod tests {
         assert_eq!(sql, "CREATE DATABASE IF NOT EXISTS my_db");
 
         let result = create_db_statement("");
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
 
         let result = create_db_statement("default");
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
     }
 
     #[test]
@@ -782,10 +763,10 @@ mod tests {
         compare_sql(sql, "DROP DATABASE IF EXISTS my_db SYNC");
 
         let result = drop_db_statement("", false);
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
 
         let result = drop_db_statement("default", false);
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
     }
 
     #[test]
@@ -826,7 +807,7 @@ mod tests {
         let schema = Arc::new(Schema::empty());
         let options = CreateOptions::new("MergeTree");
         let result = create_table_statement_from_arrow(None, "my_table", &schema, &options, None);
-        assert!(matches!(result, Err(ClickhouseNativeError::DDLMalformed(_))));
+        assert!(matches!(result, Err(Error::DDLMalformed(_))));
     }
 
     #[test]
@@ -939,7 +920,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::TypeConversion(msg))
+            Err(Error::TypeConversion(msg))
             if msg.contains("expected LowCardinality(String) or String/Binary, found Nullable(Int32)")
         ));
     }

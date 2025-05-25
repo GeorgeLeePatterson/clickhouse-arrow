@@ -1,24 +1,22 @@
 use rust_decimal::Decimal;
 
-use crate::{ClickhouseNativeError, FromSql, Result, ToSql, Type, Value, unexpected_type};
+use crate::{Error, FromSql, Result, ToSql, Type, Value, unexpected_type};
 
 fn count_digits_i128(n: i128) -> u32 { if n == 0 { 1 } else { n.abs().ilog10() + 1 } }
 
 impl FromSql for Decimal {
     #[expect(clippy::cast_possible_truncation)]
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        fn out_of_range(name: &str) -> ClickhouseNativeError {
-            ClickhouseNativeError::DeserializeError(format!(
-                "{name} out of bounds for rust_decimal"
-            ))
+        fn out_of_range(name: &str) -> Error {
+            Error::DeserializeError(format!("{name} out of bounds for rust_decimal"))
         }
         fn decimal_out_of_range<T: std::fmt::Display>(
             name: &str,
             type_: &Type,
             scale: usize,
             value: T,
-        ) -> ClickhouseNativeError {
-            ClickhouseNativeError::DeserializeError(format!(
+        ) -> Error {
+            Error::DeserializeError(format!(
                 "{name} out of bounds for rust_decimal: type={type_:?} scale={scale} value={value}"
             ))
         }
@@ -71,8 +69,8 @@ impl FromSql for Decimal {
 impl ToSql for Decimal {
     #[expect(clippy::cast_possible_truncation)]
     fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> {
-        fn out_of_range(name: &str) -> ClickhouseNativeError {
-            ClickhouseNativeError::SerializeError(format!("{name} out of bounds for rust_decimal"))
+        fn out_of_range(name: &str) -> Error {
+            Error::SerializeError(format!("{name} out of bounds for rust_decimal"))
         }
 
         let scale = self.scale();
@@ -113,9 +111,9 @@ impl ToSql for Decimal {
                 }
                 Ok(Value::Decimal128(scale as usize, mantissa))
             }
-            Some(x) => Err(ClickhouseNativeError::SerializeError(format!(
-                "unexpected type for scale {scale}: {x}"
-            ))),
+            Some(x) => {
+                Err(Error::SerializeError(format!("unexpected type for scale {scale}: {x}")))
+            }
         }
     }
 }

@@ -10,7 +10,7 @@ use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 
 use crate::constants::*;
 use crate::prelude::*;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 // Custom Destination type
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -40,9 +40,7 @@ impl Destination {
             }
         }
         .map_err(|_| {
-            ClickhouseNativeError::MalformedConnectionInformation(
-                "Could not resolve destination".into(),
-            )
+            Error::MalformedConnectionInformation("Could not resolve destination".into())
         })?;
 
         Ok(addrs
@@ -69,7 +67,7 @@ impl Destination {
 /// Connects to clickhouse's native server port and configures common socket options.
 #[instrument(level = "trace", name = "clickhouse._connect_socket", skip_all)]
 pub(crate) async fn connect_socket(destination: &[SocketAddr]) -> Result<TcpStream> {
-    let addr = destination.first().ok_or(ClickhouseNativeError::MissingConnectionInformation)?;
+    let addr = destination.first().ok_or(Error::MissingConnectionInformation)?;
     let domain = if addr.is_ipv4() { socket2::Domain::IPV4 } else { socket2::Domain::IPV6 };
     let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
     socket.set_nonblocking(true)?;
@@ -107,8 +105,8 @@ pub(super) async fn tls_stream(domain: String, stream: TcpStream) -> Result<TlsS
     tls_config.resumption = rustls::client::Resumption::in_memory_sessions(256);
 
     let connector = TlsConnector::from(Arc::new(tls_config));
-    let dnsname = ServerName::try_from(domain.clone())
-        .map_err(|e| ClickhouseNativeError::InvalidDnsName(e.to_string()))?;
+    let dnsname =
+        ServerName::try_from(domain.clone()).map_err(|e| Error::InvalidDnsName(e.to_string()))?;
     Ok(connector.connect(dnsname, stream).await?)
 }
 
@@ -239,7 +237,7 @@ mod tests {
         let result = dest.resolve(false).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::MalformedConnectionInformation(msg))
+            Err(Error::MalformedConnectionInformation(msg))
             if msg == "Could not resolve destination"
         ));
     }
@@ -259,7 +257,7 @@ mod tests {
         let result = dest.resolve(false).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::MalformedConnectionInformation(msg))
+            Err(Error::MalformedConnectionInformation(msg))
             if msg == "Could not resolve destination"
         ));
     }

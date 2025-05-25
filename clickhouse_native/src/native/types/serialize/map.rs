@@ -18,7 +18,7 @@ impl Serializer for MapSerializer {
                 nested.serialize_prefix(writer, state).await?;
             }
             _ => {
-                return Err(crate::ClickhouseNativeError::SerializeError(format!(
+                return Err(crate::Error::SerializeError(format!(
                     "MapSerializer called with non-map type: {type_:?}"
                 )));
             }
@@ -33,7 +33,7 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Map(key_type, value_type) = type_ else {
-            return Err(crate::ClickhouseNativeError::SerializeError(format!(
+            return Err(crate::Error::SerializeError(format!(
                 "MapSerializer called with non-map type: {type_:?}"
             )));
         };
@@ -43,7 +43,7 @@ impl Serializer for MapSerializer {
 
         for value in values {
             let Value::Map(keys, values) = value else {
-                return Err(crate::ClickhouseNativeError::SerializeError(format!(
+                return Err(crate::Error::SerializeError(format!(
                     "MapSerializer called with non-map value: {value:?}"
                 )));
             };

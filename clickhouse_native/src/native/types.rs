@@ -17,7 +17,7 @@ use super::values::{
 };
 use crate::formats::{DeserializerState, SerializerState};
 use crate::io::{ClickhouseRead, ClickhouseWrite};
-use crate::{ClickhouseNativeError, Date32, Result};
+use crate::{Error, Date32, Result};
 
 /// A raw Clickhouse type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -88,7 +88,7 @@ impl Type {
     pub fn unwrap_array(&self) -> Result<&Type> {
         match self {
             Type::Array(x) => Ok(x),
-            _ => Err(ClickhouseNativeError::UnexpectedType(self.clone())),
+            _ => Err(Error::UnexpectedType(self.clone())),
         }
     }
 
@@ -105,7 +105,7 @@ impl Type {
     pub fn unwrap_map(&self) -> Result<(&Type, &Type)> {
         match self {
             Type::Map(key, value) => Ok((&**key, &**value)),
-            _ => Err(ClickhouseNativeError::UnexpectedType(self.clone())),
+            _ => Err(Error::UnexpectedType(self.clone())),
         }
     }
 
@@ -122,7 +122,7 @@ impl Type {
     pub fn unwrap_tuple(&self) -> Result<&[Type]> {
         match self {
             Type::Tuple(x) => Ok(&x[..]),
-            _ => Err(ClickhouseNativeError::UnexpectedType(self.clone())),
+            _ => Err(Error::UnexpectedType(self.clone())),
         }
     }
 
@@ -355,7 +355,7 @@ impl Type {
     ) -> Result<Vec<Value>> {
         use deserialize::*;
         if rows > MAX_STRING_SIZE {
-            return Err(ClickhouseNativeError::ProtocolError(format!(
+            return Err(Error::ProtocolError(format!(
                 "deserialize response size too large. {rows} > {MAX_STRING_SIZE}"
             )));
         }
@@ -536,7 +536,7 @@ impl Type {
         match self {
             Type::Decimal32(scale) => {
                 if *scale == 0 || *scale > 9 {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "scale out of bounds for Decimal32({}) must be in range (1..=9)",
                         *scale
                     )));
@@ -545,7 +545,7 @@ impl Type {
 
             Type::Decimal128(scale) => {
                 if *scale == 0 || *scale > 38 {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "scale out of bounds for Decimal128({}) must be in range (1..=38)",
                         *scale
                     )));
@@ -553,7 +553,7 @@ impl Type {
             }
             Type::Decimal256(scale) => {
                 if *scale == 0 || *scale > 76 {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "scale out of bounds for Decimal256({}) must be in range (1..=76)",
                         *scale
                     )));
@@ -561,7 +561,7 @@ impl Type {
             }
             Type::DateTime64(precision, _) | Type::Decimal64(precision) => {
                 if *precision == 0 || *precision > 18 {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "precision out of bounds for Decimal64/DateTime64({}) must be in range \
                          (1..=18)",
                         *precision
@@ -591,7 +591,7 @@ impl Type {
                 | Type::UInt128
                 | Type::UInt256 => inner.validate()?,
                 _ => {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "illegal type '{inner:?}' in LowCardinality, not allowed"
                     )));
                 }
@@ -610,7 +610,7 @@ impl Type {
                 | Type::LowCardinality(_)
                 | Type::Tuple(_)
                 | Type::Nullable(_) => {
-                    return Err(ClickhouseNativeError::TypeParseError(format!(
+                    return Err(Error::TypeParseError(format!(
                         "nullable cannot contain composite type '{inner:?}'"
                     )));
                 }
@@ -641,7 +641,7 @@ impl Type {
                         | Type::Enum8(_)
                         | Type::Enum16(_)
                 ) {
-                    return Err(ClickhouseNativeError::TypeParseError(
+                    return Err(Error::TypeParseError(
                         "key in map must be String, Integer, LowCardinality, FixedString, UUID, \
                          Date, DateTime, Date32, Enum"
                             .to_string(),
@@ -659,7 +659,7 @@ impl Type {
     pub(crate) fn validate_value(&self, value: &Value) -> Result<()> {
         self.validate()?;
         if !self.inner_validate_value(value) {
-            return Err(ClickhouseNativeError::TypeParseError(format!(
+            return Err(Error::TypeParseError(format!(
                 "could not assign value '{value:?}' to type '{self:?}'"
             )));
         }
@@ -822,7 +822,7 @@ impl Type {
                 }
             }
             _ => {
-                return Err(ClickhouseNativeError::SerializeError(format!(
+                return Err(Error::SerializeError(format!(
                     "No default value for type: {self:?}"
                 )));
             }

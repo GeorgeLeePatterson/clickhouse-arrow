@@ -1,6 +1,6 @@
 use super::{Serializer, SerializerState, Type};
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Value};
+use crate::{Error, Result, Value};
 
 pub(crate) struct NullableSerializer;
 
@@ -14,7 +14,7 @@ impl Serializer for NullableSerializer {
         let inner_type = match type_ {
             Type::Nullable(inner) => &**inner,
             _ => {
-                return Err(ClickhouseNativeError::SerializeError(
+                return Err(Error::SerializeError(
                     "Expected Nullable type".to_string(),
                 ));
             }
@@ -32,7 +32,7 @@ impl Serializer for NullableSerializer {
         let inner_type = if let Type::Nullable(n) = type_ {
             &**n
         } else {
-            return Err(ClickhouseNativeError::SerializeError(format!(
+            return Err(Error::SerializeError(format!(
                 "NullableSerializer called with non-nullable type: {type_:?}"
             )));
         };

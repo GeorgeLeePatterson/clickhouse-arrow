@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use super::types::ch_to_arrow_type;
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
-use crate::{ArrowOptions, ClickhouseNativeError, Result, Type};
+use crate::{ArrowOptions, Error, Result, Type};
 
 /// Trait for deserializing ClickHouse’s native format into Arrow arrays.
 ///
@@ -47,7 +47,7 @@ pub(crate) trait ClickhouseArrowDeserializer {
     ///   otherwise, to `Binary`.
     ///
     /// # Returns
-    /// A `Result` containing the `(DataType, is_nullable)` tuple or a `ClickhouseNativeError` if
+    /// A `Result` containing the `(DataType, is_nullable)` tuple or a `Error` if
     /// the type is unsupported.
     fn arrow_type(&self, options: Option<ArrowOptions>) -> Result<(DataType, bool)>;
 
@@ -60,7 +60,7 @@ pub(crate) trait ClickhouseArrowDeserializer {
     /// - `state`: A mutable `DeserializerState` for maintaining deserialization context.
     ///
     /// # Returns
-    /// A `Result` containing the deserialized `ArrayRef` or a `ClickhouseNativeError` if
+    /// A `Result` containing the deserialized `ArrayRef` or a `Error` if
     /// deserialization fails.
     async fn deserialize<R: ClickhouseRead>(
         &self,
@@ -177,7 +177,7 @@ impl ClickhouseArrowDeserializer for Type {
             }
             // Tuple
             Type::Tuple(inner) => tuple::deserialize(inner, reader, rows, nulls, state).await?,
-            _ => return Err(ClickhouseNativeError::ArrowUnsupportedType(format!("{self:?}"))),
+            _ => return Err(Error::ArrowUnsupportedType(format!("{self:?}"))),
         })
     }
 }

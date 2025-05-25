@@ -6,10 +6,11 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock};
 
+use clickhouse_native::test_utils::ClickHouseContainer;
 use futures_util::FutureExt;
 use tracing::debug;
 
-use super::common::{docker, init};
+use super::common::init;
 use crate::common::constants::{DISABLE_CLEANUP_ENV, DISABLE_CLEANUP_ON_ERROR_ENV};
 
 /// Track how many tests have started and finished, for cleanup
@@ -50,7 +51,7 @@ pub async fn run_test_with_cleanup<F, Fut>(
     directives: Option<&[(&str, &str)]>,
 ) -> Result<(), Box<dyn std::any::Any + Send>>
 where
-    F: FnOnce(&'static docker::ClickHouseContainer) -> Fut + Send + 'static,
+    F: FnOnce(&'static ClickHouseContainer) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     let disable_cleanup =

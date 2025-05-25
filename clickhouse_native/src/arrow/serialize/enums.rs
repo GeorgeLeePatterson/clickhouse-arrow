@@ -51,7 +51,7 @@ use arrow::datatypes::*;
 
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Serializes an Arrow array to `ClickHouse`’s native format for `Enum8` or `Enum16` types.
 ///
@@ -69,7 +69,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - `state`: A mutable `SerializerState` for serialization context (unused).
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if:
@@ -90,9 +90,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
         Type::Enum8(pairs) => write_enum8_values(values, writer, pairs).await?,
         Type::Enum16(pairs) => write_enum16_values(values, writer, pairs).await?,
         _ => {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                "Unsupported data type: {type_hint:?}"
-            )));
+            return Err(Error::ArrowSerialize(format!("Unsupported data type: {type_hint:?}")));
         }
     }
 
@@ -127,7 +125,7 @@ macro_rules! write_enum_values {
         /// - `enum_values`: The enum pairs mapping strings to values (e.g., `[("a", 1), ("b", 2)]`).
         ///
         /// # Returns
-        /// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+        /// A `Result` indicating success or a `Error` if serialization fails.
         ///
         /// # Errors
         /// - Returns `ArrowSerialize` if:
@@ -159,12 +157,12 @@ macro_rules! write_enum_values {
                 if let Some(array) = column.as_any().downcast_ref::<DictionaryArray<$kt>>() {
                     let keys = array.keys();
                     let values = array.values().as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                        ClickhouseNativeError::ArrowSerialize("Enum values must be strings".into())
+                        Error::ArrowSerialize("Enum values must be strings".into())
                     })?;
 
                     // Validate dictionary matches enum_values
                     if values.len() != enum_values.len() {
-                        return Err(ClickhouseNativeError::ArrowSerialize(format!(
+                        return Err(Error::ArrowSerialize(format!(
                             "Enum value count mismatch: {} vs {}",
                             values.len(), enum_values.len()
                         )));
@@ -173,7 +171,7 @@ macro_rules! write_enum_values {
                         let dict_val = values.value(i);
                         let enum_val = &enum_values[i].0;
                         if dict_val != enum_val {
-                            return Err(ClickhouseNativeError::ArrowSerialize(format!(
+                            return Err(Error::ArrowSerialize(format!(
                                 "Enum value mismatch at index {i}: '{dict_val}' vs '{enum_val}'"
                             )));
                         }
@@ -185,7 +183,7 @@ macro_rules! write_enum_values {
                         } else {
                             let key = keys.value(i);
                             if key < 0 || key as usize >= enum_values.len() {
-                                return Err(ClickhouseNativeError::ArrowSerialize(
+                                return Err(Error::ArrowSerialize(
                                     format!("Dictionary key {key} out of bounds")
                                 ));
                             }
@@ -205,7 +203,7 @@ macro_rules! write_enum_values {
                         let value = if array.is_null(i) { 0 } else { array.value(i) as $pt };
                         // Validate value is in enum range
                         if !enum_values.iter().any(|(_, v)| *v == value) {
-                            return Err(ClickhouseNativeError::ArrowSerialize(
+                            return Err(Error::ArrowSerialize(
                                 format!("Value {value} not found in enum")
                             ));
                         }
@@ -227,7 +225,7 @@ macro_rules! write_enum_values {
                     } else {
                         let value = array.value(i);
                         let key = value_map.get(value).copied().ok_or(
-                            ClickhouseNativeError::ArrowSerialize(format!(
+                            Error::ArrowSerialize(format!(
                                 "String '{value}' not in enum"
                             ))
                         )?;
@@ -249,7 +247,7 @@ macro_rules! write_enum_values {
                         let value = array.value(i);
                         let value_str = ::std::str::from_utf8(value)?;
                         let key = value_map.get(value_str).copied().ok_or(
-                            ClickhouseNativeError::ArrowSerialize(format!(
+                            Error::ArrowSerialize(format!(
                                 "String '{value_str}' not in enum"
                             ))
                         )?;
@@ -272,7 +270,7 @@ macro_rules! write_enum_values {
                     } else {
                         let value = array.value(i);
                         let key = value_map.get(value).copied().ok_or(
-                            ClickhouseNativeError::ArrowSerialize(format!(
+                            Error::ArrowSerialize(format!(
                                 "String '{value}' not in enum"
                             ))
                         )?;
@@ -294,7 +292,7 @@ macro_rules! write_enum_values {
                         let value = array.value(i);
                         let value_str = ::std::str::from_utf8(value)?;
                         let key = value_map.get(value_str).copied().ok_or(
-                            ClickhouseNativeError::ArrowSerialize(format!(
+                            Error::ArrowSerialize(format!(
                                 "String '{value_str}' not in enum"
                             ))
                         )?;
@@ -304,7 +302,7 @@ macro_rules! write_enum_values {
                 return Ok(());
             }
 
-            Err(ClickhouseNativeError::ArrowSerialize(format!(
+            Err(Error::ArrowSerialize(format!(
                 "Expected DictionaryArray, PrimitiveArray, StringArray, or BinaryArray, got {:?}",
                 column.data_type()
             )))
@@ -422,7 +420,7 @@ mod tests {
         let result = serialize(&Type::Enum8(pairs), &field, &array, &mut writer, &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Value 3 not found in enum")
         ));
     }
@@ -434,7 +432,7 @@ mod tests {
         let mut writer = MockWriter::new();
         let mut state = SerializerState::default();
         let result = serialize(&Type::Enum8(vec![]), &field, &array, &mut writer, &mut state).await;
-        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+        assert!(matches!(result, Err(Error::ArrowSerialize(_))));
     }
 
     #[tokio::test]
@@ -448,7 +446,7 @@ mod tests {
         let mut writer = MockWriter::new();
         let mut state = SerializerState::default();
         let result = serialize(&Type::Enum8(pairs), &field, &array, &mut writer, &mut state).await;
-        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+        assert!(matches!(result, Err(Error::ArrowSerialize(_))));
     }
 
     #[tokio::test]
@@ -462,7 +460,7 @@ mod tests {
         let mut writer = MockWriter::new();
         let mut state = SerializerState::default();
         let result = serialize(&Type::Enum8(pairs), &field, &array, &mut writer, &mut state).await;
-        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+        assert!(matches!(result, Err(Error::ArrowSerialize(_))));
     }
 
     #[tokio::test]
@@ -511,7 +509,7 @@ mod tests {
         let result = serialize(&Type::Enum8(pairs), &field, &array, &mut writer, &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Enum value mismatch")
         ));
     }
@@ -570,6 +568,6 @@ mod tests {
             &mut state,
         )
         .await;
-        assert!(matches!(result, Err(ClickhouseNativeError::ArrowSerialize(_))));
+        assert!(matches!(result, Err(Error::ArrowSerialize(_))));
     }
 }

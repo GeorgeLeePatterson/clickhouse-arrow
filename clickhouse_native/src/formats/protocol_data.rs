@@ -20,7 +20,7 @@ pub(crate) trait ProtocolData<Return> {
     /// - `header`: Optional column name and type mappings for type disambiguation.
     ///
     /// # Returns
-    /// A `Future` resolving to a `Result` indicating success or a `ClickhouseNativeError` if
+    /// A `Future` resolving to a `Result` indicating success or a `Error` if
     /// serialization fails.
     fn write<W: ClickhouseWrite>(
         self,
@@ -40,7 +40,7 @@ pub(crate) trait ProtocolData<Return> {
     ///
     /// # Returns
     /// A `Future` resolving to a `Result` of `Return` (e.g., `RecordBatch`) or
-    /// a `ClickhouseNativeError` if deserialization fails.
+    /// a `Error` if deserialization fails.
     fn read<R: ClickhouseRead>(
         reader: &mut R,
         revision: u64,

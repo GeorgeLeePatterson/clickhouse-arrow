@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::{ClickhouseNativeError, FromSql, Result, Row, ToSql, Type, Value};
+use crate::{Error, FromSql, Result, Row, ToSql, Type, Value};
 
 /// A single column row
 #[derive(Clone, Debug, Default)]
@@ -15,7 +15,7 @@ impl<T: FromSql + ToSql> Row for UnitValue<T> {
 
     fn deserialize_row(map: Vec<(&str, &Type, Value)>) -> Result<Self> {
         if map.is_empty() {
-            return Err(ClickhouseNativeError::MissingField("<unit>"));
+            return Err(Error::MissingField("<unit>"));
         }
         let item = map.into_iter().next().unwrap();
         T::from_sql(item.1, item.2).map(UnitValue)

@@ -4,6 +4,7 @@
 /*.zip
 
 coverage/*
+flamegraph.svg
 
 # Pants
 /.pants.d/

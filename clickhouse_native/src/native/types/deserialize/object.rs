@@ -3,7 +3,7 @@ use tokio::io::AsyncReadExt;
 use super::{Deserializer, DeserializerState, Type};
 use crate::io::ClickhouseRead;
 use crate::native::values::Value;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 pub(crate) struct ObjectDeserializer;
 
@@ -20,7 +20,7 @@ impl Deserializer for ObjectDeserializer {
                 let _ = reader.read_i8().await?;
             }
             _ => {
-                return Err(ClickhouseNativeError::DeserializeError(
+                return Err(Error::DeserializeError(
                     "ObjectDeserializer called with non-json type".to_string(),
                 ));
             }
@@ -47,7 +47,7 @@ impl Deserializer for ObjectDeserializer {
                 }
                 Ok(out)
             }
-            _ => Err(ClickhouseNativeError::DeserializeError(
+            _ => Err(Error::DeserializeError(
                 "ObjectDeserializer called with non-json type".to_string(),
             )),
         }

@@ -4,7 +4,7 @@ use super::{Deserializer, DeserializerState, Type};
 use crate::io::ClickhouseRead;
 use crate::native::protocol::MAX_STRING_SIZE;
 use crate::native::values::Value;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 pub(crate) struct MapDeserializer;
 
@@ -22,7 +22,7 @@ impl Deserializer for MapDeserializer {
                 nested.deserialize_prefix(reader, state).await?;
             }
             _ => {
-                return Err(ClickhouseNativeError::DeserializeError(
+                return Err(Error::DeserializeError(
                     "MapDeserializer called with non-map type".to_string(),
                 ));
             }
@@ -37,7 +37,7 @@ impl Deserializer for MapDeserializer {
         state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
         if rows > MAX_STRING_SIZE {
-            return Err(ClickhouseNativeError::ProtocolError(format!(
+            return Err(Error::ProtocolError(format!(
                 "read_n response size too large for map. {rows} > {MAX_STRING_SIZE}"
             )));
         }
@@ -46,7 +46,7 @@ impl Deserializer for MapDeserializer {
         }
 
         let Type::Map(key, value) = type_ else {
-            return Err(ClickhouseNativeError::DeserializeError(
+            return Err(Error::DeserializeError(
                 "MapDeserializer called with non-map type".to_string(),
             ));
         };

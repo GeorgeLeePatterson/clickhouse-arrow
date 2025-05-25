@@ -18,7 +18,7 @@ impl Serializer for TupleSerializer {
                 }
             }
             _ => {
-                return Err(crate::ClickhouseNativeError::SerializeError(format!(
+                return Err(crate::Error::SerializeError(format!(
                     "TupleSerializer called with non-tuple type: {type_:?}"
                 )));
             }
@@ -33,7 +33,7 @@ impl Serializer for TupleSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Tuple(inner_types) = &type_ else {
-            return Err(crate::errors::ClickhouseNativeError::SerializeError(
+            return Err(crate::errors::Error::SerializeError(
                 "TupleSerializer called with non-tuple type".to_string(),
             ));
         };

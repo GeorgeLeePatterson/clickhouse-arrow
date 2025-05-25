@@ -5,7 +5,7 @@ use super::block::Block;
 use super::error_codes::map_exception_to_error;
 use super::progress::Progress;
 use crate::prelude::*;
-use crate::{ClickhouseNativeError, FxIndexMap, Result, ServerError};
+use crate::{Error, FxIndexMap, Result, ServerError};
 
 pub(crate) const DBMS_MIN_REVISION_WITH_CLIENT_INFO: u64 = 54032;
 pub(crate) const DBMS_MIN_REVISION_WITH_SERVER_TIMEZONE: u64 = 54058;
@@ -122,7 +122,7 @@ impl ServerPacketId {
             15 => ServerPacketId::ServerTreeReadTaskRequest,
             x => {
                 error!("invalid packet id from server: {}", x);
-                return Err(ClickhouseNativeError::ProtocolError(format!("Unknown packet id {i}")));
+                return Err(Error::ProtocolError(format!("Unknown packet id {i}")));
             }
         })
     }

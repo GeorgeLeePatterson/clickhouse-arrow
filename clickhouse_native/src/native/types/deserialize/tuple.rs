@@ -1,7 +1,7 @@
 use super::{Deserializer, DeserializerState, Type};
 use crate::io::ClickhouseRead;
 use crate::native::values::Value;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 pub(crate) struct TupleDeserializer;
 
@@ -19,7 +19,7 @@ impl Deserializer for TupleDeserializer {
                 }
             }
             _ => {
-                return Err(ClickhouseNativeError::DeserializeError(
+                return Err(Error::DeserializeError(
                     "TupleDeserializer called with non-tuple type".to_string(),
                 ));
             }
@@ -44,7 +44,7 @@ impl Deserializer for TupleDeserializer {
                         values.push(value);
                     }
                     _ => {
-                        return Err(ClickhouseNativeError::DeserializeError(
+                        return Err(Error::DeserializeError(
                             "Expected tuple".to_string(),
                         ));
                     }

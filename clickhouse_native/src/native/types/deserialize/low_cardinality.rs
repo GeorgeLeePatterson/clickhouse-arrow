@@ -3,7 +3,7 @@ use tokio::io::AsyncReadExt;
 use super::{Deserializer, DeserializerState, Type};
 use crate::io::ClickhouseRead;
 use crate::native::types::low_cardinality::*;
-use crate::{ClickhouseNativeError, Result, Value};
+use crate::{Error, Result, Value};
 
 pub(crate) struct LowCardinalityDeserializer;
 
@@ -16,7 +16,7 @@ impl Deserializer for LowCardinalityDeserializer {
     ) -> Result<()> {
         let version = reader.read_u64_le().await?;
         if version != LOW_CARDINALITY_VERSION {
-            return Err(ClickhouseNativeError::DeserializeError(format!(
+            return Err(Error::DeserializeError(format!(
                 "LowCardinality: invalid low cardinality version: {version}"
             )));
         }
@@ -61,7 +61,7 @@ impl Deserializer for LowCardinalityDeserializer {
                             TUINT32 => Type::UInt32,
                             TUINT64 => Type::UInt64,
                             x => {
-                                return Err(ClickhouseNativeError::DeserializeError(format!(
+                                return Err(Error::DeserializeError(format!(
                                     "LowCardinality: bad index type: {x}"
                                 )));
                             }
@@ -98,7 +98,7 @@ impl Deserializer for LowCardinalityDeserializer {
                     num_pending_rows -= reading_rows;
                     if has_additional_keys && !needs_global_dictionary {
                         let additional_keys = additional_keys.as_ref().ok_or_else(|| {
-                            ClickhouseNativeError::DeserializeError(
+                            Error::DeserializeError(
                                 "LowCardinality: missing additional keys".to_string(),
                             )
                         })?;
@@ -108,7 +108,7 @@ impl Deserializer for LowCardinalityDeserializer {
                                 Value::Null
                             } else {
                                 additional_keys.get(entry).cloned().ok_or_else(|| {
-                                    ClickhouseNativeError::DeserializeError(format!(
+                                    Error::DeserializeError(format!(
                                         "LowCardinality: illegal index {entry} in additional_keys"
                                     ))
                                 })?
@@ -117,7 +117,7 @@ impl Deserializer for LowCardinalityDeserializer {
                         }
                     } else if needs_global_dictionary && !has_additional_keys {
                         let global_dictionary = global_dictionary.as_ref().ok_or_else(|| {
-                            ClickhouseNativeError::DeserializeError(
+                            Error::DeserializeError(
                                 "LowCardinality: missing global dictionary".to_string(),
                             )
                         })?;
@@ -125,7 +125,7 @@ impl Deserializer for LowCardinalityDeserializer {
                             let entry = entry.index_value()?;
                             output.push(global_dictionary.get(entry).cloned().ok_or_else(
                                 || {
-                                    ClickhouseNativeError::DeserializeError(format!(
+                                    Error::DeserializeError(format!(
                                         "LowCardinality: illegal index {entry} in \
                                          global_dictionary"
                                     ))
@@ -134,12 +134,12 @@ impl Deserializer for LowCardinalityDeserializer {
                         }
                     } else if needs_global_dictionary && has_additional_keys {
                         let additional_keys = additional_keys.as_ref().ok_or_else(|| {
-                            ClickhouseNativeError::DeserializeError(
+                            Error::DeserializeError(
                                 "LowCardinality: missing additional keys".to_string(),
                             )
                         })?;
                         let global_dictionary = global_dictionary.as_ref().ok_or_else(|| {
-                            ClickhouseNativeError::DeserializeError(
+                            Error::DeserializeError(
                                 "LowCardinality: missing global dictionary".to_string(),
                             )
                         })?;
@@ -149,7 +149,7 @@ impl Deserializer for LowCardinalityDeserializer {
                                 Value::Null
                             } else if entry < additional_keys.len() {
                                 additional_keys.get(entry).cloned().ok_or_else(|| {
-                                    ClickhouseNativeError::DeserializeError(format!(
+                                    Error::DeserializeError(format!(
                                         "LowCardinality: illegal index {entry} in additional_keys",
                                     ))
                                 })?
@@ -158,7 +158,7 @@ impl Deserializer for LowCardinalityDeserializer {
                                     .get(entry - additional_keys.len())
                                     .cloned()
                                     .ok_or_else(|| {
-                                        ClickhouseNativeError::DeserializeError(format!(
+                                        Error::DeserializeError(format!(
                                             "LowCardinality: illegal index {entry} in \
                                              global_dictionary"
                                         ))
@@ -172,7 +172,7 @@ impl Deserializer for LowCardinalityDeserializer {
                 output
             }
             _ => {
-                return Err(ClickhouseNativeError::SerializeError(
+                return Err(Error::SerializeError(
                     "LowCardinalityDeserializer: unexpected type".to_string(),
                 ));
             }

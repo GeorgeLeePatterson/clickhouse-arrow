@@ -1,6 +1,6 @@
 use super::{Serializer, SerializerState, Type, ValueSerializer};
 use crate::io::ClickhouseWrite;
-use crate::{ClickhouseNativeError, Result, Value};
+use crate::{Error, Result, Value};
 
 pub(crate) struct StringSerializer;
 
@@ -60,7 +60,7 @@ impl ValueSerializer for StringSerializer {
                             #[expect(clippy::cast_sign_loss)]
                             Value::Int8(x) => Ok(x as u8),
                             // TODO: This is wrong, it will never deserialize w/ missing pieces
-                            _ => Err(ClickhouseNativeError::SerializeError(format!(
+                            _ => Err(Error::SerializeError(format!(
                                 "StringSerializer called with non-string type: {type_:?}"
                             ))),
                         }
@@ -70,7 +70,7 @@ impl ValueSerializer for StringSerializer {
                 emit_bytes(type_, &bytes, writer).await?;
             }
             _ => {
-                return Err(ClickhouseNativeError::SerializeError(format!(
+                return Err(Error::SerializeError(format!(
                     "StringSerializer unimplemented: {type_:?} for value = {value:?}",
                 )));
             }

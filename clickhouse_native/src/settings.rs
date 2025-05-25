@@ -51,7 +51,7 @@ use std::fmt;
 
 use crate::io::ClickhouseWrite;
 use crate::native::protocol::DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS;
-use crate::{ClickhouseNativeError, Result};
+use crate::{Error, Result};
 
 /// A single `ClickHouse` query setting, consisting of a key, value, and flags.
 ///
@@ -184,12 +184,12 @@ impl Setting {
     /// - `revision`: The `ClickHouse` server protocol revision.
     ///
     /// # Errors
-    /// Returns `Err(ClickhouseNativeError::UnsupportedSettingType)` if the setting value is a
+    /// Returns `Err(Error::UnsupportedSettingType)` if the setting value is a
     /// string or float in legacy revisions.
     async fn encode<W: ClickhouseWrite>(&self, writer: &mut W, revision: u64) -> Result<()> {
         if revision <= DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS {
             if !matches!(self.value, SettingValue::Int(_) | SettingValue::Bool(_)) {
-                return Err(ClickhouseNativeError::UnsupportedSettingType(self.key.clone()));
+                return Err(Error::UnsupportedSettingType(self.key.clone()));
             }
 
             // Write key
@@ -234,11 +234,11 @@ impl Setting {
     /// (e.g., `"val'ue"` remains `"val'ue"`). Non-string values return an error.
     ///
     /// # Errors
-    /// Returns `Err(ClickhouseNativeError::UnsupportedFieldType)` if the value is not a string.
+    /// Returns `Err(Error::UnsupportedFieldType)` if the value is not a string.
     fn encode_field_dump(&self) -> Result<String> {
         match &self.value {
             SettingValue::String(s) => Ok(s.clone()),
-            _ => Err(ClickhouseNativeError::UnsupportedFieldType(format!("{:?}", self.value))),
+            _ => Err(Error::UnsupportedFieldType(format!("{:?}", self.value))),
         }
     }
 }
@@ -751,7 +751,7 @@ mod tests {
             setting
                 .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS)
                 .await,
-            Err(ClickhouseNativeError::UnsupportedSettingType(key)) if key == "default_format"
+            Err(Error::UnsupportedSettingType(key)) if key == "default_format"
         ));
     }
 

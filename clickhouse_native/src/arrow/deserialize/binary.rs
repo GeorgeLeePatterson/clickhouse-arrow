@@ -20,7 +20,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Macro to deserialize variable-length binary types into Arrow arrays.
 ///
@@ -98,7 +98,7 @@ macro_rules! deserialize_binary_fixed {
 /// - `_state`: A mutable `DeserializerState` for deserialization context (unused).
 ///
 /// # Returns
-/// A `Result` containing the deserialized `ArrayRef` or a `ClickhouseNativeError` if
+/// A `Result` containing the deserialized `ArrayRef` or a `Error` if
 /// deserialization fails.
 ///
 /// # Errors
@@ -247,9 +247,7 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
                 }
             })
         }
-        _ => Err(ClickhouseNativeError::ArrowDeserialize(format!(
-            "Expected binary, got {type_hint:?}"
-        ))),
+        _ => Err(Error::ArrowDeserialize(format!("Expected binary, got {type_hint:?}"))),
     }
 }
 

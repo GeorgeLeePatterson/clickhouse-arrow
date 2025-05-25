@@ -35,7 +35,7 @@ use crate::{Result, Type};
 /// - `state`: A mutable `DeserializerState` for deserialization context.
 ///
 /// # Returns
-/// A `Result` containing the deserialized `MapArray` as an `ArrayRef` or a `ClickhouseNativeError`
+/// A `Result` containing the deserialized `MapArray` as an `ArrayRef` or a `Error`
 /// if deserialization fails.
 ///
 /// # Errors

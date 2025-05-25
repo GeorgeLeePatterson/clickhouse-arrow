@@ -36,7 +36,7 @@ use crate::io::ClickhouseWrite;
 /// - `array`: The Arrow array containing the nullability information.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if writing fails.
+/// A `Result` indicating success or a `Error` if writing fails.
 ///
 /// # Errors
 /// - Returns `Io` if writing to the writer fails.

@@ -63,7 +63,7 @@ use super::ClickhouseArrowSerializer;
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
 use crate::native::types::low_cardinality::*;
-use crate::{ClickhouseNativeError, Result, Type};
+use crate::{Error, Result, Type};
 
 /// Serializes an Arrow array to `ClickHouse`’s native format for `LowCardinality` types.
 ///
@@ -81,7 +81,7 @@ use crate::{ClickhouseNativeError, Result, Type};
 /// - `state`: A mutable `SerializerState` for serialization context.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if:
@@ -140,15 +140,13 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
                 write_string_values(writer, values, type_hint.is_nullable(), state).await?;
             }
             _ => {
-                return Err(ClickhouseNativeError::ArrowSerialize(format!(
+                return Err(Error::ArrowSerialize(format!(
                     "`LowCardinality` must be either String or Dictionary: {field:?}"
                 )));
             }
         },
         _ => {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                "Unsupported data type: {type_hint:?}"
-            )));
+            return Err(Error::ArrowSerialize(format!("Unsupported data type: {type_hint:?}")));
         }
     }
 
@@ -168,15 +166,12 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
 /// - `$key_type`: The expected Arrow array type for the keys.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 macro_rules! write_dictionary_keys {
     ($writer:expr, $flags:expr, $keys:expr, $key_type:ty, $nullable:expr) => {{
-        let keys = $keys.as_any().downcast_ref::<$key_type>().ok_or(
-            ClickhouseNativeError::ArrowSerialize(format!(
-                "Failed to downcast keys to {}",
-                stringify!($key_type)
-            )),
-        )?;
+        let keys = $keys.as_any().downcast_ref::<$key_type>().ok_or(Error::ArrowSerialize(
+            format!("Failed to downcast keys to {}", stringify!($key_type)),
+        ))?;
 
         #[allow(clippy::cast_sign_loss)]
         #[allow(clippy::cast_lossless)]
@@ -210,7 +205,7 @@ macro_rules! write_dictionary_keys {
 /// - `state`: A mutable `SerializerState` for serialization context.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if:
@@ -223,9 +218,10 @@ async fn write_values<W: ClickhouseWrite, K: ArrowDictionaryKeyType>(
     writer: &mut W,
     state: &mut SerializerState,
 ) -> Result<()> {
-    let array = values.as_any().downcast_ref::<DictionaryArray<K>>().ok_or(
-        ClickhouseNativeError::ArrowSerialize("Failed to downcast to DictionaryArray".to_string()),
-    )?;
+    let array = values
+        .as_any()
+        .downcast_ref::<DictionaryArray<K>>()
+        .ok_or(Error::ArrowSerialize("Failed to downcast to DictionaryArray".to_string()))?;
 
     if array.is_empty() {
         return Ok(());
@@ -304,7 +300,7 @@ async fn write_values<W: ClickhouseWrite, K: ArrowDictionaryKeyType>(
 /// - `state`: A mutable `SerializerState` for serialization context.
 ///
 /// # Returns
-/// A `Result` indicating success or a `ClickhouseNativeError` if serialization fails.
+/// A `Result` indicating success or a `Error` if serialization fails.
 ///
 /// # Errors
 /// - Returns `ArrowSerialize` if the input array is not a string-like type.
@@ -362,9 +358,7 @@ async fn write_string_values<W: ClickhouseWrite>(
         DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
         DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
         dt => {
-            return Err(ClickhouseNativeError::ArrowSerialize(format!(
-                "Expected string-like array, got {dt}",
-            )));
+            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}",)));
         }
     }
 
@@ -813,7 +807,7 @@ mod tests {
         .await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg)) if msg.contains("`LowCardinality` must be either String or Dictionary")
+            Err(Error::ArrowSerialize(msg)) if msg.contains("`LowCardinality` must be either String or Dictionary")
         ));
     }
 
@@ -860,7 +854,7 @@ mod tests {
         let result = serialize(&Type::String, &field, &array, &mut writer, &mut state).await;
         assert!(matches!(
             result,
-            Err(ClickhouseNativeError::ArrowSerialize(msg))
+            Err(Error::ArrowSerialize(msg))
             if msg.contains("Unsupported data type")
         ));
     }
