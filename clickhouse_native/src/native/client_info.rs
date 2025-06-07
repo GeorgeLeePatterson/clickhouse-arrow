@@ -1,5 +1,9 @@
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use super::protocol::{
+    DBMS_MIN_REVISION_WITH_JWT_IN_INTERSERVER, DBMS_MIN_REVISION_WITH_QUERY_AND_LINE_NUMBERS,
+};
 use crate::io::ClickhouseWrite;
 use crate::native::protocol::{
     DBMS_MIN_PROTOCOL_VERSION_WITH_DISTRIBUTED_DEPTH,
@@ -40,34 +44,40 @@ pub(crate) struct ClientInfo<'a> {
     pub client_version_major:        u64,
     pub client_version_minor:        u64,
     pub client_tcp_protocol_version: u64,
-
+    // DBMS_MIN_PROTOCOL_VERSION_WITH_INITIAL_QUERY_START_TIME
+    pub query_start_time:            u64,
     // if DBMS_MIN_REVISION_WITH_QUOTA_KEY_IN_CLIENT_INFO
-    pub quota_key:            &'a str,
+    pub quota_key:                   &'a str,
     // if DBMS_MIN_PROTOCOL_VERSION_WITH_DISTRIBUTED_DEPTH
-    pub distributed_depth:    u64,
+    pub distributed_depth:           u64,
     // if DBMS_MIN_REVISION_WITH_VERSION_PATCH
-    pub client_version_patch: u64,
+    pub client_version_patch:        u64,
     // if DBMS_MIN_REVISION_WITH_OPENTELEMETRY
-    pub open_telemetry:       Option<OpenTelemetry<'a>>,
+    pub open_telemetry:              Option<OpenTelemetry<'a>>,
 }
 
 impl Default for ClientInfo<'_> {
     fn default() -> Self {
         ClientInfo {
-            kind:                        QueryKind::InitialQuery,
-            initial_user:                "",
-            initial_query_id:            "",
-            initial_address:             "0.0.0.0:0",
-            os_user:                     "",
-            client_hostname:             "localhost",
-            client_name:                 "ClickHouseclient",
-            client_version_major:        crate::constants::VERSION_MAJOR,
-            client_version_minor:        crate::constants::VERSION_MINOR,
-            client_version_patch:        crate::constants::VERSION_PATCH,
+            kind: QueryKind::InitialQuery,
+            initial_user: "",
+            initial_query_id: "",
+            initial_address: "0.0.0.0:0",
+            os_user: "",
+            client_hostname: "localhost",
+            client_name: "ClickHouseNative",
+            client_version_major: crate::constants::VERSION_MAJOR,
+            client_version_minor: crate::constants::VERSION_MINOR,
+            client_version_patch: crate::constants::VERSION_PATCH,
             client_tcp_protocol_version: DBMS_TCP_PROTOCOL_VERSION,
-            quota_key:                   "",
-            distributed_depth:           1,
-            open_telemetry:              None,
+            #[expect(clippy::cast_possible_truncation)]
+            query_start_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or(std::time::Duration::from_secs(0))
+                .as_micros() as u64,
+            quota_key: "",
+            distributed_depth: 1,
+            open_telemetry: None,
         }
     }
 }
@@ -83,7 +93,7 @@ impl ClientInfo<'_> {
         to.write_string(self.initial_address).await?;
 
         if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_QUERY_START_TIME {
-            to.write_i64_le(0).await?;
+            to.write_u64_le(self.query_start_time).await?;
         }
 
         // interface = TCP = 1
@@ -122,6 +132,16 @@ impl ClientInfo<'_> {
             to.write_var_uint(0).await?; // collaborate_with_initiator
             to.write_var_uint(0).await?; // count_participating_replicas
             to.write_var_uint(0).await?; // number_of_current_replica
+        }
+
+        if revision >= DBMS_MIN_REVISION_WITH_QUERY_AND_LINE_NUMBERS {
+            to.write_var_uint(0).await?; // script_query_number
+            to.write_var_uint(0).await?; // script_line_number
+        }
+
+        if revision >= DBMS_MIN_REVISION_WITH_JWT_IN_INTERSERVER {
+            // TODO: Support jwt
+            to.write_u8(0).await?;
         }
 
         Ok(())

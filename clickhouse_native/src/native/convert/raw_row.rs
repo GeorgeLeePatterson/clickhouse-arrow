@@ -86,8 +86,7 @@ impl RawRow {
         let index = index
             .get(self.0.iter().map(|x| x.as_ref().map_or("", |x| &*x.0)))
             .ok_or(Error::OutOfBounds)?;
-        let (_, type_, value) =
-            self.0.get_mut(index).unwrap().take().ok_or(Error::DoubleFetch)?;
+        let (_, type_, value) = self.0.get_mut(index).unwrap().take().ok_or(Error::DoubleFetch)?;
         T::from_sql(&type_, value)
     }
 

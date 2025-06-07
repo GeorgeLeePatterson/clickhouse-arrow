@@ -25,7 +25,7 @@ pub enum Error {
     #[error("duplicate field {0} in struct")]
     DuplicateField(&'static str),
     #[error("protocol error: {0}")]
-    ProtocolError(String),
+    Protocol(String),
     #[error("Internal channel closed")]
     InternalChannelError,
     #[error("connection timeout: {0}")]

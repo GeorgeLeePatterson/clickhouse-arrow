@@ -11,7 +11,6 @@
 //!     .init();
 //! // Use clickhouse_native
 //! ```
-
 use std::num::NonZeroU64;
 
 pub use opentelemetry_semantic_conventions::*;
@@ -19,6 +18,7 @@ use tracing::Span;
 
 /// Commonly used attribute names
 pub const ATT_CID: &str = "clickhouse.client.id";
+pub const ATT_CON: &str = "clickhouse.connection.id";
 pub const ATT_CREQ: &str = "clickhouse.client.request";
 pub const ATT_QID: &str = "clickhouse.query.id";
 pub const ATT_PCOUNT: &str = "clickhouse.packet.count";

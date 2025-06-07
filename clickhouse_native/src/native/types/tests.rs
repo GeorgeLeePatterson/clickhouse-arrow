@@ -303,8 +303,6 @@ async fn roundtrip_datetime64() {
     );
 }
 
-//enum8, enum16, nested skipped
-
 #[tokio::test]
 async fn roundtrip_enum8() {
     let type_ = Type::Enum8(vec![("hello".into(), 0)]);

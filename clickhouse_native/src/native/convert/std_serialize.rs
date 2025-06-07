@@ -122,6 +122,7 @@ impl<T: ToSql, Y: ToSql, S: ::std::hash::BuildHasher> ToSql for IndexMap<T, Y, S
     }
 }
 
+#[cfg(feature = "serde")]
 impl ToSql for serde_json::Value {
     fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
         Ok(Value::Object(self.to_string().into_bytes()))

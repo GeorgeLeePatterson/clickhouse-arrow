@@ -1,4 +1,5 @@
-use crate::{ClickhouseRead, ClickhouseWrite, Result, Type};
+use crate::io::{ClickhouseRead, ClickhouseWrite};
+use crate::{Result, Type};
 
 /// Trait for serializing and deserializing data into `ClickHouse`'s native block format.
 ///

@@ -69,11 +69,11 @@ macro_rules! convert_to_enum {
 /// Given an optional `ArrowOptions`, generate strict and conversion arrow options for schema
 fn generate_schema_options(options: Option<ArrowOptions>) -> (ArrowOptions, ArrowOptions) {
     // Attempt to create strict arrow options for schema creation
-    let strict_options = options.map_or(ArrowOptions::strict(), ArrowOptions::into_strict);
+    let strict_options = options.map_or(ArrowOptions::strict(), ArrowOptions::into_strict_ddl);
     // Ensure strict options are off in the case enums are created since the field being
     // configured will not be a LowCardinality, a common source of schema errors.
     let conversion_options =
-        options.unwrap_or(ArrowOptions::default().with_array_nullable_error(true));
+        options.unwrap_or(ArrowOptions::default().with_nullable_array_default_empty(false));
     (strict_options, conversion_options)
 }
 
@@ -84,22 +84,22 @@ pub(crate) fn schema_conversion(
 ) -> Result<Type> {
     let name = field.name();
     let data_type = field.data_type();
-    let is_nullable = field.is_nullable();
+    let field_nullable = field.is_nullable();
 
     let (strict_opts, conversion_opts) = generate_schema_options(options);
 
-    // First convert the type to ensure base level compatibility
-    Ok(match conversions.and_then(|c| c.get(name).map(Type::strip_null)) {
+    // First convert the type to ensure base level compatibility then convert type.
+    Ok(match conversions.and_then(|c| c.get(name)).map(Type::strip_null) {
         Some(Type::Enum8(values)) => {
-            let type_ = arrow_to_ch_type(data_type, is_nullable, Some(conversion_opts))?;
+            let type_ = arrow_to_ch_type(data_type, field_nullable, Some(conversion_opts))?;
             convert_to_enum!(Type::Enum8, type_, values.clone())
         }
         Some(Type::Enum16(values)) => {
-            let type_ = arrow_to_ch_type(data_type, is_nullable, Some(conversion_opts))?;
+            let type_ = arrow_to_ch_type(data_type, field_nullable, Some(conversion_opts))?;
             convert_to_enum!(Type::Enum16, type_, values.clone())
         }
         Some(conv @ (Type::Date | Type::Date32)) => {
-            let type_ = arrow_to_ch_type(data_type, is_nullable, Some(conversion_opts))?;
+            let type_ = arrow_to_ch_type(data_type, field_nullable, Some(conversion_opts))?;
             if !matches!(type_, Type::Date | Type::Date32) {
                 return Err(Error::TypeConversion(format!(
                     "expected Date or Date32, found {type_}",
@@ -107,7 +107,7 @@ pub(crate) fn schema_conversion(
             }
             conv.clone()
         }
-        _ => arrow_to_ch_type(data_type, is_nullable, Some(strict_opts))?,
+        _ => arrow_to_ch_type(data_type, field_nullable, Some(strict_opts))?,
     })
 }
 
@@ -190,7 +190,7 @@ pub(crate) fn normalize_type(type_: &Type, arrow_type: &DataType) -> Option<Type
         _ => return None,
     };
 
-    if nullable { type_.map(Box::new).map(Type::Nullable) } else { type_ }
+    if nullable { type_.map(Type::into_nullable) } else { type_ }
 }
 
 /// Convert an arrow [`arrow::datatypes::DataType`] to a clickhouse [`Type`].
@@ -258,7 +258,9 @@ pub(crate) fn arrow_to_ch_type(
         | DataType::LargeListView(f)
         | DataType::FixedSizeList(f, _) => {
             // Reject Nullable(Array(T)) unless configured to ignore
-            if is_nullable && options.is_some_and(|o| o.array_nullable_error && !o.strict_schema_conversion) {
+            if is_nullable && options.is_some_and(|o|
+                o.strict_schema && !o.nullable_array_default_empty
+            ) {
                 return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Lists".to_string(),
                 ));
@@ -269,7 +271,7 @@ pub(crate) fn arrow_to_ch_type(
             ))
         }
         DataType::Dictionary(_, value_type) => {
-            if is_nullable && options.is_some_and(|o| o.low_cardinality_nullable_error) {
+            if is_nullable && options.is_some_and(|o| o.strict_schema) {
                 return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Dictionary".to_string(),
                 ));
@@ -383,7 +385,9 @@ pub(crate) fn ch_to_arrow_type(
         },
         Type::Ipv4 => DataType::FixedSizeBinary(4),
         Type::Array(inner_type) => {
-            if is_null && options.is_some_and(|o| o.array_nullable_error) {
+            if is_null && options.is_some_and(|o|
+                o.strict_schema && !o.nullable_array_default_empty
+            ) {
                 return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Arrays".to_string(),
                 ));
@@ -422,7 +426,7 @@ pub(crate) fn ch_to_arrow_type(
             )
         }
         Type::LowCardinality(inner_type) => {
-            if is_null && options.is_some_and(|o| o.low_cardinality_nullable_error) {
+            if is_null && options.is_some_and(|o| o.strict_schema) {
                 return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable LowCardinality".to_string(),
                 ));
@@ -903,7 +907,7 @@ mod tests {
         let ch_type_back = arrow_to_ch_type(&nullable_dict_type, false, None).unwrap();
         assert_eq!(ch_type_back, ch_type);
 
-        let options_err = Some(ArrowOptions::default().with_low_cardinality_nullable_error(true));
+        let options_err = Some(ArrowOptions::default().with_strict_schema(true));
         assert!(arrow_to_ch_type(&nullable_dict_type, true, options_err).is_err());
     }
 
@@ -936,7 +940,11 @@ mod tests {
             arrow_to_ch_type(
                 &expected_arrow_type,
                 true,
-                Some(ArrowOptions::default().with_array_nullable_error(true))
+                Some(
+                    ArrowOptions::default()
+                        .with_strict_schema(true)
+                        .with_nullable_array_default_empty(false)
+                )
             )
             .is_err()
         );
@@ -949,7 +957,7 @@ mod tests {
     /// Tests `Nullable(LowCardinality(Int32))` round trip and failure when option is set.
     #[test]
     fn test_roundtrip_low_cardinality_int32() {
-        let options_err = Some(ArrowOptions::default().with_low_cardinality_nullable_error(true));
+        let options_err = Some(ArrowOptions::default().with_strict_schema(true));
         let ch_type = Type::LowCardinality(Box::new(Type::Int32));
         let expected_arrow_type =
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32));
@@ -1001,7 +1009,7 @@ mod tests {
                 // Deserialize Date as Date32
                 .with_use_date32_for_date(true)
                 // Ignore fields that ClickHouse doesn't support.
-                .with_strict_schema_conversion(true),
+                .with_strict_schema(false),
         );
 
         // Setup: Create FieldRef instances for the schema

@@ -48,6 +48,7 @@
 /// ```
 use arrow::array::*;
 use arrow::datatypes::*;
+use tokio::io::AsyncWriteExt;
 
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;

@@ -27,7 +27,6 @@ impl ArrayDeserializerGeneric for ArrayDeserializer {
     fn item_mapping(value: Value) -> Value { value }
 }
 
-#[async_trait::async_trait]
 impl<T: ArrayDeserializerGeneric + 'static> Deserializer for T {
     async fn read_prefix<R: ClickhouseRead>(
         type_: &Type,

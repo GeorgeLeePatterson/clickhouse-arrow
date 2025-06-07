@@ -2,10 +2,8 @@
 
 pub mod arrow;
 mod client;
-mod client_info;
 mod compression;
 mod constants;
-mod ddl;
 mod errors;
 mod flags;
 mod formats;
@@ -15,6 +13,7 @@ pub mod native;
 mod pool;
 pub mod prelude;
 mod query;
+mod schema;
 mod settings;
 pub mod spawn;
 pub mod telemetry;
@@ -53,15 +52,13 @@ pub mod test_utils;
 pub use clickhouse_native_derive::Row;
 pub use client::*;
 /// Set this environment to enable additional debugs around arrow (de)serialization.
-pub use constants::DEBUG_ARROW_ENV_VAR;
-pub use ddl::CreateOptions;
+pub use constants::{CONN_READ_BUFFER_ENV_VAR, CONN_WRITE_BUFFER_ENV_VAR, DEBUG_ARROW_ENV_VAR};
 pub use errors::*;
 pub use formats::{ArrowFormat, ClientFormat, NativeFormat};
-pub use io::*;
 /// Contains useful top-level traits to interface with [`crate::prelude::NativeFormat`]
 pub use native::convert::*;
 pub use native::progress::Progress;
-pub use native::protocol::ProfileEvent;
+pub use native::protocol::{ChunkedProtocolMode, ProfileEvent};
 /// Represents the types that `ClickHouse` supports internally.
 pub use native::types::*;
 /// Contains useful top-level structures to interface with [`crate::prelude::NativeFormat`]
@@ -69,12 +66,20 @@ pub use native::values::*;
 pub use native::{CompressionMethod, ServerError, Severity};
 #[cfg(feature = "pool")]
 pub use pool::*;
-pub use query::{ParsedQuery, Qid};
-/// Re-exports
-///
-/// Exporting different external modules used by the library.
-pub use reexports::*;
-pub use settings::Settings;
+pub use query::{ParamValue, ParsedQuery, Qid, QueryParams};
+pub use schema::CreateOptions;
+pub use settings::{Setting, SettingValue, Settings};
+
+mod aliases {
+    /// A non-cryptographically secure [`std::hash::BuildHasherDefault`] using
+    /// [`rustc_hash::FxHasher`].
+    pub type HashBuilder = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
+    /// A non-cryptographically secure [`indexmap::IndexMap`] using [`HashBuilder`].
+    pub type FxIndexMap<K, V> = indexmap::IndexMap<K, V, HashBuilder>;
+}
+// Type aliases used throughout the library
+pub use aliases::*;
+// External libraries
 mod reexports {
     #[cfg(feature = "pool")]
     pub use bb8;
@@ -83,19 +88,14 @@ mod reexports {
     pub use uuid::Uuid;
     pub use {rustc_hash, tracing};
 }
+/// Re-exports
+///
+/// Exporting different external modules used by the library.
+pub use reexports::*;
 
-// Type aliases used throughout the library
-pub use aliases::*;
-mod aliases {
-    /// A non-cryptographically secure [`std::hash::BuildHasherDefault`] using
-    /// [`rustc_hash::FxHasher`].
-    pub type HashBuilder = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
-    /// A non-cryptographically secure [`indexmap::IndexMap`] using [`HashBuilder`].
-    pub type FxIndexMap<K, V> = indexmap::IndexMap<K, V, HashBuilder>;
-}
-
-// Silent lints for dev dependencies
 #[cfg(test)]
-mod dev_crates {
-    use {clickhouse as _, criterion as _, klickhouse as _, tracing_subscriber as _};
+mod dev_deps {
+    //! This is here to silence rustc's unused-crate-dependencies warnings.
+    //! See tracking issue [#95513](https://github.com/rust-lang/rust/issues/95513).
+    use {clickhouse as _, criterion as _, klickhouse as _};
 }

@@ -3,18 +3,22 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use super::connection::ConnectionMetadata;
+use super::connection::ClientMetadata;
 use crate::Result;
-use crate::client_info::ClientInfo;
 use crate::io::ClickhouseWrite;
+use crate::native::client_info::ClientInfo;
 use crate::native::protocol::{
-    self, ClientHello, CompressionMethod, DBMS_MIN_PROTOCOL_VERSION_WITH_ADDENDUM,
-    DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS, DBMS_MIN_REVISION_WITH_CLIENT_INFO,
-    DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET, QueryProcessingStage,
+    ClientHello, CompressionMethod, DBMS_MIN_PROTOCOL_VERSION_WITH_CHUNKED_PACKETS,
+    DBMS_MIN_PROTOCOL_VERSION_WITH_INTERSERVER_EXTERNALLY_GRANTED_ROLES,
+    DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS, DBMS_MIN_PROTOCOL_VERSION_WITH_QUOTA_KEY,
+    DBMS_MIN_REVISION_WITH_CLIENT_INFO, DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET,
+    DBMS_MIN_REVISION_WITH_VERSIONED_PARALLEL_REPLICAS_PROTOCOL,
+    DBMS_PARALLEL_REPLICAS_PROTOCOL_VERSION, QueryProcessingStage, ServerHello,
 };
 use crate::prelude::*;
+use crate::query::QueryParams;
 use crate::settings::Settings;
 
 #[derive(Debug)]
@@ -22,11 +26,10 @@ pub(super) struct Query<'a> {
     pub qid:      Qid,
     pub info:     ClientInfo<'a>,
     pub settings: Option<Arc<Settings>>,
-    //todo: interserver secret
     pub stage:    QueryProcessingStage,
     #[expect(clippy::struct_field_names)]
     pub query:    &'a str,
-    //todo: data
+    pub params:   Option<QueryParams>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,26 +38,56 @@ pub(crate) struct Writer<W: ClickhouseWrite> {
 }
 
 impl<W: ClickhouseWrite> Writer<W> {
+    pub(super) async fn send_hello(writer: &mut W, params: ClientHello) -> Result<()> {
+        writer.write_var_uint(ClientPacketId::Hello as u64).await?;
+        writer
+            .write_string(format!("ClickhouseNative Rust {}", env!("CARGO_PKG_VERSION")))
+            .await?;
+        writer.write_var_uint(crate::constants::VERSION_MAJOR).await?;
+        writer.write_var_uint(crate::constants::VERSION_MINOR).await?;
+        writer.write_var_uint(DBMS_TCP_PROTOCOL_VERSION).await?;
+        writer.write_string(params.default_database).await?;
+        writer.write_string(params.username).await?;
+        writer.write_string(params.password).await?;
+        writer.flush().instrument(trace_span!("flush_hello")).await?;
+        Ok(())
+    }
+
     pub(super) async fn send_query(
         writer: &mut W,
         params: Query<'_>,
-        metadata: ConnectionMetadata,
+        server_settings: Option<&Settings>,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<()> {
-        let revision = metadata.revision;
-        let compression = metadata.compression;
-
-        writer.write_var_uint(protocol::ClientPacketId::Query as u64).await?;
+        writer.write_var_uint(ClientPacketId::Query as u64).await?;
         params.qid.write_id(writer).await?;
 
         if revision >= DBMS_MIN_REVISION_WITH_CLIENT_INFO {
             params.info.write(writer, revision).await?;
         }
 
+        // Compression settings
+        //
+        // Boolean flagging that compression is used below is not enough, at least for zstd. We must
+        // provide settings that indicate the compression type and optionally other related
+        // settings.
+        metadata.compression_settings().encode(writer, revision).await?;
+
         // Settings
         if let Some(settings) = &params.settings {
-            settings.as_ref().encode(writer, revision).await?;
+            if let Some(ignore) = server_settings {
+                settings.as_ref().encode_with_ignore(writer, revision, ignore).await?;
+            } else {
+                settings.as_ref().encode(writer, revision).await?;
+            }
         }
+
         writer.write_string("").await?; // end of settings
+
+        if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_INTERSERVER_EXTERNALLY_GRANTED_ROLES {
+            writer.write_string("").await?;
+        }
 
         if revision >= DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET {
             //todo interserver secret
@@ -62,11 +95,16 @@ impl<W: ClickhouseWrite> Writer<W> {
         }
 
         writer.write_var_uint(params.stage as u64).await?;
-        writer.write_u8(u8::from(!matches!(compression, CompressionMethod::None))).await?;
+        writer
+            .write_u8(u8::from(!matches!(metadata.compression, CompressionMethod::None)))
+            .await?;
         writer.write_string(params.query).await?;
 
         if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS {
-            // TODO: Add params
+            if let Some(query_params) = params.params {
+                // Convert query parameters to Settings format and encode them
+                Settings::from(query_params).encode(writer, revision).await?;
+            }
             writer.write_string("").await?; // end of params
         }
 
@@ -74,13 +112,10 @@ impl<W: ClickhouseWrite> Writer<W> {
             .flush()
             .instrument(trace_span!(
                 "flush_query",
-                { ATT_CID } = metadata.client_id,
                 { ATT_QID } = %params.qid,
                 { attribute::DB_QUERY_TEXT } = params.query,
             ))
             .await?;
-
-        trace!({ ATT_QID } = %params.qid, { ATT_CID } = metadata.client_id, "query sent");
 
         Ok(())
     }
@@ -90,11 +125,12 @@ impl<W: ClickhouseWrite> Writer<W> {
         data: T::Data,
         qid: Qid,
         header: Option<&[(String, crate::Type)]>,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<()> {
-        writer.write_var_uint(protocol::ClientPacketId::Data as u64).await?;
+        writer.write_var_uint(ClientPacketId::Data as u64).await?;
         writer.write_string("").await?; // Table name
-        T::write(writer, data, qid, header, metadata).await?;
+        T::write(writer, data, qid, header, revision, metadata).await?;
         writer
             .flush()
             .instrument(trace_span!("flush_data", { ATT_QID } = %qid))
@@ -103,31 +139,35 @@ impl<W: ClickhouseWrite> Writer<W> {
         Ok(())
     }
 
-    pub(super) async fn send_hello(writer: &mut W, params: ClientHello) -> Result<()> {
-        writer.write_var_uint(protocol::ClientPacketId::Hello as u64).await?;
-        writer
-            .write_string(format!("ClickhouseNative Rust {}", env!("CARGO_PKG_VERSION")))
-            .await?;
-        writer.write_var_uint(crate::constants::VERSION_MAJOR).await?;
-        writer.write_var_uint(crate::constants::VERSION_MINOR).await?;
-        writer.write_var_uint(protocol::DBMS_TCP_PROTOCOL_VERSION).await?;
-        writer.write_string(params.default_database).await?;
-        writer.write_string(params.username).await?;
-        writer.write_string(params.password).await?;
-        writer.flush().instrument(trace_span!("flush_hello")).await?;
-        Ok(())
-    }
-
-    pub(super) async fn send_addendum(writer: &mut W, revision: u64) -> Result<()> {
-        if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_ADDENDUM {
+    pub(super) async fn send_addendum(
+        writer: &mut W,
+        revision: u64,
+        server_hello: &ServerHello,
+    ) -> Result<()> {
+        if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_QUOTA_KEY {
             writer.write_string("").await?;
-            writer.flush().await?;
         }
+
+        // Send chunked protocol negotiation results
+        if server_hello.revision_version >= DBMS_MIN_PROTOCOL_VERSION_WITH_CHUNKED_PACKETS {
+            let send_mode = server_hello.chunked_send.as_ref();
+            let recv_mode = server_hello.chunked_recv.as_ref();
+            trace!("Sending chunked protocol addendum: send={send_mode}, recv={recv_mode}");
+            writer.write_string(send_mode).await?;
+            writer.write_string(recv_mode).await?;
+        }
+
+        if server_hello.revision_version
+            >= DBMS_MIN_REVISION_WITH_VERSIONED_PARALLEL_REPLICAS_PROTOCOL
+        {
+            writer.write_var_uint(DBMS_PARALLEL_REPLICAS_PROTOCOL_VERSION).await?;
+        }
+
         Ok(())
     }
 
     pub(super) async fn send_ping(writer: &mut W) -> Result<()> {
-        writer.write_var_uint(protocol::ClientPacketId::Ping as u64).await?;
+        writer.write_var_uint(ClientPacketId::Ping as u64).await?;
         writer.flush().instrument(trace_span!("flush_ping")).await?;
         Ok(())
     }
@@ -135,7 +175,7 @@ impl<W: ClickhouseWrite> Writer<W> {
     // NOTE: Not used currently
     #[expect(unused)]
     pub(super) async fn send_cancel(writer: &mut W) -> Result<()> {
-        writer.write_var_uint(protocol::ClientPacketId::Cancel as u64).await?;
+        writer.write_var_uint(ClientPacketId::Cancel as u64).await?;
         writer.flush().instrument(trace_span!("flush_cancel")).await?;
         Ok(())
     }

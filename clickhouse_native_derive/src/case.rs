@@ -52,9 +52,7 @@ impl RenameRule {
                 return Ok(*rule);
             }
         }
-        Err(ParseError {
-            unknown: rename_all_str,
-        })
+        Err(ParseError { unknown: rename_all_str })
     }
 
     /// Apply a renaming rule to a struct field, returning the version expected in the source.

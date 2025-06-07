@@ -21,7 +21,8 @@ pub fn header(qid: impl std::fmt::Display, msg: impl AsRef<str>) {
 pub async fn init(
     name: &str,
     directives: Option<&[(&str, &str)]>,
+    clickhouse_conf: Option<&str>,
 ) -> &'static Arc<ClickHouseContainer> {
     init_tracing(directives);
-    get_or_create_container_multi(name, TESTS_RUNNING.as_ref()).await
+    get_or_create_container_multi(name, TESTS_RUNNING.as_ref(), clickhouse_conf).await
 }

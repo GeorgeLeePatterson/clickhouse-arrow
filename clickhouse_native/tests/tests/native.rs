@@ -14,7 +14,6 @@ pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
 
     // Table create options
     let options = CreateOptions::new("MergeTree").with_order_by(&["id".to_string()]);
-    // .with_schema_conversions(schema_conversions);
 
     // Create ClientBuilder and ConnectionManager
     let client: NativeClient = ClientBuilder::new()

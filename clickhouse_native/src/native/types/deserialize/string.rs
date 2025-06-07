@@ -7,7 +7,6 @@ use crate::native::values::Value;
 
 pub(crate) struct StringDeserializer;
 
-#[async_trait::async_trait]
 impl Deserializer for StringDeserializer {
     async fn read<R: ClickhouseRead>(
         type_: &Type,

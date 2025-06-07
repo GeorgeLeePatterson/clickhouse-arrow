@@ -2,7 +2,6 @@ use std::mem;
 
 use proc_macro2::Span;
 use quote::ToTokens;
-use syn::punctuated::Punctuated;
 use syn::{
     Data, DeriveInput, Expr, ExprPath, GenericArgument, GenericParam, Generics, Macro, Path,
     PathArguments, QSelf, ReturnType, Type, TypeParamBound, TypePath, WherePredicate, parse_quote,
@@ -51,7 +50,7 @@ impl ReplaceReceiver<'_> {
 
         path.leading_colon = Some(syn::token::PathSep { spans: [span, span] });
 
-        let segments = mem::replace(&mut path.segments, Punctuated::new());
+        let segments = std::mem::take(&mut path.segments);
         path.segments = segments.into_pairs().skip(1).collect();
     }
 

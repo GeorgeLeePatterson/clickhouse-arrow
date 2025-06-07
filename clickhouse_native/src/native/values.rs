@@ -213,7 +213,7 @@ impl Value {
             #[expect(clippy::cast_possible_truncation)]
             Value::UInt64(x) => *x as usize,
             _ => {
-                return Err(crate::errors::Error::ProtocolError(format!(
+                return Err(crate::errors::Error::Protocol(format!(
                     "Expected integer, got {self}"
                 )));
             }
@@ -225,9 +225,7 @@ impl Value {
     pub fn unwrap_array_ref(&self) -> Result<&[Value]> {
         match self {
             Value::Array(a) => Ok(&a[..]),
-            _ => Err(crate::errors::Error::ProtocolError(format!(
-                "Expected array, got {self}"
-            ))),
+            _ => Err(crate::errors::Error::Protocol(format!("Expected array, got {self}"))),
         }
     }
 
@@ -236,9 +234,7 @@ impl Value {
     pub fn unwrap_array(self) -> Result<Vec<Value>> {
         match self {
             Value::Array(a) => Ok(a),
-            _ => Err(crate::errors::Error::ProtocolError(format!(
-                "Expected array, got {self}"
-            ))),
+            _ => Err(crate::errors::Error::Protocol(format!("Expected array, got {self}"))),
         }
     }
 
@@ -247,9 +243,7 @@ impl Value {
     pub fn unwrap_tuple(self) -> Result<Vec<Value>> {
         match self {
             Value::Tuple(a) => Ok(a),
-            _ => Err(crate::errors::Error::ProtocolError(format!(
-                "Expected tuple, got {self}"
-            ))),
+            _ => Err(crate::errors::Error::Protocol(format!("Expected tuple, got {self}"))),
         }
     }
 
@@ -491,8 +485,18 @@ impl fmt::Display for Value {
             Value::MultiPolygon(x) => write!(f, "{x:?}"),
             Value::Object(x) => {
                 write!(f, "'")?;
-                if let Some(x) = serde_json::from_slice(x).unwrap_or(std::str::from_utf8(x).ok()) {
-                    escape_string(f, x)?;
+                let obj_str = std::str::from_utf8(x).ok();
+                #[cfg(not(feature = "serde"))]
+                {
+                    if let Some(x) = obj_str {
+                        escape_string(f, x)?;
+                    }
+                }
+                #[cfg(feature = "serde")]
+                {
+                    if let Some(x) = serde_json::from_slice(x).unwrap_or(obj_str) {
+                        escape_string(f, x)?;
+                    }
                 }
                 write!(f, "'")
             }

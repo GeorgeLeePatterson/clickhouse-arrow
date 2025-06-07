@@ -49,35 +49,12 @@
 ///   with `serde::Serialize` and `serde::Deserialize`.
 use std::fmt;
 
-use crate::io::ClickhouseWrite;
+use crate::io::{ClickhouseRead, ClickhouseWrite};
 use crate::native::protocol::DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS;
 use crate::{Error, Result};
 
-/// A single `ClickHouse` query setting, consisting of a key, value, and flags.
-///
-/// A setting represents a key-value pair sent to the `ClickHouse` server to
-/// configure query execution. The `key` is a string (e.g., `max_threads`), and
-/// the `value` is a [`SettingValue`] (integer, boolean, float, or string). The
-/// `important` and `custom` flags control serialization behavior in the native
-/// protocol.
-///
-/// # Fields
-/// - `key`: The setting name (e.g., `max_threads`).
-/// - `value`: The setting value, stored as a [`SettingValue`].
-/// - `important`: If `true`, marks the setting as important (affects serialization).
-/// - `custom`: If `true`, serializes the value as a custom string (e.g., for complex types).
-///
-/// # `ClickHouse` Reference
-/// See the [ClickHouse Settings Reference](https://clickhouse.com/docs/en/operations/settings)
-/// for valid setting names and their types.
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Setting {
-    key:       String,
-    value:     SettingValue,
-    important: bool,
-    custom:    bool,
-}
+const SETTING_FLAG_IMPORTANT: u64 = 0x01;
+const SETTING_FLAG_CUSTOM: u64 = 0x02;
 
 /// Supported value types for `ClickHouse` query settings.
 ///
@@ -168,8 +145,31 @@ impl fmt::Display for SettingValue {
     }
 }
 
-const SETTING_FLAG_IMPORTANT: u64 = 0x01;
-const SETTING_FLAG_CUSTOM: u64 = 0x02;
+/// A single `ClickHouse` query setting, consisting of a key, value, and flags.
+///
+/// A setting represents a key-value pair sent to the `ClickHouse` server to
+/// configure query execution. The `key` is a string (e.g., `max_threads`), and
+/// the `value` is a [`SettingValue`] (integer, boolean, float, or string). The
+/// `important` and `custom` flags control serialization behavior in the native
+/// protocol.
+///
+/// # Fields
+/// - `key`: The setting name (e.g., `max_threads`).
+/// - `value`: The setting value, stored as a [`SettingValue`].
+/// - `important`: If `true`, marks the setting as important (affects serialization).
+/// - `custom`: If `true`, serializes the value as a custom string (e.g., for complex types).
+///
+/// # `ClickHouse` Reference
+/// See the [ClickHouse Settings Reference](https://clickhouse.com/docs/en/operations/settings)
+/// for valid setting names and their types.
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Setting {
+    key:       String,
+    value:     SettingValue,
+    important: bool,
+    custom:    bool,
+}
 
 impl Setting {
     /// Encodes the setting to the `ClickHouse` native protocol.
@@ -187,6 +187,8 @@ impl Setting {
     /// Returns `Err(Error::UnsupportedSettingType)` if the setting value is a
     /// string or float in legacy revisions.
     async fn encode<W: ClickhouseWrite>(&self, writer: &mut W, revision: u64) -> Result<()> {
+        tracing::trace!(setting = ?self, "Writing setting");
+
         if revision <= DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS {
             if !matches!(self.value, SettingValue::Int(_) | SettingValue::Bool(_)) {
                 return Err(Error::UnsupportedSettingType(self.key.clone()));
@@ -228,6 +230,38 @@ impl Setting {
         Ok(())
     }
 
+    /// Decodes a setting from the `ClickHouse` native protocol.
+    ///
+    /// For legacy revisions (≤ 54429), only integer and boolean settings are supported.
+    /// For modern revisions, all setting types are supported, with custom settings
+    /// decoded from field dumps when the custom flag is set.
+    ///
+    /// # Arguments
+    /// - `reader`: The reader to deserialize the setting from.
+    /// - `revision`: The `ClickHouse` server protocol revision.
+    ///
+    /// # Errors
+    /// Returns an error if the data cannot be read or parsed correctly.
+    async fn decode<R: ClickhouseRead>(reader: &mut R, key: String) -> Result<Self> {
+        // Read flags (for STRINGS_WITH_FLAGS format)
+        let flags = reader.read_var_uint().await?;
+        let is_important = (flags & SETTING_FLAG_IMPORTANT) != 0;
+        let is_custom = (flags & SETTING_FLAG_CUSTOM) != 0;
+
+        // Read value based on whether it's custom or not
+        let value = if is_custom {
+            // Custom setting: read as field dump
+            let field_dump = reader.read_string().await?;
+            SettingValue::String(String::from_utf8_lossy(&field_dump).to_string())
+        } else {
+            // Standard setting: read as string and parse
+            let value_str = reader.read_string().await?;
+            Self::parse_setting_value(&String::from_utf8_lossy(&value_str))
+        };
+
+        Ok(Setting { key, value, important: is_important, custom: is_custom })
+    }
+
     /// Encodes the setting value as a string for custom settings.
     ///
     /// For string values, the result is the raw string without additional escaping
@@ -239,6 +273,49 @@ impl Setting {
         match &self.value {
             SettingValue::String(s) => Ok(s.clone()),
             _ => Err(Error::UnsupportedFieldType(format!("{:?}", self.value))),
+        }
+    }
+
+    /// Parses a setting value from its string representation.
+    ///
+    /// Attempts to parse the string as different types in order:
+    /// 1. Boolean (true/false, 1/0)
+    /// 2. Integer
+    /// 3. Float
+    /// 4. String (fallback)
+    ///
+    /// # Arguments
+    /// - `value_str`: The string representation of the setting value.
+    fn parse_setting_value(value_str: &str) -> SettingValue {
+        // Try parsing as boolean first
+        match value_str.to_lowercase().as_str() {
+            "true" | "1" => return SettingValue::Bool(true),
+            "false" | "0" => return SettingValue::Bool(false),
+            _ => {}
+        }
+
+        // Try parsing as integer
+        if let Ok(int_val) = value_str.parse::<i64>() {
+            return SettingValue::Int(int_val);
+        }
+
+        // Try parsing as float
+        if let Ok(float_val) = value_str.parse::<f64>() {
+            return SettingValue::Float(float_val);
+        }
+
+        // Default to string
+        SettingValue::String(value_str.to_string())
+    }
+}
+
+impl<T: Into<String>, U: Into<SettingValue>> From<(T, U)> for Setting {
+    fn from(value: (T, U)) -> Self {
+        Setting {
+            key:       value.0.into(),
+            value:     value.1.into(),
+            important: false,
+            custom:    false,
         }
     }
 }
@@ -296,12 +373,12 @@ impl Settings {
     where
         SettingValue: From<S>,
     {
-        self.0.push(Setting {
-            key:       name.into(),
-            value:     setting.into(),
-            important: false,
-            custom:    false,
-        });
+        let key = name.into();
+        if let Some(current) = self.0.iter_mut().find(|s| s.key == key) {
+            current.value = setting.into();
+        } else {
+            self.0.push(Setting { key, value: setting.into(), important: false, custom: false });
+        }
     }
 
     /// Return new settings with the given name and value added.
@@ -326,12 +403,12 @@ impl Settings {
     where
         SettingValue: From<S>,
     {
-        self.0.push(Setting {
-            key:       name.into(),
-            value:     setting.into(),
-            important: false,
-            custom:    false,
-        });
+        let key = name.into();
+        if let Some(current) = self.0.iter_mut().find(|s| s.key == key) {
+            current.value = setting.into();
+        } else {
+            self.0.push(Setting { key, value: setting.into(), important: false, custom: false });
+        }
         self
     }
 
@@ -370,6 +447,7 @@ impl Settings {
         self.0.iter().map(|setting| format!("{} = {}", setting.key, setting.value)).collect()
     }
 
+    // TODO: Remove - docs
     pub(crate) async fn encode<W: ClickhouseWrite>(
         &self,
         writer: &mut W,
@@ -380,11 +458,60 @@ impl Settings {
         }
         Ok(())
     }
+
+    // TODO: Remove - docs
+    pub(crate) async fn encode_with_ignore<W: ClickhouseWrite>(
+        &self,
+        writer: &mut W,
+        revision: u64,
+        ignore: &Settings,
+    ) -> Result<()> {
+        for setting in &self.0 {
+            if ignore.get(&setting.key).is_some_and(|s| s.value == setting.value) {
+                continue;
+            }
+
+            setting.encode(writer, revision).await?;
+        }
+        Ok(())
+    }
+
+    /// Decodes a collection of settings from the `ClickHouse` native protocol.
+    ///
+    /// Based on `BaseSettings<TTraits>::read()` from cpp source, the format is:
+    /// 1. Loop reading setting name strings
+    /// 2. Empty string marks end of settings
+    /// 3. For each setting: name -> flags (if `STRINGS_WITH_FLAGS`) -> value
+    ///
+    /// # Arguments
+    /// - `reader`: The reader to deserialize the settings from.
+    /// - `revision`: The `ClickHouse` server protocol revision.
+    ///
+    /// # Errors
+    /// Returns an error if the data cannot be read or parsed correctly.
+    pub(crate) async fn decode<R: ClickhouseRead>(reader: &mut R) -> Result<Self> {
+        let mut settings = Vec::new();
+        loop {
+            // Read setting name
+            let key = reader.read_string().await?;
+            // Empty string marks end of settings
+            if key.is_empty() {
+                break;
+            }
+            settings
+                .push(Setting::decode(reader, String::from_utf8_lossy(&key).to_string()).await?);
+        }
+        Ok(Settings(settings))
+    }
+
+    /// Internal helper to find a specific settings
+    pub(crate) fn get(&self, key: &str) -> Option<&Setting> { self.0.iter().find(|s| s.key == key) }
 }
 
-impl<T, S> From<T> for Settings
+impl<T, K, S> From<T> for Settings
 where
-    T: IntoIterator<Item = (String, S)>,
+    T: IntoIterator<Item = (K, S)>,
+    K: Into<String>,
     SettingValue: From<S>,
 {
     fn from(value: T) -> Self {
@@ -392,13 +519,26 @@ where
             value
                 .into_iter()
                 .map(|(k, v)| Setting {
-                    key:       k,
+                    key:       k.into(),
                     value:     v.into(),
                     important: false,
                     custom:    false,
                 })
                 .collect(),
         )
+    }
+}
+
+impl<K, S> FromIterator<(K, S)> for Settings
+where
+    K: Into<String>,
+    SettingValue: From<S>,
+{
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = (K, S)>,
+    {
+        iter.into_iter().collect()
     }
 }
 
@@ -640,10 +780,12 @@ pub mod deser {
 mod tests {
     use std::io::Cursor;
 
-    use tokio::io::{AsyncWriteExt, BufWriter};
+    use tokio::io::AsyncWriteExt;
 
     use super::*;
-    use crate::ClickhouseRead;
+    use crate::io::ClickhouseRead;
+
+    type MockWriter = Cursor<Vec<u8>>;
 
     // Helper to create a Setting
     fn create_setting<S>(key: &str, value: S, important: bool, custom: bool) -> Setting
@@ -710,17 +852,15 @@ mod tests {
     async fn test_setting_encode_legacy_revision() {
         // Test encode for legacy revision (≤ DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS)
         let setting = create_setting("max_threads", 8_i32, false, false);
-        let buffer = Vec::new();
-        let mut writer = BufWriter::new(buffer);
+        let mut writer = MockWriter::default();
         setting
             .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS)
             .await
             .unwrap();
         writer.flush().await.unwrap();
-        let buffer = writer.into_inner();
 
         // Decode and verify using ClickhouseRead
-        let mut reader = Cursor::new(buffer);
+        let mut reader = Cursor::new(writer.into_inner());
         let key = reader.read_utf8_string().await.unwrap();
         assert_eq!(key, "max_threads");
         let value = reader.read_var_uint().await.unwrap();
@@ -728,16 +868,14 @@ mod tests {
 
         // Test boolean setting
         let setting = create_setting("allow_experimental", true, false, false);
-        let buffer = Vec::new();
-        let mut writer = BufWriter::new(buffer);
+        let mut writer = MockWriter::default();
         setting
             .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS)
             .await
             .unwrap();
         writer.flush().await.unwrap();
-        let buffer = writer.into_inner();
 
-        let mut reader = Cursor::new(buffer);
+        let mut reader = Cursor::new(writer.into_inner());
         let key = reader.read_utf8_string().await.unwrap();
         assert_eq!(key, "allow_experimental");
         let value = reader.read_var_uint().await.unwrap();
@@ -745,8 +883,7 @@ mod tests {
 
         // Test unsupported type (should error)
         let setting = create_setting("default_format", "JSON", false, false);
-        let buffer = Vec::new();
-        let mut writer = BufWriter::new(buffer);
+        let mut writer = MockWriter::default();
         assert!(matches!(
             setting
                 .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS)
@@ -759,17 +896,15 @@ mod tests {
     async fn test_setting_encode_modern_revision() {
         // Test encode for modern revision (> DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS)
         let setting = create_setting("max_threads", 8_i32, false, false);
-        let buffer = Vec::new();
-        let mut writer = BufWriter::new(buffer);
+        let mut writer = MockWriter::default();
         setting
             .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS + 1)
             .await
             .unwrap();
         writer.flush().await.unwrap();
-        let buffer = writer.into_inner();
 
         // Decode and verify using ClickhouseRead
-        let mut reader = Cursor::new(buffer);
+        let mut reader = Cursor::new(writer.into_inner());
         let key = reader.read_utf8_string().await.unwrap();
         assert_eq!(key, "max_threads");
         let flags = reader.read_var_uint().await.unwrap();
@@ -779,16 +914,14 @@ mod tests {
 
         // Test with important and custom flags
         let setting = create_setting("custom_key", "value", true, true);
-        let buffer = Vec::new();
-        let mut writer = BufWriter::new(buffer);
+        let mut writer = MockWriter::default();
         setting
             .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS + 1)
             .await
             .unwrap();
         writer.flush().await.unwrap();
-        let buffer = writer.into_inner();
 
-        let mut reader = Cursor::new(buffer);
+        let mut reader = Cursor::new(writer.into_inner());
         let key = reader.read_utf8_string().await.unwrap();
         assert_eq!(key, "custom_key");
         let flags = reader.read_var_uint().await.unwrap();
@@ -856,17 +989,16 @@ mod tests {
             ("allow_experimental".to_string(), SettingValue::Bool(true)),
         ]);
 
-        let buffer = Vec::new();
-        let mut writer = BufWriter::new(buffer);
+        let mut writer = MockWriter::default();
         settings
             .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS + 1)
             .await
             .unwrap();
+        writer.write_string("").await.unwrap();
         writer.flush().await.unwrap();
-        let buffer = writer.into_inner();
 
         // Decode and verify using ClickhouseRead
-        let mut reader = Cursor::new(buffer);
+        let mut reader = Cursor::new(writer.into_inner());
         let key1 = reader.read_utf8_string().await.unwrap();
         assert_eq!(key1, "max_threads");
         let flags1 = reader.read_var_uint().await.unwrap();
@@ -910,5 +1042,247 @@ mod tests {
         let json = serde_json::to_string(&setting).unwrap();
         let deserialized: Setting = serde_json::from_str(&json).unwrap();
         assert_eq!(setting, deserialized);
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_empty() {
+        // Test decoding empty settings (just end marker)
+        let mut writer = Cursor::new(Vec::new());
+
+        // Write empty string as end marker
+        writer.write_string("").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut reader = Cursor::new(writer.into_inner());
+        let settings = Settings::decode(&mut reader).await.unwrap();
+
+        assert_eq!(settings.0.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_single_standard_setting() {
+        // Test decoding a single standard (non-custom) setting
+        let mut writer = MockWriter::default();
+
+        // Write setting: name -> flags -> value -> end marker
+        writer.write_string("max_threads").await.unwrap();
+        writer.write_var_uint(0).await.unwrap(); // No flags
+        writer.write_string("8").await.unwrap();
+        writer.write_string("").await.unwrap(); // End marker
+        writer.flush().await.unwrap();
+
+        let mut reader = Cursor::new(writer.into_inner());
+        let settings = Settings::decode(&mut reader).await.unwrap();
+
+        assert_eq!(settings.0.len(), 1);
+        assert_eq!(settings.0[0].key, "max_threads");
+        assert_eq!(settings.0[0].value, SettingValue::Int(8));
+        assert!(!settings.0[0].important);
+        assert!(!settings.0[0].custom);
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_custom_setting() {
+        // Test decoding a custom setting
+        let mut writer = MockWriter::default();
+
+        // Write custom setting: name -> custom flag -> field dump -> end marker
+        writer.write_string("custom_setting").await.unwrap();
+        writer.write_var_uint(SETTING_FLAG_CUSTOM).await.unwrap();
+        writer.write_string("custom_value").await.unwrap();
+        writer.write_string("").await.unwrap(); // End marker
+        writer.flush().await.unwrap();
+
+        let mut reader = Cursor::new(writer.into_inner());
+        let settings = Settings::decode(&mut reader).await.unwrap();
+
+        assert_eq!(settings.0.len(), 1);
+        assert_eq!(settings.0[0].key, "custom_setting");
+        assert_eq!(settings.0[0].value, SettingValue::String("custom_value".to_string()));
+        assert!(!settings.0[0].important);
+        assert!(settings.0[0].custom);
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_important_setting() {
+        // Test decoding an important setting
+        let mut writer = MockWriter::default();
+
+        // Write important setting
+        writer.write_string("critical_setting").await.unwrap();
+        writer.write_var_uint(SETTING_FLAG_IMPORTANT).await.unwrap();
+        writer.write_string("true").await.unwrap();
+        writer.write_string("").await.unwrap(); // End marker
+        writer.flush().await.unwrap();
+
+        let mut reader = Cursor::new(writer.into_inner());
+        let settings = Settings::decode(&mut reader).await.unwrap();
+
+        assert_eq!(settings.0.len(), 1);
+        assert_eq!(settings.0[0].key, "critical_setting");
+        assert_eq!(settings.0[0].value, SettingValue::Bool(true));
+        assert!(settings.0[0].important);
+        assert!(!settings.0[0].custom);
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_multiple_settings() {
+        // Test decoding multiple settings with different types and flags
+        let mut writer = MockWriter::default();
+
+        // Setting 1: Standard integer
+        writer.write_string("max_threads").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("4").await.unwrap();
+
+        // Setting 2: Important boolean
+        writer.write_string("allow_experimental").await.unwrap();
+        writer.write_var_uint(SETTING_FLAG_IMPORTANT).await.unwrap();
+        writer.write_string("false").await.unwrap();
+
+        // Setting 3: Custom setting
+        writer.write_string("custom_config").await.unwrap();
+        writer.write_var_uint(SETTING_FLAG_CUSTOM).await.unwrap();
+        writer.write_string("custom_data").await.unwrap();
+
+        // Setting 4: Important + Custom
+        writer.write_string("important_custom").await.unwrap();
+        writer.write_var_uint(SETTING_FLAG_IMPORTANT | SETTING_FLAG_CUSTOM).await.unwrap();
+        writer.write_string("special_value").await.unwrap();
+
+        // Setting 5: Float value
+        writer.write_string("timeout_ratio").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("1.5").await.unwrap();
+
+        // End marker
+        writer.write_string("").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut reader = Cursor::new(writer.into_inner());
+        let settings = Settings::decode(&mut reader).await.unwrap();
+
+        assert_eq!(settings.0.len(), 5);
+
+        // Verify Setting 1
+        assert_eq!(settings.0[0].key, "max_threads");
+        assert_eq!(settings.0[0].value, SettingValue::Int(4));
+        assert!(!settings.0[0].important);
+        assert!(!settings.0[0].custom);
+
+        // Verify Setting 2
+        assert_eq!(settings.0[1].key, "allow_experimental");
+        assert_eq!(settings.0[1].value, SettingValue::Bool(false));
+        assert!(settings.0[1].important);
+        assert!(!settings.0[1].custom);
+
+        // Verify Setting 3
+        assert_eq!(settings.0[2].key, "custom_config");
+        assert_eq!(settings.0[2].value, SettingValue::String("custom_data".to_string()));
+        assert!(!settings.0[2].important);
+        assert!(settings.0[2].custom);
+
+        // Verify Setting 4
+        assert_eq!(settings.0[3].key, "important_custom");
+        assert_eq!(settings.0[3].value, SettingValue::String("special_value".to_string()));
+        assert!(settings.0[3].important);
+        assert!(settings.0[3].custom);
+
+        // Verify Setting 5
+        assert_eq!(settings.0[4].key, "timeout_ratio");
+        assert_eq!(settings.0[4].value, SettingValue::Float(1.5));
+        assert!(!settings.0[4].important);
+        assert!(!settings.0[4].custom);
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_parse_setting_value_edge_cases() {
+        // Test various edge cases for value parsing
+        let mut writer = MockWriter::default();
+
+        // Test "0" as boolean false
+        writer.write_string("bool_zero").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("0").await.unwrap();
+
+        // Test "1" as boolean true
+        writer.write_string("bool_one").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("1").await.unwrap();
+
+        // Test negative integer
+        writer.write_string("negative_int").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("-42").await.unwrap();
+
+        // Test string that looks like number but isn't parseable as int/float
+        writer.write_string("string_val").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("not_a_number").await.unwrap();
+
+        // Test empty string value
+        writer.write_string("empty_val").await.unwrap();
+        writer.write_var_uint(0).await.unwrap();
+        writer.write_string("").await.unwrap();
+
+        // End marker
+        writer.write_string("").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut reader = Cursor::new(writer.into_inner());
+        let settings = Settings::decode(&mut reader).await.unwrap();
+
+        assert_eq!(settings.0.len(), 5);
+        assert_eq!(settings.0[0].value, SettingValue::Bool(false)); // "0" -> false
+        assert_eq!(settings.0[1].value, SettingValue::Bool(true)); // "1" -> true
+        assert_eq!(settings.0[2].value, SettingValue::Int(-42)); // "-42" -> int
+        assert_eq!(settings.0[3].value, SettingValue::String("not_a_number".to_string())); // fallback to string
+        assert_eq!(settings.0[4].value, SettingValue::String(String::new())); // empty string
+    }
+
+    #[tokio::test]
+    async fn test_settings_decode_roundtrip() {
+        // Test that encode -> decode produces the same data
+        let original_settings = Settings::from(vec![
+            ("max_threads".to_string(), SettingValue::Int(8)),
+            ("allow_experimental".to_string(), SettingValue::Bool(true)),
+            ("custom_setting".to_string(), SettingValue::String("custom_value".to_string())),
+        ]);
+
+        // Mark one as custom for testing
+        let mut settings_with_custom = original_settings.clone();
+        settings_with_custom.0[2].custom = true;
+        settings_with_custom.0[1].important = true;
+
+        // Encode
+        let mut writer = MockWriter::default();
+        settings_with_custom
+            .encode(&mut writer, DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRINGS + 1)
+            .await
+            .unwrap();
+        writer.write_string("").await.unwrap();
+        writer.flush().await.unwrap();
+
+        // Decode
+        let mut reader = Cursor::new(writer.into_inner());
+
+        let decoded_settings = Settings::decode(&mut reader).await.unwrap();
+
+        // Compare (note: encode doesn't write end marker, so we need to account for that)
+        assert_eq!(decoded_settings.0.len(), 3);
+        assert_eq!(decoded_settings.0[0].key, "max_threads");
+        assert_eq!(decoded_settings.0[0].value, SettingValue::Int(8));
+        assert!(!decoded_settings.0[0].important);
+        assert!(!decoded_settings.0[0].custom);
+
+        assert_eq!(decoded_settings.0[1].key, "allow_experimental");
+        assert_eq!(decoded_settings.0[1].value, SettingValue::Bool(true));
+        assert!(decoded_settings.0[1].important);
+        assert!(!decoded_settings.0[1].custom);
+
+        assert_eq!(decoded_settings.0[2].key, "custom_setting");
+        assert_eq!(decoded_settings.0[2].value, SettingValue::String("custom_value".to_string()));
+        assert!(!decoded_settings.0[2].important);
+        assert!(decoded_settings.0[2].custom);
     }
 }

@@ -4,7 +4,6 @@ use crate::{Result, Value};
 
 pub(crate) struct TupleSerializer;
 
-#[async_trait::async_trait]
 impl Serializer for TupleSerializer {
     async fn write_prefix<W: ClickhouseWrite>(
         type_: &Type,

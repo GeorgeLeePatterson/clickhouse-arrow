@@ -1,6 +1,4 @@
 use std::num::NonZeroU64;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use bb8::ManageConnection;
@@ -8,10 +6,7 @@ use tokio::time::timeout;
 
 use crate::prelude::*;
 use crate::settings::Settings;
-use crate::{
-    Error, Client, ClientBuilder, ClientOptions, ConnectionStatus, Destination,
-    Result,
-};
+use crate::{Client, ClientBuilder, ClientOptions, ConnectionStatus, Destination, Error, Result};
 
 /// Alias for `ConnectionPoolBuilder<NativeFormat>`
 pub type NativeConnectionPoolBuilder = ConnectionPoolBuilder<NativeFormat>;
@@ -38,8 +33,15 @@ pub struct ConnectionPoolBuilder<T: ClientFormat> {
 }
 
 impl<T: ClientFormat> ConnectionPoolBuilder<T> {
+    /// Initialize by providing a destination. Use [`Self::configure_client`] to configure the
+    /// underlying [`ClientBuilder`].
     pub fn new<A: Into<Destination>>(destination: A) -> Self {
         let client_builder = ClientBuilder::new().with_destination(destination);
+        Self { pool: bb8::Builder::new(), client_builder, check_health: false }
+    }
+
+    /// Initialize by providing a [`ClientBuilder`] directly.
+    pub fn with_client_builder(client_builder: ClientBuilder) -> Self {
         Self { pool: bb8::Builder::new(), client_builder, check_health: false }
     }
 
@@ -50,7 +52,7 @@ impl<T: ClientFormat> ConnectionPoolBuilder<T> {
     pub fn client_options(&self) -> &ClientOptions { self.client_builder.options() }
 
     /// Get a reference to the current configured [`Settings`]
-    pub fn client_settings(&self) -> Option<&Arc<Settings>> { self.client_builder.settings() }
+    pub fn client_settings(&self) -> Option<&Settings> { self.client_builder.settings() }
 
     /// Whether the underlying connection will issue a `ping` when checking health.
     #[must_use]
@@ -127,7 +129,7 @@ impl<T: ClientFormat> ConnectionManager<T> {
             .with_options(options)
             .with_destination(destination)
             .with_trace_context(TraceContext::from(span))
-            .with_settings(Arc::new(settings.map(Into::into).unwrap_or_default()));
+            .with_settings(settings.map(Into::into).unwrap_or_default());
         Self::try_new_with_builder(builder).await
     }
 
@@ -156,7 +158,10 @@ impl<T: ClientFormat> ConnectionManager<T> {
     /// cloud.
     #[cfg(feature = "cloud")]
     #[must_use]
-    pub fn with_cloud_track(mut self, track: Arc<AtomicBool>) -> Self {
+    pub fn with_cloud_track(
+        mut self,
+        track: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         self.builder = self.builder.with_cloud_track(track);
         self
     }
@@ -201,9 +206,7 @@ impl<T: ClientFormat> ManageConnection for ConnectionManager<T> {
                         warn!(?error, { ATT_CID } = id, "Health check failed");
                         Err(error)
                     }
-                    Err(_) => Err(Error::ConnectionTimeout(
-                        "Health check timed out".into(),
-                    )),
+                    Err(_) => Err(Error::ConnectionTimeout("Health check timed out".into())),
                 };
             }
         }

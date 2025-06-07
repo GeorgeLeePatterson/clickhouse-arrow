@@ -7,6 +7,7 @@
 /// cloned and shared across threads. It supports querying, inserting data, managing
 /// database schemas, and handling `ClickHouse` events like progress and profiling.
 mod builder;
+mod chunk;
 #[cfg(feature = "cloud")]
 mod cloud;
 pub(crate) mod connection;
@@ -19,7 +20,7 @@ mod writer;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::AtomicU16;
 
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::compute::take_record_batch;
@@ -34,15 +35,14 @@ pub(crate) use self::internal::{Message, Operation};
 pub use self::options::*;
 pub use self::response::*;
 pub use self::tcp::Destination;
-pub(crate) use self::writer::*;
 use crate::arrow::utils::batch_to_rows;
 use crate::constants::*;
-use crate::ddl::CreateOptions;
 use crate::formats::{ClientFormat, NativeFormat};
 use crate::native::block::Block;
 use crate::native::protocol::{CompressionMethod, ProfileEvent};
 use crate::prelude::*;
-use crate::query::ParsedQuery;
+use crate::query::{ParsedQuery, QueryParams};
+use crate::schema::CreateOptions;
 use crate::{Error, Progress, Result, Row};
 
 static CLIENT_ID: AtomicU16 = AtomicU16::new(0);
@@ -61,10 +61,11 @@ pub type ArrowClient = Client<ArrowFormat>;
 /// - `trace`: Optional tracing context for logging and monitoring.
 /// - `cloud`: Optional cloud-specific configuration (requires the `cloud` feature).
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(not(feature = "cloud"), derive(Copy))]
 pub struct ConnectionContext {
     pub trace: Option<TraceContext>,
     #[cfg(feature = "cloud")]
-    pub cloud: Option<Arc<AtomicBool>>,
+    pub cloud: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Emitted clickhouse events from the underlying connection
@@ -124,7 +125,7 @@ pub enum ClickhouseEvent {
 #[derive(Clone, Debug)]
 pub struct Client<T: ClientFormat> {
     pub client_id: u16,
-    conn:          Arc<connection::Connection<T>>,
+    connection:    Arc<connection::Connection<T>>,
     events:        Arc<broadcast::Sender<Event>>,
     settings:      Option<Arc<Settings>>,
 }
@@ -219,9 +220,9 @@ impl<T: ClientFormat> Client<T> {
         #[cfg(feature = "cloud")]
         {
             // Ping the cloud instance if requested
-            if let Some(domain) = options.domain.as_ref().filter(|_| options.cloud.wakeup) {
+            if let Some(domain) = options.domain.as_ref().filter(|_| options.ext.cloud.wakeup) {
                 let cloud_track = context.cloud.as_deref();
-                Self::ping_cloud(domain, options.cloud.timeout, cloud_track).await;
+                Self::ping_cloud(domain, options.ext.cloud.timeout, cloud_track).await;
             }
         }
 
@@ -238,11 +239,11 @@ impl<T: ClientFormat> Client<T> {
 
         let conn =
             connection::Connection::connect(client_id, addrs, options, conn_ev, trace_ctx).await?;
-        let conn = Arc::new(conn);
+        let connection = Arc::new(conn);
 
         debug!("created connection successfully");
 
-        Ok(Client { client_id, conn, events, settings })
+        Ok(Client { client_id, connection, events, settings })
     }
 
     /// Retrieves the status of the underlying `ClickHouse` connection.
@@ -267,7 +268,7 @@ impl<T: ClientFormat> Client<T> {
     /// let status = client.status();
     /// println!("Connection status: {status:?}");
     /// ```
-    pub fn status(&self) -> ConnectionStatus { self.conn.status() }
+    pub fn status(&self) -> ConnectionStatus { self.connection.status() }
 
     /// Subscribes to progress and profile events from `ClickHouse` queries.
     ///
@@ -334,7 +335,7 @@ impl<T: ClientFormat> Client<T> {
     /// ```
     pub async fn health_check(&self, ping: bool) -> Result<()> {
         trace!({ ATT_CID } = self.client_id, "sending health check w/ ping={ping}");
-        self.conn.check_connection(ping).await
+        self.conn().await?.check_connection(ping).await
     }
 
     /// Shuts down the `ClickHouse` client and closes its connection.
@@ -364,7 +365,7 @@ impl<T: ClientFormat> Client<T> {
     /// ```
     pub async fn shutdown(&self) -> Result<()> {
         trace!("shutting down client");
-        self.conn.shutdown().await
+        self.conn().await?.shutdown().await
     }
 
     /// Inserts a block of data into `ClickHouse` using the native protocol.
@@ -433,29 +434,43 @@ impl<T: ClientFormat> Client<T> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let connection = self.conn().await?;
 
-        self.conn
-            .send_request(
+        // Send query
+        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        let conn_idx = connection
+            .send_operation(
                 Operation::Query {
                     query,
                     settings: self.settings.clone(),
+                    params: None,
                     response: tx,
                     header: None,
                 },
                 qid,
+                false,
             )
             .await?;
 
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
         let responses = rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
-        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+            .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
+            .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
 
+        // Send data
         let (tx, rx) = oneshot::channel();
-        self.conn.send_request(Operation::Insert { data: block, response: tx }, qid).await?;
-        rx.await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from insert".into()))??;
+        let _ = connection
+            .send_operation(Operation::Insert { data: block, response: tx }, qid, true)
+            .await?;
+        rx.await.map_err(|_| {
+            Error::Protocol(format!("Failed to receive response from insert {qid}"))
+        })??;
+
+        // Decrement load balancer
+        #[cfg(feature = "fast_mode")]
+        connection.finish(conn_idx, Operation::<T::Data>::weight_insert());
+
         Ok(self.insert_response(responses, qid))
     }
 
@@ -506,6 +521,7 @@ impl<T: ClientFormat> Client<T> {
     /// ```
     #[instrument(
         name = "clickhouse.insert_many",
+        skip_all,
         fields(
             db.system = "clickhouse",
             db.operation = "insert",
@@ -513,7 +529,6 @@ impl<T: ClientFormat> Client<T> {
             clickhouse.client.id = self.client_id,
             clickhouse.query.id
         ),
-        skip_all
     )]
     pub async fn insert_many(
         &self,
@@ -525,29 +540,42 @@ impl<T: ClientFormat> Client<T> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let connection = self.conn().await?;
 
-        self.conn
-            .send_request(
+        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        let conn_idx = connection
+            .send_operation(
                 Operation::Query {
                     query,
                     settings: self.settings.clone(),
+                    params: None,
                     response: tx,
                     header: None,
                 },
                 qid,
+                false,
             )
             .await?;
 
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
         let responses = rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
-        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+            .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
+            .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
 
+        // Send data
         let (tx, rx) = oneshot::channel();
-        self.conn.send_request(Operation::InsertMany { data: batch, response: tx }, qid).await?;
-        rx.await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from insert".into()))??;
+        let _ = connection
+            .send_operation(Operation::InsertMany { data: batch, response: tx }, qid, true)
+            .await?;
+        rx.await.map_err(|_| {
+            Error::Protocol(format!("Failed to receive response from insert {qid}"))
+        })??;
+
+        // Decrement load balancer
+        #[cfg(feature = "fast_mode")]
+        connection.finish(conn_idx, Operation::<T::Data>::weight_insert_many());
+
         Ok(self.insert_response(responses, qid))
     }
 
@@ -603,32 +631,43 @@ impl<T: ClientFormat> Client<T> {
             clickhouse.query.id = %qid
         ),
      )]
-    pub async fn query_raw(
+    pub async fn query_raw<P: Into<QueryParams>>(
         &self,
         query: String,
+        params: Option<P>,
         qid: Qid,
     ) -> Result<impl Stream<Item = Result<T::Data>> + 'static> {
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let connection = self.conn().await?;
 
-        self.conn
-            .send_request(
+        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        let conn_idx = connection
+            .send_operation(
                 Operation::Query {
                     query,
                     settings: self.settings.clone(),
+                    params: params.map(Into::into),
                     response: tx,
                     header: None,
                 },
                 qid,
+                true,
             )
             .await?;
 
+        trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
+
         let responses = rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
-        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
-
+            .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
+            .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
+
+        // Decrement load balancer
+        #[cfg(feature = "fast_mode")]
+        connection.finish(conn_idx, Operation::<T::Data>::weight_query());
+
         Ok(create_response_stream::<T>(responses, qid, self.client_id))
     }
 
@@ -665,10 +704,74 @@ impl<T: ClientFormat> Client<T> {
     /// client.execute("DROP TABLE IF EXISTS my_table", None).await.unwrap();
     /// println!("Table dropped successfully!");
     /// ```
-    #[instrument(skip_all, fields(clickhouse.client.id = self.client_id))]
+    #[instrument(
+        name = "clickhouse.execute",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.format = T::FORMAT,
+            db.operation = "query",
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
     pub async fn execute(&self, query: impl Into<ParsedQuery>, qid: Option<Qid>) -> Result<()> {
+        self.execute_params(query, None::<QueryParams>, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with query parameters and discards all returned data.
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"DROP TABLE my_table"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating whether the query executed successfully.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., permission denied).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let params = Some(vec![
+    ///     ("str", ParamValue::from("hello")),
+    ///     ("num", ParamValue::from(42)),
+    ///     ("array", ParamValue::from("['a', 'b', 'c']")),
+    /// ]);
+    /// let query = "SELECT {num:Int64}, {str:String}, {array:Array(String)}";
+    /// client.execute_params(query, params, None).await.unwrap();
+    /// println!("Table dropped successfully!");
+    /// ```
+    #[instrument(
+        name = "clickhouse.execute_params",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.format = T::FORMAT,
+            db.operation = "query",
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn execute_params<P: Into<QueryParams>>(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<P>,
+        qid: Option<Qid>,
+    ) -> Result<()> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
-        let stream = self.query_raw(query, qid).await?;
+        let stream = self.query_raw(query, params, qid).await?;
         tokio::pin!(stream);
         while let Some(next) = stream.next().await {
             drop(next?);
@@ -707,10 +810,70 @@ impl<T: ClientFormat> Client<T> {
     /// client.execute_now("INSERT INTO logs VALUES ('event')", None).await.unwrap();
     /// println!("Log event sent!");
     /// ```
-    #[instrument(skip_all, fields(clickhouse.client.id = self.client_id))]
+    #[instrument(
+        name = "clickhouse.execute_now",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.format = T::FORMAT,
+            db.operation = "query",
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
     pub async fn execute_now(&self, query: impl Into<ParsedQuery>, qid: Option<Qid>) -> Result<()> {
+        self.execute_now_params(query, None::<QueryParams>, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with query parameters without processing the response stream.
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"INSERT INTO my_table VALUES (1)"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] indicating whether the query was sent successfully.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build::<ArrowFormat>()
+    ///     .await
+    ///     .unwrap();
+    ///
+    ///
+    /// let params = Some(vec![("str", ParamValue::from("hello"))]);
+    /// let query = "INSERT INTO logs VALUES ({str:String})";
+    /// client.execute_now_params(query, params, None).await.unwrap();
+    /// println!("Log event sent!");
+    /// ```
+    #[instrument(
+        name = "clickhouse.execute_now_params",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.format = T::FORMAT,
+            db.operation = "query",
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn execute_now_params<P: Into<QueryParams>>(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<P>,
+        qid: Option<Qid>,
+    ) -> Result<()> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
-        drop(self.query_raw(query, qid).await?);
+        drop(self.query_raw(query, params, qid).await?);
         Ok(())
     }
 
@@ -750,7 +913,7 @@ impl<T: ClientFormat> Client<T> {
         fields(db.system = "clickhouse", db.operation = "create.database")
     )]
     pub async fn create_database(&self, database: Option<&str>, qid: Option<Qid>) -> Result<()> {
-        let database = database.unwrap_or(self.conn.database());
+        let database = database.unwrap_or(self.connection.database());
         let database = database.to_lowercase();
         if &database == "default" {
             warn!("Exiting, cannot create `default` database");
@@ -809,7 +972,7 @@ impl<T: ClientFormat> Client<T> {
 
         // TODO: Should this check remain? Or should the query writing be modified in the case
         // of issuing DDL statements while connected to a non-default database
-        let current_database = self.conn.database();
+        let current_database = self.connection.database();
         if current_database != "default"
             && !current_database.is_empty()
             && current_database != database
@@ -825,11 +988,24 @@ impl<T: ClientFormat> Client<T> {
 }
 
 impl<T: ClientFormat> Client<T> {
+    /// Get a reference to the underlying connection.
+    ///
+    /// TODO: Support reconnect.
+    #[expect(clippy::unused_async)]
+    async fn conn(&self) -> Result<&connection::Connection<T>> {
+        // TODO: Add reconnection logic here if configured
+        Ok(self.connection.as_ref())
+    }
+
     /// # Feature
     /// Requires the `cloud` feature to be enabled.
     #[cfg(feature = "cloud")]
     #[instrument(level = "trace", name = "clickhouse.cloud.ping")]
-    async fn ping_cloud(domain: &str, timeout: Option<u64>, track: Option<&AtomicBool>) {
+    async fn ping_cloud(
+        domain: &str,
+        timeout: Option<u64>,
+        track: Option<&std::sync::atomic::AtomicBool>,
+    ) {
         debug!("pinging cloud instance");
         if !domain.is_empty() {
             debug!(domain, "cloud endpoint found");
@@ -839,12 +1015,13 @@ impl<T: ClientFormat> Client<T> {
         }
     }
 
+    // Helper function to convert a receiver of data into a `ClickHouseResponse`
     fn insert_response(
         &self,
         rx: mpsc::Receiver<Result<T::Data>>,
         qid: Qid,
-    ) -> ClickhouseResponse<()> {
-        ClickhouseResponse::<()>::from_stream(handle_insert_response::<T>(rx, qid, self.client_id))
+    ) -> ClickHouseResponse<()> {
+        ClickHouseResponse::<()>::from_stream(handle_insert_response::<T>(rx, qid, self.client_id))
     }
 }
 
@@ -857,7 +1034,7 @@ impl Client<NativeFormat> {
     /// and any response data, progress events, or errors are streamed back.
     ///
     /// Progress and profile events are dispatched to the client's event channel (see
-    /// [`Client::subscribe_events`]). The returned [`ClickhouseResponse`] yields `()`
+    /// [`Client::subscribe_events`]). The returned [`ClickHouseResponse`] yields `()`
     /// on success or an error if the insert fails.
     ///
     /// # Parameters
@@ -866,7 +1043,7 @@ impl Client<NativeFormat> {
     /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
-    /// A [`Result`] containing a [`ClickhouseResponse<()>`] that streams the operation's
+    /// A [`Result`] containing a [`ClickHouseResponse<()>`] that streams the operation's
     /// outcome.
     ///
     /// # Errors
@@ -909,7 +1086,7 @@ impl Client<NativeFormat> {
         query: impl Into<ParsedQuery>,
         blocks: impl Iterator<Item = T> + Send + Sync + 'static,
         qid: Option<Qid>,
-    ) -> Result<ClickhouseResponse<()>> {
+    ) -> Result<ClickHouseResponse<()>> {
         let cid = self.client_id;
         let (query, qid) = record_query(qid, query.into(), cid);
 
@@ -917,33 +1094,44 @@ impl Client<NativeFormat> {
         let (tx, rx) = oneshot::channel();
         let (header_tx, header_rx) = oneshot::channel();
 
-        self.conn
-            .send_request(
+        let connection = self.conn().await?;
+
+        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        let conn_idx = connection
+            .send_operation(
                 Operation::Query {
                     query,
                     settings: self.settings.clone(),
+                    params: None,
                     response: tx,
                     header: Some(header_tx),
                 },
                 qid,
+                false,
             )
             .await?;
 
         trace!({ ATT_CID } = cid, { ATT_QID } = %qid, "sent query, awaiting response");
         let responses = rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
-        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+            .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
+            .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
 
         let header = header_rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive header from query".into()))?;
+            .map_err(|_| Error::Protocol(format!("Failed to receive header for query {qid}")))?;
         let data = Block::from_rows(blocks.collect(), header)?;
 
         let (tx, rx) = oneshot::channel();
-        self.conn.send_request(Operation::Insert { data, response: tx }, qid).await?;
-        rx.await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from insert".into()))??;
+        let _ =
+            connection.send_operation(Operation::Insert { data, response: tx }, qid, true).await?;
+        rx.await.map_err(|_| {
+            Error::Protocol(format!("Failed to receive response from insert {qid}"))
+        })??;
+
+        // Decrement load balancer
+        #[cfg(feature = "fast_mode")]
+        connection.finish(conn_idx, Operation::<Block>::weight_query());
 
         Ok(self.insert_response(responses, qid))
     }
@@ -963,7 +1151,7 @@ impl Client<NativeFormat> {
     /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
-    /// A [`Result`] containing a [`ClickhouseResponse<T>`] that streams deserialized
+    /// A [`Result`] containing a [`ClickHouseResponse<T>`] that streams deserialized
     /// rows of type `T`.
     ///
     /// # Errors
@@ -989,15 +1177,69 @@ impl Client<NativeFormat> {
     ///     println!("Row: {:?}", row);
     /// }
     /// ```
-    #[instrument(skip_all, fields(db.system = "clickhouse", db.operation = "query"))]
+    #[instrument(
+        name = "clickhouse.query",
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", db.format = NativeFormat::FORMAT)
+    )]
     pub async fn query<T: Row + Send + 'static>(
         &self,
         query: impl Into<ParsedQuery>,
         qid: Option<Qid>,
-    ) -> Result<ClickhouseResponse<T>> {
+    ) -> Result<ClickHouseResponse<T>> {
+        self.query_params(query, None, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with parameters and streams deserialized rows.
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM my_table"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`ClickHouseResponse<T>`] that streams deserialized
+    /// rows of type `T`.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if row deserialization fails (e.g., schema mismatch).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_native()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `MyRow` implements `Row`
+    /// let params = Some(vec![("name", ParamValue::from("my_table"))]);
+    /// let query = "SELECT * FROM {name:Identifier}";
+    /// let mut response = client.query_params::<MyRow>(query, params, None).await.unwrap();
+    /// while let Some(row) = response.next().await {
+    ///     let row = row.unwrap();
+    ///     println!("Row: {:?}", row);
+    /// }
+    /// ```
+    #[instrument(
+        name = "clickhouse.query_params",
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", db.format = NativeFormat::FORMAT)
+    )]
+    pub async fn query_params<T: Row + Send + 'static>(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        qid: Option<Qid>,
+    ) -> Result<ClickHouseResponse<T>> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
-        let raw = self.query_raw(query, qid).await?;
-        Ok(ClickhouseResponse::new(Box::pin(raw.flat_map(|block| {
+        let raw = self.query_raw(query, params, qid).await?;
+        Ok(ClickHouseResponse::new(Box::pin(raw.flat_map(|block| {
             match block {
                 Ok(mut block) => stream::iter(
                     block
@@ -1054,13 +1296,83 @@ impl Client<NativeFormat> {
     ///     println!("Found row: {:?}", row);
     /// }
     /// ```
-    #[instrument(skip_all, fields(db.system = "clickhouse", db.operation = "query"))]
+    #[instrument(
+        name = "clickhouse.query_one",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = NativeFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
     pub async fn query_one<T: Row + Send + 'static>(
         &self,
         query: impl Into<ParsedQuery>,
         qid: Option<Qid>,
     ) -> Result<Option<T>> {
-        let mut stream = self.query::<T>(query, qid).await?;
+        self.query_one_params(query, None, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with parameters and returns the first row, discarding the
+    /// rest.
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT name FROM users WHERE id = 1"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing an `Option<T>`, where `T` is the deserialized row, or
+    /// `None` if no rows are returned.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if row deserialization fails (e.g., schema mismatch).
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_native()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `MyRow` implements `Row`
+    /// let params = Some(vec![
+    ///     ("str", ParamValue::from("name")),
+    /// ].into());
+    /// let query = "SELECT {str:String} FROM users WHERE id = 1";
+    /// let row = client.query_one_params::<MyRow>(query, params, None)
+    ///     .await
+    ///     .unwrap();
+    /// if let Some(row) = row {
+    ///     println!("Found row: {:?}", row);
+    /// }
+    /// ```
+    #[instrument(
+        name = "clickhouse.query_one_params",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = NativeFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn query_one_params<T: Row + Send + 'static>(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        qid: Option<Qid>,
+    ) -> Result<Option<T>> {
+        let mut stream = self.query_params::<T>(query, params, qid).await?;
         stream.next().await.transpose()
     }
 
@@ -1070,8 +1382,8 @@ impl Client<NativeFormat> {
         skip_all
         fields(
             db.system = "clickhouse",
-            db.format = ArrowFormat::FORMAT,
-            db.operation = "create.table"
+            db.operation = "create.table",
+            db.format = NativeFormat::FORMAT,
         )
     )]
     pub async fn create_table<T: Row>(
@@ -1081,7 +1393,7 @@ impl Client<NativeFormat> {
         options: &CreateOptions,
         qid: Option<Qid>,
     ) -> Result<()> {
-        let database = database.unwrap_or(self.conn.database());
+        let database = database.unwrap_or(self.connection.database());
         let stmt = create_table_statement_from_native::<T>(Some(database), table, options)?;
         self.execute(stmt, qid).await?;
         Ok(())
@@ -1089,7 +1401,7 @@ impl Client<NativeFormat> {
 }
 
 impl Client<ArrowFormat> {
-    // Executes a `ClickHouse` query and streams Arrow [`RecordBatch`] results.
+    /// Executes a `ClickHouse` query and streams Arrow [`RecordBatch`] results.
     ///
     /// This method sends a query to `ClickHouse` and returns a stream of [`RecordBatch`]
     /// instances, each containing a chunk of the query results in Apache Arrow format.
@@ -1104,7 +1416,7 @@ impl Client<ArrowFormat> {
     /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
-    /// A [`Result`] containing a [`ClickhouseResponse<RecordBatch>`] that streams
+    /// A [`Result`] containing a [`ClickHouseResponse<RecordBatch>`] that streams
     /// query results.
     ///
     /// # Errors
@@ -1136,9 +1448,56 @@ impl Client<ArrowFormat> {
         &self,
         query: impl Into<ParsedQuery>,
         qid: Option<Qid>,
-    ) -> Result<ClickhouseResponse<RecordBatch>> {
+    ) -> Result<ClickHouseResponse<RecordBatch>> {
+        self.query_params(query, None, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with parameters and streams Arrow [`RecordBatch`] results.
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM my_table"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`ClickHouseResponse<RecordBatch>`] that streams
+    /// query results.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let params = Some(vec![("name", ParamValue::from("my_table"))].into());
+    /// let query = "SELECT * FROM {name:Identifier}";
+    /// let mut response = client.query_params(query, params, None).await.unwrap();
+    /// while let Some(batch) = response.next().await {
+    ///     let batch = batch.unwrap();
+    ///     println!("Received batch with {} rows", batch.num_rows());
+    /// }
+    /// ```
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        qid: Option<Qid>,
+    ) -> Result<ClickHouseResponse<RecordBatch>> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
-        Ok(ClickhouseResponse::new(Box::pin(self.query_raw(query, qid).await?)))
+        Ok(ClickHouseResponse::new(Box::pin(self.query_raw(query, params, qid).await?)))
     }
 
     /// Executes a `ClickHouse` query and streams rows as column-major values.
@@ -1157,7 +1516,7 @@ impl Client<ArrowFormat> {
     /// - `qid`: Optional query ID for tracking and debugging.
     ///
     /// # Returns
-    /// A [`Result`] containing a [`ClickhouseResponse<Vec<Value>>`] that streams rows.
+    /// A [`Result`] containing a [`ClickHouseResponse<Vec<Value>>`] that streams rows.
     ///
     /// # Errors
     /// - Fails if the query is malformed or unsupported by `ClickHouse`.
@@ -1195,34 +1554,39 @@ impl Client<ArrowFormat> {
         &self,
         query: impl Into<ParsedQuery>,
         qid: Option<Qid>,
-    ) -> Result<ClickhouseResponse<Vec<Value>>> {
+    ) -> Result<ClickHouseResponse<Vec<Value>>> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
+        let connection = self.conn().await?;
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
         let (header_tx, header_rx) = oneshot::channel();
 
-        self.conn
-            .send_request(
+        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        let conn_idx = connection
+            .send_operation(
                 Operation::Query {
                     query,
                     settings: self.settings.clone(),
+                    // TODO: Add arg for params
+                    params: None,
                     response: tx,
                     header: Some(header_tx),
                 },
                 qid,
+                true,
             )
             .await?;
 
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
         let responses = rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive response from query".into()))?;
-        let responses = responses.inspect_err(|error| error!(?error, "Error receiving header"))?;
+            .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
+            .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
 
         let header = header_rx
             .await
-            .map_err(|_| Error::ProtocolError("Failed to receive header from query".into()))?;
+            .map_err(|_| Error::Protocol(format!("Failed to receive header for query {qid}")))?;
 
         let response = create_response_stream::<ArrowFormat>(responses, qid, self.client_id)
             .map(move |batch| (header.clone(), batch))
@@ -1233,7 +1597,11 @@ impl Client<ArrowFormat> {
             })
             .try_flatten();
 
-        Ok(ClickhouseResponse::from_stream(response))
+        // Decrement load balancer
+        #[cfg(feature = "fast_mode")]
+        connection.finish(conn_idx, Operation::<RecordBatch>::weight_insert_many());
+
+        Ok(ClickHouseResponse::from_stream(response))
     }
 
     /// Executes a `ClickHouse` query and returns the first column of the first batch.
@@ -1279,14 +1647,76 @@ impl Client<ArrowFormat> {
     #[instrument(
         name = "clickhouse.query_column",
         skip_all,
-        fields(db.system = "clickhouse", db.operation = "query")
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
     )]
     pub async fn query_column(
         &self,
         query: impl Into<ParsedQuery>,
         qid: Option<Qid>,
     ) -> Result<Option<ArrayRef>> {
-        let mut stream = self.query(query, qid).await?;
+        self.query_column_params(query, None, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with parameters and returns the first column of the first
+    /// batch.
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT id FROM my_table"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing an `Option<ArrayRef>`, representing the first column of
+    /// the first batch, or `None` if no data is returned.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let params = Some(vec![("name", ParamValue::from("my_table"))].into());
+    /// let query = "SELECT id FROM {name:Identifier}";
+    /// let column = client.query_column_params("SELECT id FROM my_table", params, None)
+    ///     .await
+    ///     .unwrap();
+    /// if let Some(col) = column {
+    ///     println!("Column data: {:?}", col);
+    /// }
+    /// ```
+    #[instrument(
+        name = "clickhouse.query_column_params",
+        skip_all,
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn query_column_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        qid: Option<Qid>,
+    ) -> Result<Option<ArrayRef>> {
+        let mut stream = self.query_params(query, params, qid).await?;
         let Some(batch) = stream.next().await.transpose()? else {
             return Ok(None);
         };
@@ -1338,14 +1768,75 @@ impl Client<ArrowFormat> {
     #[instrument(
         name = "clickhouse.query_one",
         skip_all
-        fields(db.system = "clickhouse", db.operation = "query")
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
     )]
     pub async fn query_one(
         &self,
         query: impl Into<ParsedQuery>,
         qid: Option<Qid>,
     ) -> Result<Option<RecordBatch>> {
-        let stream = self.query(query, qid).await?;
+        self.query_one_params(query, None, qid).await
+    }
+
+    /// Executes a `ClickHouse` query with parameters and returns the first row as a
+    /// [`RecordBatch`].
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"SELECT * FROM users WHERE id = 1"`).
+    /// - `params`: The query parameters to provide
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing an `Option<RecordBatch>`, representing the first row, or
+    /// `None` if no rows are returned.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let params = Some(vec![("id", ParamValue::from(1))]);
+    /// let batch = client.query_one_params("SELECT * FROM users WHERE id = {id:UInt64}", None)
+    ///     .await
+    ///     .unwrap();
+    /// if let Some(row) = batch {
+    ///     println!("Row data: {:?}", row);
+    /// }
+    /// ```
+    #[instrument(
+        name = "clickhouse.query_one_params",
+        skip_all
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn query_one_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        qid: Option<Qid>,
+    ) -> Result<Option<RecordBatch>> {
+        let stream = self.query_params(query, params, qid).await?;
         tokio::pin!(stream);
 
         let Some(batch) = stream.next().await.transpose()? else {
@@ -1357,6 +1848,86 @@ impl Client<ArrowFormat> {
         } else {
             Ok(Some(take_record_batch(&batch, &arrow::array::UInt32Array::from(vec![0]))?))
         }
+    }
+
+    /// Inserts a `RecordBatch` into `ClickHouse` by splitting it into smaller batches with a
+    /// maximum number of rows.
+    ///
+    /// This method takes a `RecordBatch`, splits it into multiple `RecordBatch`es with at most
+    /// `max` rows each, and inserts them into `ClickHouse` using the provided query. The last
+    /// batch may have fewer than `max` rows if the total number of rows is not evenly divisible
+    /// by `max`. It is useful for large inserts where row limits are needed to manage memory or
+    /// server load. For unsplit inserts, use [`Client::insert`].
+    ///
+    /// Progress and profile events are dispatched to the client's event channel (see
+    /// [`Client::subscribe_events`]).
+    ///
+    /// # Parameters
+    /// - `query`: The SQL query to execute (e.g., `"INSERT INTO users VALUES"`).
+    /// - `batch`: The `RecordBatch` containing the data to insert.
+    /// - `max`: The maximum number of rows per split `RecordBatch`. Must be non-zero to avoid an
+    ///   empty insert.
+    /// - `qid`: Optional query ID for tracking and debugging.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`Stream`] of [`Result<()>`], where each item represents the
+    /// completion of an individual batch insert. The stream yields `Ok(())` for each successful
+    /// batch or an error if an insert fails.
+    ///
+    /// # Errors
+    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
+    /// - Fails if the connection to `ClickHouse` is interrupted.
+    /// - Fails if `ClickHouse` returns an exception (e.g., table not found or schema mismatch).
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use arrow::record_batch::RecordBatch;
+    ///
+    /// let client = Client::builder()
+    ///     .with_endpoint("localhost:9000")
+    ///     .build_arrow()
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// // Assume `batch` is a RecordBatch with 10 rows
+    /// let batch: RecordBatch = // ...;
+    /// let stream = client.insert_max_rows("INSERT INTO users VALUES", batch, 3, None)
+    ///     .await
+    ///     .unwrap();
+    ///
+    /// let mut stream = std::pin::pin!(stream);
+    /// while let Some(result) = stream.next().await {
+    ///     result.unwrap(); // Handle each batch insert result
+    /// }
+    /// ```
+    ///
+    /// For a `RecordBatch` with 10 rows and `max = 3`, this inserts:
+    /// * Batch 0: 3 rows
+    /// * Batch 1: 3 rows
+    /// * Batch 2: 3 rows
+    /// * Batch 3: 1 row
+    #[instrument(
+        name = "clickhouse.insert_max_rows",
+        skip_all
+        fields(
+            db.system = "clickhouse",
+            db.operation = "insert",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn insert_max_rows(
+        &self,
+        query: impl Into<ParsedQuery>,
+        batch: RecordBatch,
+        max: usize,
+        qid: Option<Qid>,
+    ) -> Result<impl Stream<Item = Result<()>> + '_> {
+        let (query, qid) = record_query(qid, query.into(), self.client_id);
+        let batches = crate::arrow::utils::split_record_batch(batch, max);
+        self.insert_many(query, batches, Some(qid)).await
     }
 
     /// Fetches the list of database names (schemas) in `ClickHouse`.
@@ -1391,7 +1962,13 @@ impl Client<ArrowFormat> {
     #[instrument(
         name = "clickhouse.fetch_schemas",
         skip_all
-        fields(db.system = "clickhouse", db.operation = "query")
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
     )]
     pub async fn fetch_schemas(&self, qid: Option<Qid>) -> Result<Vec<String>> {
         crate::arrow::schema::fetch_databases(self, qid).await
@@ -1432,7 +2009,13 @@ impl Client<ArrowFormat> {
     #[instrument(
         name = "clickhouse.fetch_all_tables",
         skip_all
-        fields(db.system = "clickhouse", db.operation = "query")
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
     )]
     pub async fn fetch_all_tables(&self, qid: Option<Qid>) -> Result<HashMap<String, Vec<String>>> {
         crate::arrow::schema::fetch_all_tables(self, qid).await
@@ -1472,14 +2055,20 @@ impl Client<ArrowFormat> {
     #[instrument(
         name = "clickhouse.fetch_tables",
         skip_all
-        fields(db.system = "clickhouse", db.operation = "query")
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
     )]
     pub async fn fetch_tables(
         &self,
         database: Option<&str>,
         qid: Option<Qid>,
     ) -> Result<Vec<String>> {
-        let database = database.unwrap_or(self.conn.database());
+        let database = database.unwrap_or(self.connection.database());
         crate::arrow::schema::fetch_tables(self, database, qid).await
     }
 
@@ -1524,7 +2113,13 @@ impl Client<ArrowFormat> {
     #[instrument(
         name = "clickhouse.fetch_schema",
         skip_all
-        fields(db.system = "clickhouse", db.operation = "query")
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
     )]
     pub async fn fetch_schema(
         &self,
@@ -1532,8 +2127,8 @@ impl Client<ArrowFormat> {
         tables: &[&str],
         qid: Option<Qid>,
     ) -> Result<HashMap<String, SchemaRef>> {
-        let database = database.unwrap_or(self.conn.database());
-        let options = self.conn.metadata().arrow_options;
+        let database = database.unwrap_or(self.connection.database());
+        let options = self.connection.metadata().arrow_options;
         crate::arrow::schema::fetch_schema(self, database, tables, qid, options).await
     }
 
@@ -1585,6 +2180,8 @@ impl Client<ArrowFormat> {
             db.system = "clickhouse",
             db.operation = "create.table",
             db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
         )
     )]
     pub async fn create_table(
@@ -1595,8 +2192,8 @@ impl Client<ArrowFormat> {
         options: &CreateOptions,
         qid: Option<Qid>,
     ) -> Result<()> {
-        let database = database.unwrap_or(self.conn.database());
-        let arrow_options = self.conn.metadata().arrow_options;
+        let database = database.unwrap_or(self.connection.database());
+        let arrow_options = self.connection.metadata().arrow_options;
         let stmt = create_table_statement_from_arrow(
             Some(database),
             table,

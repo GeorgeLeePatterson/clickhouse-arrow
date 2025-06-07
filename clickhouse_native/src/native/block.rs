@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use indexmap::IndexMap;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::block_info::BlockInfo;
 use super::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
@@ -97,7 +97,7 @@ impl Block {
                         .iter()
                         .find(|(n, _)| n == &*key)
                         .ok_or_else(|| {
-                            Error::ProtocolError(format!(
+                            Error::Protocol(format!(
                                 "missing type for data in row {i}, column: {key}"
                             ))
                         })?
@@ -111,11 +111,9 @@ impl Block {
                             "Value validation failed for row {i}"
                         );
                     })?;
-                    let column = columns.get_mut(key.as_ref()).ok_or(
-                        Error::ProtocolError(format!(
-                            "missing column for data in row {i}, column: {key}"
-                        )),
-                    )?;
+                    let column = columns.get_mut(key.as_ref()).ok_or(Error::Protocol(format!(
+                        "missing column for data in row {i}, column: {key}"
+                    )))?;
                     column.push(value);
                 }
                 Ok(())
@@ -219,7 +217,7 @@ impl ProtocolData<Self> for Block {
             values.extend(self.column_data.drain(..rows));
 
             if values.len() != rows {
-                return Err(Error::ProtocolError(format!(
+                return Err(Error::Protocol(format!(
                     "row and column length mismatch. {} != {}",
                     values.len(),
                     rows

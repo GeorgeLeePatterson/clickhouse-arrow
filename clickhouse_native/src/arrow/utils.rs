@@ -5,7 +5,69 @@ use arrow::compute::cast;
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 
-use crate::{Error, Date, DateTime, DynDateTime64, Result, Type, Value};
+use crate::{Date, DateTime, DynDateTime64, Error, Result, Type, Value};
+
+/// Splits a `RecordBatch` into multiple `RecordBatch`es, each containing at most `max` rows.
+///
+/// # Arguments
+///
+/// * `batch` - A reference to the input `RecordBatch` to split.
+/// * `max` - The maximum number of rows per output `RecordBatch`. Must be non-zero to avoid an
+///   empty result.
+///
+/// # Returns
+///
+/// A `Result` containing:
+/// * `Vec<RecordBatch>` - A vector of `RecordBatch`es, each with at most `max_rows` rows.
+///
+/// # Edge Cases
+///
+/// * If `max` is 0, returns an empty `Vec`.
+/// * If the input `batch` has 0 rows, returns an the original `RecordBatch`.
+/// * If the number of rows is not evenly divisible by `max`, the last `RecordBatch` will contain
+///   the remaining rows.
+///
+/// # Performance Notes
+///
+/// * **Zero-copy**: Uses `RecordBatch::slice` for zero-copy access to the underlying data buffers,
+///   avoiding deep copies of row data.
+/// * **Single allocation**: Allocates a single `Vec` with pre-computed capacity to store the output
+///   `RecordBatch`es, avoiding reallocations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use arrow::record_batch::RecordBatch;
+/// use arrow::error::ArrowError;
+///
+/// let max_rows = 3;
+/// let chunks = split_record_batch_by_rows(batch, max_rows)?;
+/// for (i, chunk) in chunks.iter().enumerate() {
+///     println!("Chunk {}: {} rows", i, chunk.num_rows());
+/// }
+/// ```
+pub fn split_record_batch(batch: RecordBatch, max: usize) -> Vec<RecordBatch> {
+    if max == 0 {
+        return vec![];
+    }
+
+    let rows = batch.num_rows();
+    if rows == 0 || rows < max {
+        return vec![batch];
+    }
+
+    // Calculate number of chunks using ceiling division
+    let mut chunks = Vec::with_capacity(rows.div_ceil(max));
+    let mut offset = 0;
+    while offset < rows {
+        let remaining_rows = rows - offset;
+        let chunk_rows = remaining_rows.min(max);
+        chunks.push(batch.slice(offset, chunk_rows));
+        offset += chunk_rows;
+    }
+
+    chunks
+}
 
 /// Converts a [`RecordBatch`] to an iterator of rows, where each row is a Vec of Values.
 ///
@@ -118,9 +180,10 @@ pub fn array_to_values(
 
         // Decimal types
         DataType::Decimal128(precision, _) => {
-            let arr = column.as_any().downcast_ref::<Decimal128Array>().ok_or_else(|| {
-                Error::ArrowDeserialize("Expected Decimal128Array".to_string())
-            })?;
+            let arr = column
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .ok_or_else(|| Error::ArrowDeserialize("Expected Decimal128Array".to_string()))?;
             map_or_null(
                 (0..arr.len()).map(|i| {
                     if arr.is_null(i) { None } else { Some((*precision as usize, arr.value(i))) }
@@ -129,9 +192,10 @@ pub fn array_to_values(
             )
         }
         DataType::Decimal256(precision, _) => {
-            let arr = column.as_any().downcast_ref::<Decimal256Array>().ok_or_else(|| {
-                Error::ArrowDeserialize("Expected Decimal256Array".to_string())
-            })?;
+            let arr = column
+                .as_any()
+                .downcast_ref::<Decimal256Array>()
+                .ok_or_else(|| Error::ArrowDeserialize("Expected Decimal256Array".to_string()))?;
             map_or_null(
                 (0..arr.len()).map(|i| {
                     if arr.is_null(i) {
@@ -201,9 +265,7 @@ pub fn array_to_values(
         // Struct type (map to Tuple)
         DataType::Struct(fields) => {
             let struct_array = column.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
-                Error::ArrowDeserialize(
-                    "Could not downcast struct array".to_string(),
-                )
+                Error::ArrowDeserialize("Could not downcast struct array".to_string())
             })?;
             (0..struct_array.len())
                 .map(|i| {
@@ -312,33 +374,25 @@ pub fn array_to_list_vec<T>(
     match array.data_type() {
         DataType::List(_) => {
             let array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                Error::ArrowDeserialize(
-                    "Failed to downcast to ListArray".to_string(),
-                )
+                Error::ArrowDeserialize("Failed to downcast to ListArray".to_string())
             })?;
             Ok(array.iter().map(caster).collect::<Result<Vec<_>>>()?)
         }
         DataType::LargeList(_) => {
             let array = array.as_any().downcast_ref::<LargeListArray>().ok_or_else(|| {
-                Error::ArrowDeserialize(
-                    "Failed to downcast to LargeListArray".to_string(),
-                )
+                Error::ArrowDeserialize("Failed to downcast to LargeListArray".to_string())
             })?;
             Ok(array.iter().map(caster).collect::<Result<Vec<_>>>()?)
         }
         DataType::ListView(_) => {
             let array = array.as_any().downcast_ref::<ListViewArray>().ok_or_else(|| {
-                Error::ArrowDeserialize(
-                    "Failed to downcast to ListView".to_string(),
-                )
+                Error::ArrowDeserialize("Failed to downcast to ListView".to_string())
             })?;
             Ok(array.iter().map(caster).collect::<Result<Vec<_>>>()?)
         }
         DataType::FixedSizeList(..) => {
             let array = array.as_any().downcast_ref::<FixedSizeListArray>().ok_or_else(|| {
-                Error::ArrowDeserialize(
-                    "Failed to downcast to FixedSizeListArray".to_string(),
-                )
+                Error::ArrowDeserialize("Failed to downcast to FixedSizeListArray".to_string())
             })?;
             Ok(array.iter().map(caster).collect::<Result<Vec<_>>>()?)
         }
@@ -434,13 +488,9 @@ where
     T: Clone,
 {
     let cast_array = cast(array, &A::DATA_TYPE).map_err(Error::Arrow)?;
-    let primitive_array = cast_array.as_primitive_opt::<A>().ok_or(
-        Error::ArrowUnsupportedType(format!(
-            "Unable to downcast array {}: type hint={:?}",
-            A::DATA_TYPE,
-            array.data_type(),
-        )),
-    )?;
+    let primitive_array = cast_array.as_primitive_opt::<A>().ok_or(Error::ArrowUnsupportedType(
+        format!("Unable to downcast array {}: type hint={:?}", A::DATA_TYPE, array.data_type(),),
+    ))?;
     let primitive_array = primitive_array.clone();
 
     let iter = (0..primitive_array.len()).map(move |i| {

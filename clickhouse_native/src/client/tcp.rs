@@ -64,10 +64,23 @@ impl Destination {
     }
 }
 
-/// Connects to clickhouse's native server port and configures common socket options.
+/// Connects to `ClickHouse`'s native server port over TLS.
+pub(super) async fn connect_tls(
+    addrs: &[SocketAddr],
+    domain: Option<&str>,
+) -> Result<TlsStream<TcpStream>> {
+    let domain: String =
+        domain.as_ref().map_or_else(|| addrs[0].ip().to_string(), ToString::to_string);
+    debug!(%domain, "Initiating TLS connection");
+    let stream = connect_socket(addrs).await?;
+    tls_stream(domain, stream).await
+}
+
+/// Connects to `ClickHouse`'s native server port and configures common socket options.
 #[instrument(level = "trace", name = "clickhouse._connect_socket", skip_all)]
-pub(crate) async fn connect_socket(destination: &[SocketAddr]) -> Result<TcpStream> {
-    let addr = destination.first().ok_or(Error::MissingConnectionInformation)?;
+pub(crate) async fn connect_socket(addrs: &[SocketAddr]) -> Result<TcpStream> {
+    debug!(?addrs, "Initiating TCP connection");
+    let addr = addrs.first().ok_or(Error::MissingConnectionInformation)?;
     let domain = if addr.is_ipv4() { socket2::Domain::IPV4 } else { socket2::Domain::IPV6 };
     let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
     socket.set_nonblocking(true)?;
@@ -95,7 +108,7 @@ pub(crate) async fn connect_socket(destination: &[SocketAddr]) -> Result<TcpStre
 }
 
 // Helper function to facilitate TLS connection setup
-pub(super) async fn tls_stream(domain: String, stream: TcpStream) -> Result<TlsStream<TcpStream>> {
+async fn tls_stream(domain: String, stream: TcpStream) -> Result<TlsStream<TcpStream>> {
     let root_store = RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.into() };
 
     let mut tls_config =

@@ -1,3 +1,5 @@
+use tokio::io::AsyncWriteExt;
+
 use super::{Serializer, SerializerState, Type};
 use crate::io::ClickhouseWrite;
 use crate::prelude::*;
@@ -19,7 +21,6 @@ impl ArraySerializerGeneric for ArraySerializer {
     fn values(value: Value) -> Result<Vec<Value>> { value.unwrap_array() }
 }
 
-#[async_trait::async_trait]
 impl<T: ArraySerializerGeneric + 'static> Serializer for T {
     async fn write_prefix<W: ClickhouseWrite>(
         type_: &Type,

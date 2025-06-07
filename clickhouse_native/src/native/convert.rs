@@ -36,8 +36,19 @@ impl FromSql for Value {
 }
 
 /// A row that can be deserialized and serialized from a raw Clickhouse SQL value.
-/// Generally this is not implemented manually, but using `clickhouse_native_derive::Row`.
-/// I.e. `#[derive(clickhouse_native::Row)]`.
+/// Generally this is not implemented manually, but using `clickhouse_native_derive::Row`,
+/// i.e. `#[derive(clickhouse_native::Row)]`.
+///
+/// # Example
+/// ```rust,ignore
+/// use clickhouse_native::Row;
+/// #[derive(Row)]
+/// struct MyRow {
+///     id: String,
+///     name: String,
+///     age: u8
+/// }
+/// ```
 pub trait Row: Sized {
     /// If `Some`, `serialize_row` and `deserialize_row` MUST return this number of columns
     const COLUMN_COUNT: Option<usize>;

@@ -1,4 +1,5 @@
 use indexmap::IndexSet;
+use tokio::io::AsyncWriteExt;
 
 use super::{Serializer, SerializerState, Type};
 use crate::io::ClickhouseWrite;
@@ -7,7 +8,6 @@ use crate::{Result, Value};
 
 pub(crate) struct LowCardinalitySerializer;
 
-#[async_trait::async_trait]
 impl Serializer for LowCardinalitySerializer {
     async fn write_prefix<W: ClickhouseWrite>(
         _type_: &Type,

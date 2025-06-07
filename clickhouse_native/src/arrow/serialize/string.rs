@@ -1,4 +1,5 @@
 use arrow::array::*;
+use tokio::io::AsyncWriteExt;
 
 use crate::io::ClickhouseWrite;
 use crate::{Error, Result, Type};
@@ -145,8 +146,8 @@ macro_rules! write_fixed_values {
 write_variable_values!(write_string_values, varlen write_string, &[], [
     (StringArray => as_bytes),
     (BinaryArray => pass_through),
-    // (StringViewArray => as_bytes),
-    // (BinaryViewArray => pass_through),
+    (StringViewArray => as_bytes),
+    (BinaryViewArray => pass_through),
     (LargeStringArray => as_bytes),
     (LargeBinaryArray => pass_through)
 ]);
@@ -154,8 +155,8 @@ write_variable_values!(write_string_values, varlen write_string, &[], [
 write_variable_values!(write_binary_values, varlen write_string, &[], [
     (BinaryArray => pass_through),
     (StringArray => as_bytes),
-    // (StringViewArray => as_bytes),
-    // (BinaryViewArray => pass_through),
+    (StringViewArray => as_bytes),
+    (BinaryViewArray => pass_through),
     (LargeBinaryArray => pass_through),
     (LargeStringArray => as_bytes)
 ]);

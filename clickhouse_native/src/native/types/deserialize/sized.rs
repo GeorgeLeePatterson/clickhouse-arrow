@@ -10,7 +10,6 @@ use crate::{Date, Date32, DateTime, DynDateTime64, Result, i256, u256};
 
 pub(crate) struct SizedDeserializer;
 
-#[async_trait::async_trait]
 impl Deserializer for SizedDeserializer {
     async fn read<R: ClickhouseRead>(
         type_: &Type,
@@ -75,18 +74,14 @@ impl Deserializer for SizedDeserializer {
                 Type::Enum8(pairs) => {
                     let idx = reader.read_i8().await?;
                     let value = pairs.iter().find(|(_, i)| *i == idx).ok_or(
-                        crate::Error::DeserializeError(format!(
-                            "Invalid enum8 index: {idx}"
-                        )),
+                        crate::Error::DeserializeError(format!("Invalid enum8 index: {idx}")),
                     )?;
                     Value::Enum8(value.0.clone(), idx)
                 }
                 Type::Enum16(pairs) => {
                     let idx = reader.read_i16_le().await?;
                     let value = pairs.iter().find(|(_, i)| *i == idx).ok_or(
-                        crate::Error::DeserializeError(format!(
-                            "Invalid enum8 index: {idx}"
-                        )),
+                        crate::Error::DeserializeError(format!("Invalid enum8 index: {idx}")),
                     )?;
                     Value::Enum16(value.0.clone(), idx)
                 }

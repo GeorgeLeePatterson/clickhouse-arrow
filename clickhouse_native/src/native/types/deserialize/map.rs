@@ -8,7 +8,6 @@ use crate::{Error, Result};
 
 pub(crate) struct MapDeserializer;
 
-#[async_trait::async_trait]
 impl Deserializer for MapDeserializer {
     async fn read_prefix<R: ClickhouseRead>(
         type_: &Type,
@@ -37,7 +36,7 @@ impl Deserializer for MapDeserializer {
         state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
         if rows > MAX_STRING_SIZE {
-            return Err(Error::ProtocolError(format!(
+            return Err(Error::Protocol(format!(
                 "read_n response size too large for map. {rows} > {MAX_STRING_SIZE}"
             )));
         }

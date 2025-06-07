@@ -273,6 +273,7 @@ impl<T: FromSql + Hash + Eq, Y: FromSql, S: ::std::hash::BuildHasher + Default> 
     }
 }
 
+#[cfg(feature = "serde")]
 impl FromSql for serde_json::Value {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
         if !matches!(type_, Type::Object | Type::String) {

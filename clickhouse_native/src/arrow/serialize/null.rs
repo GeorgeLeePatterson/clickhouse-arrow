@@ -20,6 +20,7 @@
 /// write_nullability(&mut buffer, &array).await.unwrap();
 /// ```
 use arrow::array::ArrayRef;
+use tokio::io::AsyncWriteExt;
 
 use crate::Result;
 use crate::formats::SerializerState;

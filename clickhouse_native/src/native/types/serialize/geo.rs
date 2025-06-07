@@ -4,7 +4,6 @@ use crate::{Result, Value};
 
 pub(crate) struct PointSerializer;
 
-#[async_trait::async_trait]
 impl Serializer for PointSerializer {
     async fn write_prefix<W: ClickhouseWrite>(
         _type_: &Type,

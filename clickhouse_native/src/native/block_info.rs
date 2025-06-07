@@ -1,6 +1,7 @@
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{Error, ClickhouseRead, ClickhouseWrite, Result};
+use crate::io::{ClickhouseRead, ClickhouseWrite};
+use crate::{Error, Result};
 
 /// Metadata about a block
 #[derive(Debug, Clone, Copy)]
@@ -27,7 +28,7 @@ impl BlockInfo {
                     new.bucket_num = reader.read_i32_le().await?;
                 }
                 field_num => {
-                    return Err(Error::ProtocolError(format!(
+                    return Err(Error::Protocol(format!(
                         "unknown block info field number: {field_num}"
                     )));
                 }

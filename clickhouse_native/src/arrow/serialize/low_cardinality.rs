@@ -58,6 +58,7 @@ use arrow::datatypes::{
     ArrowDictionaryKeyType, DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type,
     UInt16Type, UInt32Type, UInt64Type,
 };
+use tokio::io::AsyncWriteExt;
 
 use super::ClickhouseArrowSerializer;
 use crate::formats::SerializerState;

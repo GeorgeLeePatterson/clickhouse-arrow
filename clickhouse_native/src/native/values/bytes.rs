@@ -6,6 +6,7 @@ use crate::{FromSql, Result, ToSql, Type, Value, unexpected_type};
 /// The corresponding Clickhouse type here is [`Type::String`] or [`Type::FixedSizedString`], not
 /// [`Type::Array`]. Conversion to [`Type::Array(UInt8)`] will happen, but it is not efficient.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bytes(pub Vec<u8>);
 
 impl ToSql for Bytes {

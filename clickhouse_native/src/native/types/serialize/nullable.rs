@@ -1,10 +1,11 @@
+use tokio::io::AsyncWriteExt;
+
 use super::{Serializer, SerializerState, Type};
 use crate::io::ClickhouseWrite;
 use crate::{Error, Result, Value};
 
 pub(crate) struct NullableSerializer;
 
-#[async_trait::async_trait]
 impl Serializer for NullableSerializer {
     async fn write_prefix<W: ClickhouseWrite>(
         type_: &Type,
@@ -14,11 +15,10 @@ impl Serializer for NullableSerializer {
         let inner_type = match type_ {
             Type::Nullable(inner) => &**inner,
             _ => {
-                return Err(Error::SerializeError(
-                    "Expected Nullable type".to_string(),
-                ));
+                return Err(Error::SerializeError("Expected Nullable type".to_string()));
             }
         };
+
         // Delegate to inner type's prefix (e.g., LowCardinality)
         inner_type.serialize_prefix(writer, state).await
     }

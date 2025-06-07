@@ -4,18 +4,16 @@ use crate::native::protocol::MAX_STRING_SIZE;
 use crate::{Error, Result};
 
 /// An extension trait on [`AsyncRead`] providing `ClickHouse` specific functionality.
-#[async_trait::async_trait]
-pub trait ClickhouseRead: AsyncRead + Unpin + Send + Sync {
-    async fn read_var_uint(&mut self) -> Result<u64>;
+pub(crate) trait ClickhouseRead: AsyncRead + Unpin + Send + Sync {
+    fn read_var_uint(&mut self) -> impl Future<Output = Result<u64>> + Send + '_;
 
-    async fn read_string(&mut self) -> Result<Vec<u8>>;
+    fn read_string(&mut self) -> impl Future<Output = Result<Vec<u8>>> + Send + '_;
 
-    async fn read_utf8_string(&mut self) -> Result<String> {
-        Ok(String::from_utf8(self.read_string().await?)?)
+    fn read_utf8_string(&mut self) -> impl Future<Output = Result<String>> + Send + '_ {
+        async { Ok(String::from_utf8(self.read_string().await?)?) }
     }
 }
 
-#[async_trait::async_trait]
 impl<T: AsyncRead + Unpin + Send + Sync> ClickhouseRead for T {
     async fn read_var_uint(&mut self) -> Result<u64> {
         let mut out = 0u64;
@@ -34,9 +32,7 @@ impl<T: AsyncRead + Unpin + Send + Sync> ClickhouseRead for T {
         #[expect(clippy::cast_possible_truncation)]
         let len = self.read_var_uint().await? as usize;
         if len > MAX_STRING_SIZE {
-            return Err(Error::ProtocolError(format!(
-                "string too large: {len} > {MAX_STRING_SIZE}"
-            )));
+            return Err(Error::Protocol(format!("string too large: {len} > {MAX_STRING_SIZE}")));
         }
         if len == 0 {
             return Ok(vec![]);
@@ -52,15 +48,16 @@ impl<T: AsyncRead + Unpin + Send + Sync> ClickhouseRead for T {
 }
 
 /// An extension trait on [`AsyncWrite`] providing `ClickHouse` specific functionality.
-#[async_trait::async_trait]
-pub trait ClickhouseWrite: AsyncWrite + AsyncWriteExt + Unpin + Send + Sync + 'static {
-    async fn write_var_uint(&mut self, value: u64) -> Result<()>;
+pub(crate) trait ClickhouseWrite: AsyncWrite + Unpin + Send + Sync {
+    fn write_var_uint(&mut self, value: u64) -> impl Future<Output = Result<()>> + Send + '_;
 
-    async fn write_string(&mut self, value: impl AsRef<[u8]> + Send) -> Result<()>;
+    fn write_string<V: AsRef<[u8]> + Send>(
+        &mut self,
+        value: V,
+    ) -> impl Future<Output = Result<()>> + Send + use<'_, Self, V>;
 }
 
-#[async_trait::async_trait]
-impl<T: AsyncWrite + Unpin + Send + Sync + 'static> ClickhouseWrite for T {
+impl<T: AsyncWrite + Unpin + Send + Sync> ClickhouseWrite for T {
     async fn write_var_uint(&mut self, mut value: u64) -> Result<()> {
         let mut buf = [0u8; 9]; // Max 9 bytes for u64
         let mut pos = 0;
@@ -82,7 +79,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync + 'static> ClickhouseWrite for T {
         Ok(())
     }
 
-    async fn write_string(&mut self, value: impl AsRef<[u8]> + Send) -> Result<()> {
+    async fn write_string<V: AsRef<[u8]> + Send>(&mut self, value: V) -> Result<()> {
         let value = value.as_ref();
 
         // Write length

@@ -2,6 +2,10 @@ pub(super) const VERSION_MAJOR: u64 = 0;
 pub(super) const VERSION_MINOR: u64 = 4;
 pub(super) const VERSION_PATCH: u64 = 0;
 
+// Connection BufReader & BufWriter for connections
+pub(super) const CONN_READ_BUFFER_DEFAULT: usize = 1024 * 1024;
+pub(super) const CONN_WRITE_BUFFER_DEFAULT: usize = 10 * 1024 * 1024;
+
 // 8MB send and receive buffer sizes
 pub(super) const TCP_READ_BUFFER_SIZE: u32 = 16 * 1024; // 16KB
 pub(super) const TCP_WRITE_BUFFER_SIZE: u32 = 8 * 1024 * 1024; // 8MB
@@ -17,7 +21,8 @@ pub(super) const EVENTS_CAPACITY: usize = 8;
 
 // Debugs & ENV Settings
 pub const DEBUG_ARROW_ENV_VAR: &str = "CLICKHOUSE_NATIVE_DEBUG_ARROW";
-pub(super) const ENABLE_PROFILE_EVENTS: &str = "ENABLE_PROFILE_EVENTS";
+pub const CONN_READ_BUFFER_ENV_VAR: &str = "CONNECTION_READ_BUFFER_SIZE";
+pub const CONN_WRITE_BUFFER_ENV_VAR: &str = "CONNECTION_WRITE_BUFFER_SIZE";
 
 #[cfg(test)]
 mod tests {

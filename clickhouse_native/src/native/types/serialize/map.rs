@@ -1,10 +1,11 @@
+use tokio::io::AsyncWriteExt;
+
 use super::{Serializer, SerializerState, Type};
 use crate::io::ClickhouseWrite;
 use crate::{Result, Value};
 
 pub(crate) struct MapSerializer;
 
-#[async_trait::async_trait]
 impl Serializer for MapSerializer {
     async fn write_prefix<W: ClickhouseWrite>(
         type_: &Type,

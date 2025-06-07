@@ -9,7 +9,6 @@ mod tuple;
 
 use arrow::array::*;
 use arrow::datatypes::*;
-use async_trait::async_trait;
 
 use crate::formats::SerializerState;
 use crate::io::ClickhouseWrite;
@@ -87,7 +86,7 @@ pub(crate) trait ClickhouseArrowSerializer {
 /// - Returns `ArrowSerialize` for unsupported types (e.g., `Tuple`, `Map`).
 /// - Propagates errors from sub-modules (e.g., `Io` for write failures, `ArrowSerialize` for type
 ///   mismatches).
-#[async_trait]
+#[async_trait::async_trait]
 impl ClickhouseArrowSerializer for Type {
     async fn serialize<W: ClickhouseWrite>(
         &self,

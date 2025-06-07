@@ -2,14 +2,16 @@ use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use tracing::error;
 
 use super::tcp::Destination;
-use super::{ArrowOptions, Client, ClientFormat, CompressionMethod, ConnectionContext, Secret};
+use super::{
+    ArrowOptions, Client, ClientFormat, CompressionMethod, ConnectionContext, Extension, Secret,
+};
 #[cfg(feature = "pool")]
 use crate::pool::ConnectionManager;
+use crate::prelude::SettingValue;
 use crate::settings::Settings;
 use crate::telemetry::TraceContext;
 use crate::{ArrowFormat, ClientOptions, Error, NativeFormat, Result};
@@ -46,7 +48,7 @@ use crate::{ArrowFormat, ClientOptions, Error, NativeFormat, Result};
 pub struct ClientBuilder {
     destination: Option<Destination>,
     options:     ClientOptions,
-    settings:    Option<Arc<Settings>>,
+    settings:    Option<Settings>,
     context:     Option<ConnectionContext>,
     verified:    bool,
 }
@@ -126,28 +128,28 @@ impl ClientBuilder {
 
     /// Retrieves the configured session settings, if set.
     ///
-    /// This method returns the `ClickHouse` session settings (as an `Arc<Settings>`)
+    /// This method returns the `ClickHouse` session settings (as `Settings`)
     /// that have been configured via [`ClientBuilder::with_settings`]. These settings
     /// control query behavior, such as timeouts or maximum rows. Returns `None` if no
     /// settings are set.
     ///
     /// # Returns
-    /// An `Option<&Arc<Settings>>` containing the configured settings, or `None` if
-    /// not set.
+    /// An `Option<&Settings>` containing the configured settings, or `None` if not set.
     ///
     /// # Examples
     /// ```rust,ignore
     /// use clickhouse_native::prelude::*;
     /// use std::sync::Arc;
     ///
-    /// let settings = Arc::new(Settings::default());
+    /// let settings = Settings::default();
     /// let builder = ClientBuilder::new()
     ///     .with_settings(settings.clone());
-    /// if let Some(settings) = builder.settings() {
-    ///     println!("Settings: {:?}", settings);
+    /// if let Some(config_settings) = builder.settings() {
+    ///     println!("Settings: {config_settings:?}");
+    ///     assert_eq!(config_settings, &settings)
     /// }
     /// ```
-    pub fn settings(&self) -> Option<&Arc<Settings>> { self.settings.as_ref() }
+    pub fn settings(&self) -> Option<&Settings> { self.settings.as_ref() }
 
     /// Checks whether the builder's destination has been verified.
     ///
@@ -311,6 +313,15 @@ impl ClientBuilder {
         self
     }
 
+    #[must_use]
+    pub fn with_ext<F>(mut self, cb: F) -> Self
+    where
+        F: FnOnce(Extension) -> Extension,
+    {
+        self.options.ext = cb(self.options.ext);
+        self
+    }
+
     /// Enables or disables TLS for the `ClickHouse` connection.
     ///
     /// This method configures whether the client will use a secure TLS connection to
@@ -403,7 +414,7 @@ impl ClientBuilder {
     /// Use this to customize query behavior beyond the defaults.
     ///
     /// # Parameters
-    /// - `settings`: The session settings as an `Arc<Settings>`.
+    /// - `settings`: The session settings as an `impl Into<Settings>`.
     ///
     /// # Returns
     /// A new [`ClientBuilder`] with the updated settings.
@@ -413,15 +424,49 @@ impl ClientBuilder {
     /// use clickhouse_native::prelude::*;
     /// use std::sync::Arc;
     ///
-    /// let settings = Arc::new(Settings::from(vec![
+    /// let settings = vec![
     ///     ("select_sequential_consistency", 1)
-    /// ]));
+    /// ];
     /// let builder = ClientBuilder::new()
     ///     .with_endpoint("localhost:9000")
     ///     .with_settings(settings);
     /// ```
     #[must_use]
-    pub fn with_settings(mut self, settings: Arc<Settings>) -> Self {
+    pub fn with_settings(mut self, settings: impl Into<Settings>) -> Self {
+        self.settings = Some(settings.into());
+        self
+    }
+
+    /// Set a `ClickHouse` session setting.
+    ///
+    /// This method configures the session settings (e.g., query timeouts, max rows) for
+    /// the client. These settings are applied to all queries executed by the client.
+    /// Use this to customize query behavior beyond the defaults.
+    ///
+    /// # Parameters
+    /// - `key`: The session setting's name.
+    /// - `setting`: The session setting as an `impl Into<SettingValue>`.
+    ///
+    /// # Returns
+    /// A new [`ClientBuilder`] with the updated settings.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use std::sync::Arc;
+    ///
+    /// let builder = ClientBuilder::new()
+    ///     .with_endpoint("localhost:9000")
+    ///     .with_setting("select_sequential_consistency", 1);
+    /// ```
+    #[must_use]
+    pub fn with_setting(
+        mut self,
+        name: impl Into<String>,
+        setting: impl Into<SettingValue>,
+    ) -> Self {
+        let setting: SettingValue = setting.into();
+        let settings = self.settings.unwrap_or_default().with_setting(name, setting);
         self.settings = Some(settings);
         self
     }
@@ -589,106 +634,7 @@ impl ClientBuilder {
     /// ```
     #[must_use]
     pub fn with_arrow_options(mut self, options: ArrowOptions) -> Self {
-        self.options.arrow = Some(options);
-        self
-    }
-
-    /// Enables or disables a cloud wakeup ping for `ClickHouse` cloud instances.
-    ///
-    /// This method configures whether the client will send a lightweight ping to wake
-    /// up a `ClickHouse` cloud instance before connecting. This is useful for ensuring
-    /// the instance is active, reducing connection latency. The ping is sent during
-    /// [`ClientBuilder::build`] if enabled.
-    ///
-    /// # Parameters
-    /// - `ping`: If `true`, enables the cloud wakeup ping; if `false`, disables it.
-    ///
-    /// # Returns
-    /// A new [`ClientBuilder`] with the updated cloud wakeup setting.
-    ///
-    /// # Feature
-    /// Requires the `cloud` feature to be enabled.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// use clickhouse_native::prelude::*;
-    ///
-    /// let builder = ClientBuilder::new()
-    ///     .with_endpoint("cloud.clickhouse.com:9000")
-    ///     .with_cloud_wakeup(true);
-    /// ```
-    #[cfg(feature = "cloud")]
-    #[must_use]
-    pub fn with_cloud_wakeup(mut self, ping: bool) -> Self {
-        self.options.cloud.wakeup = ping;
-        self
-    }
-
-    /// Sets the maximum timeout for the cloud wakeup ping.
-    ///
-    /// This method configures the maximum time (in seconds) that the cloud wakeup ping
-    /// (enabled via [`ClientBuilder::with_cloud_wakeup`]) will wait for a response from
-    /// the `ClickHouse` cloud instance. If not set, a default timeout is used.
-    ///
-    /// # Parameters
-    /// - `timeout`: The timeout in seconds.
-    ///
-    /// # Returns
-    /// A new [`ClientBuilder`] with the updated cloud timeout setting.
-    ///
-    /// # Feature
-    /// Requires the `cloud` feature to be enabled.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// use clickhouse_native::prelude::*;
-    ///
-    /// let builder = ClientBuilder::new()
-    ///     .with_endpoint("cloud.clickhouse.com:9000")
-    ///     .with_cloud_wakeup(true)
-    ///     .with_cloud_timeout(10);
-    /// ```
-    #[cfg(feature = "cloud")]
-    #[must_use]
-    pub fn with_cloud_timeout(mut self, timeout: u64) -> Self {
-        self.options.cloud.timeout = Some(timeout);
-        self
-    }
-
-    /// Sets a tracker for monitoring cloud wakeup pings.
-    ///
-    /// This method configures a shared `Arc<AtomicBool>` to track whether a
-    /// `ClickHouse` cloud instance has been pinged across multiple client instances.
-    /// This is useful for coordinating wakeup operations in a multi-client
-    /// environment. The tracker is used when cloud wakeup is enabled (via
-    /// [`ClientBuilder::with_cloud_wakeup`]).
-    ///
-    /// # Parameters
-    /// - `track`: A shared `Arc<AtomicBool>` to track ping status.
-    ///
-    /// # Returns
-    /// A new [`ClientBuilder`] with the updated cloud tracker.
-    ///
-    /// # Feature
-    /// Requires the `cloud` feature to be enabled.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// use clickhouse_native::prelude::*;
-    /// use std::sync::{Arc, atomic::AtomicBool};
-    ///
-    /// let tracker = Arc::new(AtomicBool::new(false));
-    /// let builder = ClientBuilder::new()
-    ///     .with_endpoint("cloud.clickhouse.com:9000")
-    ///     .with_cloud_wakeup(true)
-    ///     .with_cloud_track(tracker);
-    /// ```
-    #[cfg(feature = "cloud")]
-    #[must_use]
-    pub fn with_cloud_track(mut self, track: Arc<AtomicBool>) -> Self {
-        let mut context = self.context.unwrap_or_default();
-        context.cloud = Some(track);
-        self.context = Some(context);
+        self.options.ext.arrow = Some(options);
         self
     }
 
@@ -827,7 +773,7 @@ impl ClientBuilder {
         Client::connect(
             verified_builder.destination.unwrap(), // Guaranteed in verify above
             verified_builder.options,
-            verified_builder.settings,
+            verified_builder.settings.map(Arc::new),
             verified_builder.context,
         )
         .await
@@ -941,12 +887,109 @@ impl ClientBuilder {
     }
 }
 
+#[cfg(feature = "cloud")]
+impl ClientBuilder {
+    /// Enables or disables a cloud wakeup ping for `ClickHouse` cloud instances.
+    ///
+    /// This method configures whether the client will send a lightweight ping to wake
+    /// up a `ClickHouse` cloud instance before connecting. This is useful for ensuring
+    /// the instance is active, reducing connection latency. The ping is sent during
+    /// [`ClientBuilder::build`] if enabled.
+    ///
+    /// # Parameters
+    /// - `ping`: If `true`, enables the cloud wakeup ping; if `false`, disables it.
+    ///
+    /// # Returns
+    /// A new [`ClientBuilder`] with the updated cloud wakeup setting.
+    ///
+    /// # Feature
+    /// Requires the `cloud` feature to be enabled.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let builder = ClientBuilder::new()
+    ///     .with_endpoint("cloud.clickhouse.com:9000")
+    ///     .with_cloud_wakeup(true);
+    /// ```
+    #[must_use]
+    pub fn with_cloud_wakeup(mut self, ping: bool) -> Self {
+        self.options.ext.cloud.wakeup = ping;
+        self
+    }
+
+    /// Sets the maximum timeout for the cloud wakeup ping.
+    ///
+    /// This method configures the maximum time (in seconds) that the cloud wakeup ping
+    /// (enabled via [`ClientBuilder::with_cloud_wakeup`]) will wait for a response from
+    /// the `ClickHouse` cloud instance. If not set, a default timeout is used.
+    ///
+    /// # Parameters
+    /// - `timeout`: The timeout in seconds.
+    ///
+    /// # Returns
+    /// A new [`ClientBuilder`] with the updated cloud timeout setting.
+    ///
+    /// # Feature
+    /// Requires the `cloud` feature to be enabled.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    ///
+    /// let builder = ClientBuilder::new()
+    ///     .with_endpoint("cloud.clickhouse.com:9000")
+    ///     .with_cloud_wakeup(true)
+    ///     .with_cloud_timeout(10);
+    /// ```
+    #[must_use]
+    pub fn with_cloud_timeout(mut self, timeout: u64) -> Self {
+        self.options.ext.cloud.timeout = Some(timeout);
+        self
+    }
+
+    /// Sets a tracker for monitoring cloud wakeup pings.
+    ///
+    /// This method configures a shared `Arc<AtomicBool>` to track whether a
+    /// `ClickHouse` cloud instance has been pinged across multiple client instances.
+    /// This is useful for coordinating wakeup operations in a multi-client
+    /// environment. The tracker is used when cloud wakeup is enabled (via
+    /// [`ClientBuilder::with_cloud_wakeup`]).
+    ///
+    /// # Parameters
+    /// - `track`: A shared `Arc<AtomicBool>` to track ping status.
+    ///
+    /// # Returns
+    /// A new [`ClientBuilder`] with the updated cloud tracker.
+    ///
+    /// # Feature
+    /// Requires the `cloud` feature to be enabled.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use clickhouse_native::prelude::*;
+    /// use std::sync::{Arc, atomic::AtomicBool};
+    ///
+    /// let tracker = Arc::new(AtomicBool::new(false));
+    /// let builder = ClientBuilder::new()
+    ///     .with_endpoint("cloud.clickhouse.com:9000")
+    ///     .with_cloud_wakeup(true)
+    ///     .with_cloud_track(tracker);
+    /// ```
+    #[must_use]
+    pub fn with_cloud_track(mut self, track: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        let mut context = self.context.unwrap_or_default();
+        context.cloud = Some(track);
+        self.context = Some(context);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
 
     use super::*;
 
@@ -963,10 +1006,10 @@ mod tests {
 
     #[test]
     fn test_accessors_configured() {
-        let settings = Arc::new(Settings::default());
+        let settings = Settings::default();
         let builder = default_builder()
             .with_socket_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000))
-            .with_settings(Arc::clone(&settings))
+            .with_settings(settings.clone())
             .with_options(ClientOptions { use_tls: true, ..Default::default() });
         assert!(builder.destination().is_some());
         assert!(builder.options().use_tls);
@@ -1024,8 +1067,8 @@ mod tests {
 
     #[test]
     fn test_with_settings() {
-        let settings = Arc::new(Settings::default());
-        let builder = default_builder().with_settings(Arc::clone(&settings));
+        let settings = Settings::default();
+        let builder = default_builder().with_settings(settings.clone());
         assert_eq!(builder.settings(), Some(&settings));
     }
 
@@ -1040,12 +1083,6 @@ mod tests {
         let builder = default_builder().with_domain("example.com");
         assert_eq!(builder.options().domain, Some("example.com".to_string()));
         assert!(!builder.verified());
-    }
-
-    #[test]
-    fn test_with_cloud_timeout() {
-        let builder = default_builder().with_cloud_timeout(5000);
-        assert_eq!(builder.options().cloud.timeout, Some(5000));
     }
 
     #[test]
@@ -1073,41 +1110,6 @@ mod tests {
         assert_eq!(empty_builder.connection_identifier(), "default13933120620573868840");
     }
 
-    #[cfg(feature = "cloud")]
-    #[test]
-    fn test_with_cloud_wakeup() {
-        let builder = default_builder().with_cloud_wakeup(true);
-        assert!(builder.options().cloud.wakeup);
-    }
-
-    #[cfg(feature = "cloud")]
-    #[test]
-    fn test_with_cloud_track() {
-        use std::sync::atomic::Ordering;
-
-        let track = Arc::new(AtomicBool::new(false));
-        let builder = default_builder().with_cloud_track(Arc::clone(&track));
-        assert_eq!(
-            builder.context.unwrap().cloud.unwrap().load(Ordering::SeqCst),
-            track.load(Ordering::SeqCst)
-        );
-    }
-
-    #[cfg(feature = "pool")]
-    #[tokio::test]
-    async fn test_build_pool_manager() {
-        use crate::formats::ArrowFormat;
-
-        let builder = default_builder()
-            .with_endpoint("localhost:9000")
-            .with_username("user")
-            .verify()
-            .await
-            .unwrap();
-        let manager = builder.build_pool_manager::<ArrowFormat>(true).await;
-        assert!(manager.is_ok());
-    }
-
     #[tokio::test]
     async fn test_verify_empty_addrs() {
         let builder = default_builder()
@@ -1125,5 +1127,47 @@ mod tests {
     async fn test_verify_no_connection_information() {
         let builder = default_builder().verify().await;
         assert!(matches!(builder, Err(Error::MissingConnectionInformation)));
+    }
+
+    #[cfg(feature = "pool")]
+    #[tokio::test]
+    async fn test_build_pool_manager() {
+        use crate::formats::ArrowFormat;
+
+        let builder = default_builder()
+            .with_endpoint("localhost:9000")
+            .with_username("user")
+            .verify()
+            .await
+            .unwrap();
+        let manager = builder.build_pool_manager::<ArrowFormat>(true).await;
+        assert!(manager.is_ok());
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn test_with_cloud_timeout() {
+        let builder = default_builder().with_cloud_timeout(5000);
+        assert_eq!(builder.options().ext.cloud.timeout, Some(5000));
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn test_with_cloud_wakeup() {
+        let builder = default_builder().with_cloud_wakeup(true);
+        assert!(builder.options().ext.cloud.wakeup);
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn test_with_cloud_track() {
+        use std::sync::atomic::Ordering;
+
+        let track = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let builder = default_builder().with_cloud_track(Arc::clone(&track));
+        assert_eq!(
+            builder.context.unwrap().cloud.unwrap().load(Ordering::SeqCst),
+            track.load(Ordering::SeqCst)
+        );
     }
 }

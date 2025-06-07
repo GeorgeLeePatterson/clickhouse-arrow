@@ -43,6 +43,7 @@
 /// ```
 use arrow::array::*;
 use arrow::datatypes::{DataType, Field};
+use tokio::io::AsyncWriteExt;
 
 use super::ClickhouseArrowSerializer;
 use crate::formats::SerializerState;

@@ -8,7 +8,6 @@ use crate::{Error, Result};
 pub(crate) struct ObjectDeserializer;
 
 #[allow(clippy::uninit_vec)]
-#[async_trait::async_trait]
 impl Deserializer for ObjectDeserializer {
     async fn read_prefix<R: ClickhouseRead>(
         type_: &Type,

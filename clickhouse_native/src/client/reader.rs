@@ -1,19 +1,26 @@
+use std::str::FromStr;
+
 use tokio::io::AsyncReadExt;
 
-use super::connection::ConnectionMetadata;
+use super::connection::ClientMetadata;
 use crate::formats::sealed::ClientFormatImpl;
 use crate::io::ClickhouseRead;
 use crate::native::block::Block;
 use crate::native::progress::Progress;
 use crate::native::protocol::{
-    BlockStreamProfileInfo, DBMS_MIN_PROTOCOL_VERSION_WITH_PASSWORD_COMPLEXITY_RULES,
+    ChunkedProtocolMode, DBMS_MIN_PROTOCOL_VERSION_WITH_CHUNKED_PACKETS,
+    DBMS_MIN_PROTOCOL_VERSION_WITH_PASSWORD_COMPLEXITY_RULES,
     DBMS_MIN_PROTOCOL_VERSION_WITH_PROFILE_EVENTS_IN_INSERT,
     DBMS_MIN_PROTOCOL_VERSION_WITH_SERVER_QUERY_TIME_IN_PROGRESS,
+    DBMS_MIN_PROTOCOL_VERSION_WITH_TOTAL_BYTES_IN_PROGRESS,
     DBMS_MIN_REVISION_WITH_CLIENT_WRITE_INFO, DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET_V2,
-    DBMS_MIN_REVISION_WITH_SERVER_DISPLAY_NAME, DBMS_MIN_REVISION_WITH_SERVER_LOGS,
+    DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZATION,
+    DBMS_MIN_REVISION_WITH_ROWS_BEFORE_AGGREGATION, DBMS_MIN_REVISION_WITH_SERVER_DISPLAY_NAME,
+    DBMS_MIN_REVISION_WITH_SERVER_LOGS, DBMS_MIN_REVISION_WITH_SERVER_SETTINGS,
     DBMS_MIN_REVISION_WITH_SERVER_TIMEZONE, DBMS_MIN_REVISION_WITH_VERSION_PATCH,
-    DBMS_TCP_PROTOCOL_VERSION, LogData, MAX_STRING_SIZE, ProfileEvent, ServerData, ServerException,
-    ServerHello, ServerPacket, ServerPacketId, TableColumns, TableStatus, TablesStatusResponse,
+    DBMS_MIN_REVISION_WITH_VERSIONED_PARALLEL_REPLICAS_PROTOCOL, LogData, MAX_STRING_SIZE,
+    ProfileEvent, ProfileInfo, ServerData, ServerException, ServerHello, ServerPacket,
+    ServerPacketId, TableColumns, TableStatus, TablesStatusResponse,
 };
 use crate::prelude::*;
 use crate::{Error, FxIndexMap, Result};
@@ -24,15 +31,154 @@ pub(super) struct Reader<R: ClickhouseRead> {
 }
 
 impl<R: ClickhouseRead + 'static> Reader<R> {
-    pub(super) async fn read_hello(reader: &mut R, cid: u16) -> Result<ServerHello> {
+    pub(super) async fn receive_hello(
+        reader: &mut R,
+        client_revision: u64,
+        chunked_modes: (ChunkedProtocolMode, ChunkedProtocolMode),
+        cid: u16,
+    ) -> Result<ServerHello> {
+        let packet = ServerPacketId::from_u64(reader.read_var_uint().await?)
+            .inspect(|id| trace!({ ATT_PID } = id.as_ref(), "Reading packet ID"))
+            .inspect_err(|error| error!(?error, "Failed to read packet ID"))?;
+        match packet {
+            ServerPacketId::Hello => Self::read_hello(reader, client_revision, chunked_modes, cid)
+                .await
+                .inspect_err(|error| {
+                    error!(?error, { ATT_CID } = cid, "Failed to receive hello");
+                }),
+            ServerPacketId::Exception => Err(Self::read_exception(reader).await?.emit().into()),
+            packet => {
+                Err(Error::Protocol(format!("Unexpected packet {packet:?}, expected server hello")))
+            }
+        }
+    }
+
+    /// Receive header packet (empty native block)
+    pub(super) async fn receive_header<T: ClientFormat>(
+        reader: &mut R,
+        revision: u64,
+        metadata: ClientMetadata,
+    ) -> Result<ServerPacket<T::Data>> {
+        let packet = ServerPacketId::from_u64(reader.read_var_uint().await?)
+            .inspect_err(|error| error!(?error, "Failed to read packet ID"))?;
+        trace!({ ATT_PID } = packet.as_ref(), "Read packet ID (header)");
+        match packet {
+            ServerPacketId::Data => Self::read_block(reader, revision, metadata)
+                .await?
+                .ok_or(Error::Protocol("Expected valid block for header".into()))
+                .map(ServerPacket::Header),
+            // NOTE: For DDL queries and some other cases, the server will not send a header but
+            // will send a progress packet or table columns instead.
+            ServerPacketId::Progress => {
+                Self::read_progress(reader, revision).await.map(ServerPacket::Progress)
+            }
+            ServerPacketId::TableColumns => {
+                Self::read_table_columns(reader).await.map(ServerPacket::TableColumns)
+            }
+            ServerPacketId::EndOfStream => Ok(ServerPacket::EndOfStream),
+            // Errors
+            ServerPacketId::Exception => {
+                Self::read_exception(reader).await.map(ServerPacket::Exception)
+            }
+            ServerPacketId::Hello => {
+                Err(Error::Protocol("Unexpected hello received from server".to_string()))
+            }
+            packet => {
+                Err(Error::Protocol(format!("expected header packet, got: {}", packet.as_ref())))
+            }
+        }
+    }
+
+    /// Receive any packet from the server
+    pub(super) async fn receive_packet<T: ClientFormat>(
+        reader: &mut R,
+        revision: u64,
+        metadata: ClientMetadata,
+    ) -> Result<ServerPacket<T::Data>> {
+        let packet = ServerPacketId::from_u64(reader.read_var_uint().await?)
+            .inspect_err(|error| error!(?error, "Failed to read packet ID"))?;
+        trace!({ ATT_PID } = packet.as_ref(), "Read packet ID");
+        match packet {
+            ServerPacketId::Pong => Ok(ServerPacket::Pong),
+            ServerPacketId::Data => Ok(Self::read_data::<T>(reader, revision, metadata)
+                .await?
+                .map_or(ServerPacket::Ignore(ServerPacketId::Data), ServerPacket::Data)),
+            ServerPacketId::Exception => {
+                Self::read_exception(reader).await.map(ServerPacket::Exception)
+            }
+            ServerPacketId::Progress => {
+                Self::read_progress(reader, revision).await.map(ServerPacket::Progress)
+            }
+            ServerPacketId::EndOfStream => Ok(ServerPacket::EndOfStream),
+            ServerPacketId::ProfileInfo => {
+                Self::read_profile_info(reader, revision).await.map(ServerPacket::ProfileInfo)
+            }
+            ServerPacketId::Totals => Ok(Self::read_data::<T>(reader, revision, metadata)
+                .await?
+                .map_or(ServerPacket::Ignore(ServerPacketId::Totals), ServerPacket::Totals)),
+            ServerPacketId::Extremes => Ok(Self::read_data::<T>(reader, revision, metadata)
+                .await?
+                .map_or(ServerPacket::Ignore(ServerPacketId::Extremes), ServerPacket::Extremes)),
+            ServerPacketId::TablesStatusResponse => Self::read_table_status_response(reader)
+                .await
+                .map(ServerPacket::TablesStatusResponse),
+            ServerPacketId::Log => {
+                Self::read_log_data(reader, revision, metadata).await.map(ServerPacket::Log)
+            }
+            ServerPacketId::TableColumns => {
+                Self::read_table_columns(reader).await.map(ServerPacket::TableColumns)
+            }
+            ServerPacketId::PartUUIDs => {
+                Self::read_part_uuids(reader).await.map(ServerPacket::PartUUIDs)
+            }
+            ServerPacketId::ReadTaskRequest => {
+                Self::read_task_request(reader).await.map(ServerPacket::ReadTaskRequest)
+            }
+            ServerPacketId::ProfileEvents => Self::read_profile_events(reader, revision, metadata)
+                .await
+                .map(ServerPacket::ProfileEvents),
+            // TODO: These currently are not correct. They are placeholders but must be deserialized
+            ServerPacketId::MergeTreeAllRangesAnnouncement => {
+                Ok(ServerPacket::MergeTreeAllRangesAnnouncement)
+            }
+            ServerPacketId::MergeTreeReadTaskRequest => Ok(ServerPacket::MergeTreeReadTaskRequest),
+            ServerPacketId::TimezoneUpdate => Ok(ServerPacket::TimezoneUpdate),
+            ServerPacketId::SSHChallenge => Ok(ServerPacket::SSHChallenge),
+            ServerPacketId::Hello => {
+                Err(Error::Protocol("Uexpected hello received from server".to_string()))
+            }
+        }
+    }
+
+    pub(super) async fn read_exception(reader: &mut R) -> Result<ServerException> {
+        let code = reader.read_i32_le().await?;
+        let name = reader.read_utf8_string().await?;
+        let message = String::from_utf8_lossy(reader.read_string().await?.as_ref()).to_string();
+        let stack_trace = reader.read_utf8_string().await?;
+        let has_nested = reader.read_u8().await? != 0;
+
+        Ok(ServerException { code, name, message, stack_trace, has_nested })
+    }
+
+    async fn read_hello(
+        reader: &mut R,
+        client_revision: u64,
+        // (send, recv)
+        chunked_modes: (ChunkedProtocolMode, ChunkedProtocolMode),
+        cid: u16,
+    ) -> Result<ServerHello> {
         trace!({ ATT_CID } = cid, "Receiving server hello packet");
 
         let server_name = reader.read_utf8_string().await?;
         let major_version = reader.read_var_uint().await?;
         let minor_version = reader.read_var_uint().await?;
 
-        let revision_version = reader.read_var_uint().await?;
-        let revision_version = std::cmp::min(revision_version, DBMS_TCP_PROTOCOL_VERSION);
+        let server_revision = reader.read_var_uint().await?;
+        let revision_version = std::cmp::min(server_revision, client_revision);
+
+        if revision_version >= DBMS_MIN_REVISION_WITH_VERSIONED_PARALLEL_REPLICAS_PROTOCOL {
+            let _ = reader.read_var_uint().await?;
+        }
 
         let timezone = if revision_version >= DBMS_MIN_REVISION_WITH_SERVER_TIMEZONE {
             Some(reader.read_utf8_string().await?)
@@ -51,10 +197,40 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             revision_version
         };
 
+        let (chunked_send, chunked_recv) = if revision_version
+            >= DBMS_MIN_PROTOCOL_VERSION_WITH_CHUNKED_PACKETS
+        {
+            // proto_send_chunked_srv
+            let srv_chunked_send = ChunkedProtocolMode::from_str(&reader.read_utf8_string().await?)
+                .ok()
+                .unwrap_or_default();
+            // proto_recv_chunked_srv
+            let srv_chunked_recv = ChunkedProtocolMode::from_str(&reader.read_utf8_string().await?)
+                .ok()
+                .unwrap_or_default();
+
+            let cl_chunked_send = chunked_modes.0;
+            let cl_chunked_recv = chunked_modes.1;
+
+            (
+                ChunkedProtocolMode::negotiate(srv_chunked_send, cl_chunked_send, "send")?,
+                ChunkedProtocolMode::negotiate(srv_chunked_recv, cl_chunked_recv, "recv")?,
+            )
+        } else {
+            (ChunkedProtocolMode::default(), ChunkedProtocolMode::default())
+        };
+
+        tracing::trace!(
+            recv = chunked_recv.as_ref(),
+            send = chunked_send.as_ref(),
+            "Negotiated chunking"
+        );
+
         if revision_version >= DBMS_MIN_PROTOCOL_VERSION_WITH_PASSWORD_COMPLEXITY_RULES {
             let rules_size = reader.read_var_uint().await?;
             for _ in 0..rules_size {
-                drop(reader.read_utf8_string().await?);
+                drop(reader.read_utf8_string().await?); // original_pattern
+                drop(reader.read_utf8_string().await?); // exception_message
             }
         }
 
@@ -62,41 +238,50 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             let _ = reader.read_u64_le().await?;
         }
 
+        // Read server settings if supported
+        let settings = if revision_version >= DBMS_MIN_REVISION_WITH_SERVER_SETTINGS {
+            Some(Settings::decode(reader).await?)
+        } else {
+            None
+        };
+
+        let _query_plan_version =
+            if revision_version >= DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZATION {
+                Some(reader.read_var_uint().await?)
+            } else {
+                None
+            };
+
         trace!(
             server_name,
             version = format!("{major_version}.{minor_version}.{patch_version}"),
             revision = revision_version,
+            chunked_send = chunked_send.as_ref(),
+            chunked_recv = chunked_recv.as_ref(),
             { ATT_CID } = cid,
             "Connected to server",
         );
 
         Ok(ServerHello {
             server_name,
-            major_version,
-            minor_version,
-            patch_version,
+            version: (major_version, minor_version, patch_version),
             revision_version,
             timezone,
             display_name,
+            settings,
+            chunked_send,
+            chunked_recv,
         })
     }
 
-    pub(super) async fn read_exception(reader: &mut R) -> Result<ServerException> {
-        let code = reader.read_i32_le().await?;
-        let name = reader.read_utf8_string().await?;
-        let message = String::from_utf8_lossy(reader.read_string().await?.as_ref()).to_string();
-        let stack_trace = reader.read_utf8_string().await?;
-        let has_nested = reader.read_u8().await? != 0;
-
-        Ok(ServerException { code, name, message, stack_trace, has_nested })
-    }
-
-    pub(super) async fn read_log_data(
+    async fn read_log_data(
         reader: &mut R,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<Vec<LogData>> {
         let Some(data) =
-            Self::read_data::<NativeFormat>(reader, metadata.disable_compression()).await?
+            Self::read_data::<NativeFormat>(reader, revision, metadata.disable_compression())
+                .await?
         else {
             return Ok(vec![]);
         };
@@ -105,73 +290,85 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             .unwrap_or_default())
     }
 
-    pub(super) async fn read_progress(
-        reader: &mut R,
-        metadata: ConnectionMetadata,
-    ) -> Result<Progress> {
+    async fn read_progress(reader: &mut R, revision: u64) -> Result<Progress> {
         let read_rows = reader.read_var_uint().await?;
         let read_bytes = reader.read_var_uint().await?;
-        let new_total_rows_to_read = if metadata.revision >= DBMS_MIN_REVISION_WITH_SERVER_LOGS {
+        let total_rows_to_read = if revision >= DBMS_MIN_REVISION_WITH_SERVER_LOGS {
             reader.read_var_uint().await?
         } else {
             0
         };
-        let new_written_rows = if metadata.revision >= DBMS_MIN_REVISION_WITH_CLIENT_WRITE_INFO {
-            Some(reader.read_var_uint().await?)
-        } else {
-            None
-        };
-        let new_written_bytes = if metadata.revision >= DBMS_MIN_REVISION_WITH_CLIENT_WRITE_INFO {
-            Some(reader.read_var_uint().await?)
-        } else {
-            None
-        };
-        let elapsed_ns =
-            if metadata.revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_SERVER_QUERY_TIME_IN_PROGRESS {
+        let total_bytes_to_read =
+            if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_TOTAL_BYTES_IN_PROGRESS {
                 Some(reader.read_var_uint().await?)
             } else {
                 None
             };
 
+        let written = if revision >= DBMS_MIN_REVISION_WITH_CLIENT_WRITE_INFO {
+            Some((reader.read_var_uint().await?, reader.read_var_uint().await?))
+        } else {
+            None
+        };
+        let elapsed_ns = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_SERVER_QUERY_TIME_IN_PROGRESS
+        {
+            Some(reader.read_var_uint().await?)
+        } else {
+            None
+        };
+
         Ok(Progress {
             read_rows,
             read_bytes,
-            new_total_rows_to_read,
-            new_written_rows,
-            new_written_bytes,
+            total_rows_to_read,
+            total_bytes_to_read,
+            written_rows: written.map(|w| w.0),
+            written_bytes: written.map(|w| w.1),
             elapsed_ns,
         })
     }
 
-    pub(super) async fn read_profile_info(reader: &mut R) -> Result<BlockStreamProfileInfo> {
+    async fn read_profile_info(reader: &mut R, revision: u64) -> Result<ProfileInfo> {
         let rows = reader.read_var_uint().await?;
         let blocks = reader.read_var_uint().await?;
         let bytes = reader.read_var_uint().await?;
         let applied_limit = reader.read_u8().await? != 0;
         let rows_before_limit = reader.read_var_uint().await?;
+        // Obsolete according to ClickHouse
         let calculated_rows_before_limit = reader.read_u8().await? != 0;
-        Ok(BlockStreamProfileInfo {
+
+        let (applied_aggregation, rows_before_aggregation) =
+            if revision >= DBMS_MIN_REVISION_WITH_ROWS_BEFORE_AGGREGATION {
+                (reader.read_u8().await? != 0, reader.read_var_uint().await?)
+            } else {
+                (false, 0)
+            };
+
+        Ok(ProfileInfo {
             rows,
             blocks,
             bytes,
             applied_limit,
             rows_before_limit,
             calculated_rows_before_limit,
+            applied_aggregation,
+            rows_before_aggregation,
         })
     }
 
-    pub(super) async fn read_profile_events(
+    async fn read_profile_events(
         reader: &mut R,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<Vec<ProfileEvent>> {
-        let revision = metadata.revision;
         if revision < DBMS_MIN_PROTOCOL_VERSION_WITH_PROFILE_EVENTS_IN_INSERT {
-            return Err(Error::ProtocolError(format!(
+            return Err(Error::Protocol(format!(
                 "unexpected profile events for revision {revision}"
             )));
         }
         let Some(data) =
-            Self::read_data::<NativeFormat>(reader, metadata.disable_compression()).await?
+            Self::read_data::<NativeFormat>(reader, revision, metadata.disable_compression())
+                .await?
         else {
             return Ok(vec![]);
         };
@@ -180,13 +377,13 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             .unwrap_or_default())
     }
 
-    pub(super) async fn read_table_status_response(reader: &mut R) -> Result<TablesStatusResponse> {
+    async fn read_table_status_response(reader: &mut R) -> Result<TablesStatusResponse> {
         let mut response = TablesStatusResponse { database_tables: FxIndexMap::default() };
         let size = reader.read_var_uint().await?;
 
         #[expect(clippy::cast_possible_truncation)]
         if size as usize > MAX_STRING_SIZE {
-            return Err(Error::ProtocolError(format!(
+            return Err(Error::Protocol(format!(
                 "table status response size too large. {size} > {MAX_STRING_SIZE}"
             )));
         }
@@ -206,7 +403,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
         Ok(response)
     }
 
-    pub(super) async fn read_task_request(reader: &mut R) -> Result<Option<String>> {
+    async fn read_task_request(reader: &mut R) -> Result<Option<String>> {
         Ok(reader
             .read_utf8_string()
             .await
@@ -214,11 +411,11 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
             .ok())
     }
 
-    pub(super) async fn read_part_uuids(reader: &mut R) -> Result<Vec<uuid::Uuid>> {
+    async fn read_part_uuids(reader: &mut R) -> Result<Vec<uuid::Uuid>> {
         #[expect(clippy::cast_possible_truncation)]
         let len = reader.read_var_uint().await? as usize;
         if len > MAX_STRING_SIZE {
-            return Err(Error::ProtocolError(format!(
+            return Err(Error::Protocol(format!(
                 "PartUUIDs response size too large. {len} > {MAX_STRING_SIZE}"
             )));
         }
@@ -231,7 +428,7 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
         Ok(out)
     }
 
-    pub(super) async fn read_table_columns(reader: &mut R) -> Result<TableColumns> {
+    async fn read_table_columns(reader: &mut R) -> Result<TableColumns> {
         Ok(TableColumns {
             name:        reader.read_utf8_string().await?,
             description: reader.read_utf8_string().await?,
@@ -241,12 +438,14 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
     /// Read a data packet from the server and deserialize into [`crate::Block`]
     async fn read_block(
         reader: &mut R,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<Option<ServerData<Block>>> {
         drop(reader.read_utf8_string().await?);
-        let Some(block) = NativeFormat::read(reader, metadata).await.inspect_err(|error| {
-            error!(?error, { ATT_CID } = metadata.client_id, "Block read fail");
-        })?
+        let Some(block) =
+            NativeFormat::read(reader, revision, metadata).await.inspect_err(|error| {
+                error!(?error, { ATT_CID } = metadata.client_id, "Block read fail");
+            })?
         else {
             return Ok(None);
         };
@@ -256,132 +455,16 @@ impl<R: ClickhouseRead + 'static> Reader<R> {
     /// Read a data packet from the server and deserialize into [`ClientFormat`]
     async fn read_data<T: ClientFormat>(
         reader: &mut R,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<Option<ServerData<T::Data>>> {
         drop(reader.read_utf8_string().await?);
-        let Some(block) = T::read(reader, metadata).await.inspect_err(|error| {
+        let Some(block) = T::read(reader, revision, metadata).await.inspect_err(|error| {
             error!(?error, { ATT_CID } = metadata.client_id, "Data read fail");
         })?
         else {
             return Ok(None);
         };
         Ok(Some(ServerData { block }))
-    }
-
-    /// Read the packet id from the reader
-    pub(super) async fn read_packet(reader: &mut R) -> Result<ServerPacketId> {
-        ServerPacketId::from_u64(reader.read_var_uint().await?)
-            .inspect(|id| trace!({ ATT_PID } = id.as_ref(), "Reading packet ID"))
-            .inspect_err(|error| error!(?error, "Failed to read packet ID"))
-    }
-
-    /// Receive header packet (empty native block)
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(clickhouse.client.id = metadata.client_id, clickhouse.packet.id)
-    )]
-    pub(super) async fn receive_header<T: ClientFormat>(
-        reader: &mut R,
-        metadata: ConnectionMetadata,
-    ) -> Result<ServerPacket<T::Data>> {
-        let packet = ServerPacketId::from_u64(reader.read_var_uint().await?)
-            .inspect_err(|error| error!(?error, "Failed to read packet ID"))?;
-        let _ = Span::current().record(ATT_PID, packet.as_ref());
-        trace!({ ATT_PID } = packet.as_ref(), "Read packet ID (header)");
-
-        // Read the packet ID from the server
-        return match packet {
-            ServerPacketId::Data => Self::read_block(reader, metadata)
-                .await?
-                .ok_or(Error::ProtocolError(
-                    "Expected valid block for header".into(),
-                ))
-                .map(ServerPacket::Header),
-            // NOTE: For DDL queries and some other cases, the server will not send a header but
-            // will send a progress packet or table columns instead.
-            ServerPacketId::Progress => {
-                Self::read_progress(reader, metadata).await.map(ServerPacket::Progress)
-            }
-            ServerPacketId::TableColumns => {
-                Self::read_table_columns(reader).await.map(ServerPacket::TableColumns)
-            }
-            ServerPacketId::EndOfStream => Ok(ServerPacket::EndOfStream),
-            // Errors
-            ServerPacketId::Exception => {
-                Self::read_exception(reader).await.map(ServerPacket::Exception)
-            }
-            packet => Err(Error::ProtocolError(format!(
-                "expected header packet, got: {}",
-                packet.as_ref()
-            ))),
-        };
-    }
-
-    /// Receive any packet from the server
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(clickhouse.client.id = metadata.client_id, clickhouse.packet.id)
-    )]
-    pub(super) async fn receive_packet<T: ClientFormat>(
-        reader: &mut R,
-        metadata: ConnectionMetadata,
-    ) -> Result<ServerPacket<T::Data>> {
-        let packet = ServerPacketId::from_u64(reader.read_var_uint().await?)
-            .inspect_err(|error| error!(?error, "Failed to read packet ID"))?;
-        let _ = Span::current().record(ATT_PID, packet.as_ref());
-        trace!({ ATT_PID } = packet.as_ref(), "Read packet ID");
-
-        // Otherwise process packet as usual
-        match packet {
-            ServerPacketId::Hello => {
-                Self::read_hello(reader, metadata.client_id).await.map(ServerPacket::Hello)
-            }
-            ServerPacketId::Pong => Ok(ServerPacket::Pong),
-            ServerPacketId::Data => Ok(Self::read_data::<T>(reader, metadata)
-                .await?
-                .map_or(ServerPacket::Ignore, ServerPacket::Data)),
-            ServerPacketId::Exception => {
-                Self::read_exception(reader).await.map(ServerPacket::Exception)
-            }
-            ServerPacketId::Progress => {
-                Self::read_progress(reader, metadata).await.map(ServerPacket::Progress)
-            }
-            ServerPacketId::EndOfStream => Ok(ServerPacket::EndOfStream),
-            ServerPacketId::ProfileInfo => {
-                Self::read_profile_info(reader).await.map(ServerPacket::ProfileInfo)
-            }
-            ServerPacketId::Totals => Ok(Self::read_data::<T>(reader, metadata)
-                .await?
-                .map_or(ServerPacket::Ignore, ServerPacket::Totals)),
-            ServerPacketId::Extremes => Ok(Self::read_data::<T>(reader, metadata)
-                .await?
-                .map_or(ServerPacket::Ignore, ServerPacket::Extremes)),
-            ServerPacketId::TablesStatusResponse => Self::read_table_status_response(reader)
-                .await
-                .map(ServerPacket::TablesStatusResponse),
-            ServerPacketId::Log => {
-                Self::read_log_data(reader, metadata).await.map(ServerPacket::Log)
-            }
-            ServerPacketId::TableColumns => {
-                Self::read_table_columns(reader).await.map(ServerPacket::TableColumns)
-            }
-            ServerPacketId::PartUUIDs => {
-                Self::read_part_uuids(reader).await.map(ServerPacket::PartUUIDs)
-            }
-            ServerPacketId::ReadTaskRequest => {
-                Self::read_task_request(reader).await.map(ServerPacket::ReadTaskRequest)
-            }
-            ServerPacketId::ProfileEvents => {
-                Self::read_profile_events(reader, metadata).await.map(ServerPacket::ProfileEvents)
-            }
-            ServerPacketId::ServerTreeReadTaskRequest => {
-                Ok(ServerPacket::ServerTreeReadTaskRequest)
-            }
-            ServerPacketId::Ignore => Err(Error::ProtocolError(
-                "Unknown packet received from server".into(),
-            )),
-        }
     }
 }

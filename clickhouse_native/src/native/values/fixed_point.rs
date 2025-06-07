@@ -1,11 +1,12 @@
 #![expect(clippy::cast_possible_truncation)]
 #![expect(clippy::cast_precision_loss)]
 #![expect(clippy::cast_sign_loss)]
-#![expect(clippy::cast_possible_wrap)]
+#![cfg_attr(feature = "rust_decimal", expect(clippy::cast_possible_wrap))]
 use crate::{FromSql, Result, ToSql, Type, Value, i256, unexpected_type};
 
 /// Wrapper type for Clickhouse `FixedPoint32` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FixedPoint32<const SCALE: u64>(pub i32);
 
 impl<const SCALE: u64> FixedPoint32<SCALE> {
@@ -42,6 +43,7 @@ impl<const SCALE: u64> From<FixedPoint32<SCALE>> for f64 {
 
 /// Wrapper type for Clickhouse `FixedPoint64` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FixedPoint64<const SCALE: u64>(pub i64);
 
 impl<const SCALE: u64> ToSql for FixedPoint64<SCALE> {
@@ -78,6 +80,7 @@ impl<const SCALE: u64> From<FixedPoint64<SCALE>> for f64 {
 
 /// Wrapper type for Clickhouse `FixedPoint128` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FixedPoint128<const SCALE: u64>(pub i128);
 
 impl<const SCALE: u64> ToSql for FixedPoint128<SCALE> {
@@ -114,6 +117,7 @@ impl<const SCALE: u64> From<FixedPoint128<SCALE>> for f64 {
 
 /// Wrapper type for Clickhouse `FixedPoint256` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FixedPoint256<const SCALE: u64>(pub i256);
 
 impl<const SCALE: u64> FixedPoint256<SCALE> {
@@ -258,69 +262,4 @@ impl<const SCALE: u64> From<(i128, i32)> for FixedPoint256<SCALE> {
 #[cfg(feature = "rust_decimal")]
 impl<const SCALE: u64> From<rust_decimal::Decimal> for FixedPoint256<SCALE> {
     fn from(decimal: rust_decimal::Decimal) -> Self { Self::from_decimal(decimal) }
-}
-
-// Create a basic multiply operation for i256 to use in from_parts
-impl std::ops::Mul<i256> for i256 {
-    type Output = Self;
-
-    fn mul(self, rhs: Self) -> Self {
-        // Extract the components from each i256
-        let (a_high, a_low) = self.into();
-        let (b_high, b_low) = rhs.into();
-
-        // For simple cases where one number is small, we can simplify
-        if a_high == 0 && b_high == 0 {
-            // Both numbers fit in u128, so we can just multiply
-            let result = a_low.wrapping_mul(b_low);
-            return i256::from((0, result));
-        }
-
-        // Check for signs
-        let a_negative = (a_high & (1u128 << 127)) != 0;
-        let b_negative = (b_high & (1u128 << 127)) != 0;
-
-        // Get absolute values
-        let (_, a_abs_low) = if a_negative {
-            let low_bits = !a_low;
-            let high_bits = !a_high;
-
-            let new_low = low_bits.wrapping_add(1);
-            let new_high = if new_low == 0 { high_bits.wrapping_add(1) } else { high_bits };
-
-            (new_high, new_low)
-        } else {
-            (a_high, a_low)
-        };
-
-        let (_, abs_b_low) = if b_negative {
-            let low_bits = !b_low;
-            let high_bits = !b_high;
-
-            let new_low = low_bits.wrapping_add(1);
-            let new_high = if new_low == 0 { high_bits.wrapping_add(1) } else { high_bits };
-
-            (new_high, new_low)
-        } else {
-            (b_high, b_low)
-        };
-
-        // Multiply the absolute values
-        // For a simple implementation, we'll only handle the low part
-        // This is sufficient for scaling by small numbers like 10
-        let result = a_abs_low.wrapping_mul(abs_b_low);
-
-        // Apply sign based on input signs
-        let result_negative = a_negative != b_negative;
-
-        if result_negative {
-            // Convert back to two's complement
-            let low_bits = !result;
-            let new_low = low_bits.wrapping_add(1);
-
-            i256::from((u128::MAX, new_low))
-        } else {
-            i256::from((0, result))
-        }
-    }
 }

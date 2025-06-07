@@ -2,7 +2,9 @@ use std::fmt;
 
 use uuid::Uuid;
 
-use crate::{ClickhouseWrite, Result};
+use crate::io::ClickhouseWrite;
+use crate::prelude::SettingValue;
+use crate::{Result, Settings};
 
 /// An internal representation of a query id, meant to reduce costs when tracing, passing around,
 /// and converting to strings.
@@ -26,6 +28,12 @@ impl Qid {
         let hex = self.0.as_simple().encode_lower(&mut buffer);
         writer.write_string(hex).await
     }
+
+    // Helper to calculate a determinstic hash from a qid
+    #[cfg_attr(not(feature = "fast_mode"), expect(unused))]
+    pub(crate) fn key(self) -> usize {
+        self.into_inner().as_bytes().iter().copied().map(usize::from).sum::<usize>()
+    }
 }
 
 impl<T: Into<Qid>> From<Option<T>> for Qid {
@@ -46,6 +54,48 @@ impl fmt::Display for Qid {
         // Use as_simple() for 32-char hex, no heap allocation
         write!(f, "{}", self.0.as_simple())
     }
+}
+
+/// Type alias to help distinguish settings from params
+pub type ParamValue = SettingValue;
+
+/// Represent parameters that can be passed to bind values during queries.
+///
+/// `ClickHouse` has very specific syntax for how it manages query parameters. Refer to their docs
+/// for more information.
+///
+/// See:
+/// [Queries with parameters](https://clickhouse.com/docs/interfaces/cli#cli-queries-with-parameters)
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QueryParams(pub Vec<(String, ParamValue)>);
+
+impl<T, K, S> From<T> for QueryParams
+where
+    T: IntoIterator<Item = (K, S)>,
+    K: Into<String>,
+    ParamValue: From<S>,
+{
+    fn from(value: T) -> Self {
+        Self(value.into_iter().map(|(k, v)| (k.into(), v.into())).collect())
+    }
+}
+
+impl<K, S> FromIterator<(K, S)> for QueryParams
+where
+    K: Into<String>,
+    ParamValue: From<S>,
+{
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = (K, S)>,
+    {
+        iter.into_iter().collect()
+    }
+}
+
+impl From<QueryParams> for Settings {
+    /// Helpful to serialize params when dispatching a query
+    fn from(value: QueryParams) -> Settings { value.0.into_iter().collect() }
 }
 
 /// Represents a parsed query.

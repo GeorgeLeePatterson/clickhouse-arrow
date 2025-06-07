@@ -7,7 +7,6 @@ use crate::{Error, Result, Value};
 
 pub(crate) struct LowCardinalityDeserializer;
 
-#[async_trait::async_trait]
 impl Deserializer for LowCardinalityDeserializer {
     async fn read_prefix<R: ClickhouseRead>(
         _type_: &Type,

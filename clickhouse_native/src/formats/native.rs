@@ -1,7 +1,7 @@
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
-use crate::client::connection::ConnectionMetadata;
-use crate::compression::write_compressed_data;
+use crate::client::connection::ClientMetadata;
+use crate::compression::compress_data;
 use crate::io::{ClickhouseRead, ClickhouseWrite};
 use crate::native::block::Block;
 use crate::native::protocol::CompressionMethod;
@@ -25,46 +25,41 @@ impl super::sealed::ClientFormatImpl<Block> for NativeFormat {
 
     async fn read<R: ClickhouseRead + 'static>(
         reader: &mut R,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<Option<Block>> {
-        let revision = metadata.revision;
-        let compression = metadata.compression;
-
-        Ok(match compression {
-            CompressionMethod::None => Block::read(reader, revision, ()).await?.into_option(),
-            CompressionMethod::LZ4 => {
-                let mut reader = crate::compression::DecompressionReader::new(compression, reader);
-                Block::read(&mut reader, revision, ()).await?.into_option()
-            }
+        Ok(if let CompressionMethod::None = metadata.compression {
+            Block::read(reader, revision, ()).await?.into_option()
+        } else {
+            let mut reader =
+                crate::compression::DecompressionReader::new(metadata.compression, reader).await?;
+            Block::read(&mut reader, revision, ()).await?.into_option()
         })
     }
 
-    async fn write<W: ClickhouseWrite + 'static>(
+    async fn write<W: ClickhouseWrite>(
         writer: &mut W,
         data: Block,
         qid: Qid,
         header: Option<&[(String, Type)]>,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<()> {
-        let revision = metadata.revision;
-        let compression = metadata.compression;
-        match compression {
-            CompressionMethod::None => data
-                .write(writer, revision, header, ())
+        if let CompressionMethod::None = metadata.compression {
+            data.write(writer, revision, header, ())
                 .instrument(trace_span!("serialize_block"))
                 .await
-                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "(block:uncompressed)")),
-            CompressionMethod::LZ4 => {
-                let mut raw = vec![];
-                data.write(&mut raw, revision, header, ())
-                    .instrument(trace_span!("serialize_block"))
-                    .await
-                    .inspect_err(|error| error!(?error, {ATT_QID} = %qid, "(block:compressed)"))?;
-                write_compressed_data(writer, raw, compression)
-                    .instrument(trace_span!("compress_block"))
-                    .await
-                    .inspect_err(|error| error!(?error, {ATT_QID} = %qid, "compressing"))
-            }
+                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "(block:uncompressed)"))
+        } else {
+            let mut raw = vec![];
+            data.write(&mut raw, revision, header, ())
+                .instrument(trace_span!("serialize_block"))
+                .await
+                .inspect_err(|error| error!(?error, {ATT_QID} = %qid, "(block:compressed)"))?;
+            compress_data(writer, raw, metadata.compression)
+                .instrument(trace_span!("compress_block"))
+                .await
+                .inspect_err(|error| error!(?error, {ATT_QID} = %qid, "compressing"))
         }
     }
 }

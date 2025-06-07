@@ -17,6 +17,16 @@ use crate::common::arrow_helpers::assertions::*;
 use crate::common::arrow_helpers::*;
 use crate::common::header;
 
+/// # Panics
+pub async fn test_round_trip_lz4(ch: &'static ClickHouseContainer) {
+    test_round_trip(ch, Some(CompressionMethod::LZ4)).await;
+}
+
+/// # Panics
+pub async fn test_round_trip_zstd(ch: &'static ClickHouseContainer) {
+    test_round_trip(ch, Some(CompressionMethod::ZSTD)).await;
+}
+
 /// Test arrow e2e using `ClientBuilder`.
 ///
 /// NOTES:
@@ -25,8 +35,11 @@ use crate::common::header;
 /// 3. Strict schema's will be converted (when available).
 ///
 /// # Panics
-pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
-    let (client, options) = bootstrap(ch).await;
+pub async fn test_round_trip(
+    ch: &'static ClickHouseContainer,
+    compression: Option<CompressionMethod>,
+) {
+    let (client, options) = bootstrap(ch, compression).await;
 
     // Create table with schema and enum mappings
     let schema = test_schema();
@@ -45,12 +58,13 @@ pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
     drop_schema(&db, &table, &client).await.expect("Drop table");
 
     client.shutdown().await.unwrap();
+    eprintln!("Client shutdown successfully");
 }
 
 // Test arrow schema functions
 /// # Panics
 pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
-    let (client, options) = bootstrap(ch).await;
+    let (client, options) = bootstrap(ch, None).await;
 
     // Create table with schema and enum mappings
     let schema = test_schema();
@@ -114,7 +128,7 @@ pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
 
 /// # Panics
 pub async fn test_execute_queries(ch: &'static ClickHouseContainer) {
-    let (client, _) = bootstrap(ch).await;
+    let (client, _) = bootstrap(ch, None).await;
 
     let settings_query = "SET allow_experimental_object_type = 1;";
 
@@ -154,7 +168,10 @@ pub async fn test_execute_queries(ch: &'static ClickHouseContainer) {
 
 // Utility functions
 
-pub(super) async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient, CreateOptions) {
+pub(super) async fn bootstrap(
+    ch: &'static ClickHouseContainer,
+    compression: Option<CompressionMethod>,
+) -> (ArrowClient, CreateOptions) {
     let native_url = ch.get_native_url();
     debug!("ClickHouse Native URL: {native_url}");
 
@@ -163,7 +180,7 @@ pub(super) async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient,
         .with_endpoint(native_url)
         .with_username(&ch.user)
         .with_password(&ch.password)
-        .with_compression(CompressionMethod::LZ4)
+        .with_compression(compression.unwrap_or_default())
         .with_ipv4_only(true)
         // Use strings as strings to make sure that we are (de)serializing via strings
         .with_arrow_options(
@@ -173,7 +190,9 @@ pub(super) async fn bootstrap(ch: &'static ClickHouseContainer) -> (ArrowClient,
                 // Deserialize Date as Date32
                 .with_use_date32_for_date(true)
                 // Ignore fields that ClickHouse doesn't support.
-                .with_strict_schema_conversion(true),
+                .with_strict_schema(false)
+                .with_nullable_array_default_empty(true)
+                .with_disable_strict_schema_ddl(true),
         )
         .build()
         .await

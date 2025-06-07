@@ -31,6 +31,7 @@
 /// ```
 use arrow::array::*;
 use arrow::datatypes::{DataType, Field, i256};
+use tokio::io::AsyncWriteExt;
 
 use crate::io::ClickhouseWrite;
 use crate::{Error, Result, Type};

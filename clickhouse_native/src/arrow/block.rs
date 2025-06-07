@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, new_empty_array};
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::deserialize::ClickhouseArrowDeserializer;
 use super::serialize::ClickhouseArrowSerializer;
@@ -174,8 +174,8 @@ impl ProtocolData<RecordBatch> for RecordBatch {
 
             let field = Arc::new(arrow_field);
 
-            // Ignored
-            let _ = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
+            // TODO: Ignored - pass this to prefix deserialization
+            let _has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
                 reader.read_u8().await? != 0
             } else {
                 false

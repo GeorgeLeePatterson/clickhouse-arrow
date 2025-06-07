@@ -21,7 +21,7 @@ pub const HTTP_PORT_ENV: &str = "CLICKHOUSE_HTTP_PORT";
 pub const USER_ENV: &str = "CLICKHOUSE_USER";
 pub const PASSWORD_ENV: &str = "CLICKHOUSE_PASSWORD";
 
-const CLICKHOUSE_CONFIG_SRC: &str = "tests/bin/config.xml";
+const CLICKHOUSE_CONFIG_SRC: &str = "tests/bin/";
 const CLICKHOUSE_CONFIG_DEST: &str = "/etc/clickhouse-server/config.xml";
 
 // Env defaults
@@ -88,11 +88,11 @@ pub fn get_filter(rust_log: &str, directives: Option<&[(&str, &str)]>) -> EnvFil
 
 /// # Panics
 /// You bet it panics. Better be careful.
-pub async fn get_or_create_container() -> &'static Arc<ClickHouseContainer> {
+pub async fn get_or_create_container(conf: Option<&str>) -> &'static Arc<ClickHouseContainer> {
     if let Some(c) = CONTAINER.get() {
         c
     } else {
-        let ch = ClickHouseContainer::try_new()
+        let ch = ClickHouseContainer::try_new(conf)
             .await
             .expect("Failed to initialize ClickHouse container");
         CONTAINER.get_or_init(|| Arc::new(ch))
@@ -104,13 +104,14 @@ pub async fn get_or_create_container() -> &'static Arc<ClickHouseContainer> {
 pub async fn get_or_create_container_multi(
     name: &str,
     flag: &AtomicU8,
+    conf: Option<&str>,
 ) -> &'static Arc<ClickHouseContainer> {
     if let Some(c) = CONTAINER.get() {
         c
     } else {
         if flag.fetch_add(1, Ordering::SeqCst) == 0 {
             debug!(">>> ({name}) Setting start flag for container");
-            let ch = ClickHouseContainer::try_new()
+            let ch = ClickHouseContainer::try_new(conf)
                 .await
                 .expect("Failed to initialize ClickHouse container");
             return CONTAINER.get_or_init(|| Arc::new(ch));
@@ -126,7 +127,7 @@ pub async fn get_or_create_container_multi(
 
             assert!(
                 max.checked_sub(start.elapsed()).is_some(),
-                "Could not get or create ClickHouseContainer"
+                "Timeout during get or create of ClickHouseContainer"
             );
             sleep(Duration::from_millis(100)).await;
         }
@@ -145,7 +146,7 @@ pub struct ClickHouseContainer {
 
 impl ClickHouseContainer {
     /// # Errors
-    pub async fn try_new() -> Result<Self, TestcontainersError> {
+    pub async fn try_new(conf: Option<&str>) -> Result<Self, TestcontainersError> {
         // Env vars
         let version = env::var(VERSION_ENV).unwrap_or(CLICKHOUSE_VERSION.to_string());
         let native_port = env::var(NATIVE_PORT_ENV)
@@ -169,7 +170,11 @@ impl ClickHouseContainer {
             .with_env_var(USER_ENV, &user)
             .with_env_var(PASSWORD_ENV, &password)
             .with_mount(Mount::bind_mount(
-                format!("{}/{CLICKHOUSE_CONFIG_SRC}", env!("CARGO_MANIFEST_DIR")),
+                format!(
+                    "{}/{CLICKHOUSE_CONFIG_SRC}/{}",
+                    env!("CARGO_MANIFEST_DIR"),
+                    conf.unwrap_or("config.xml")
+                ),
                 CLICKHOUSE_CONFIG_DEST,
             ));
 
@@ -193,7 +198,11 @@ impl ClickHouseContainer {
 
     pub fn get_native_url(&self) -> &str { &self.url }
 
+    pub fn get_native_port(&self) -> u16 { self.native_port }
+
     pub fn get_http_url(&self) -> String { format!("http://{}:{}", self.endpoint, self.http_port) }
+
+    pub fn get_http_port(&self) -> u16 { self.http_port }
 
     /// # Errors
     pub async fn shutdown(&self) -> Result<(), TestcontainersError> {
@@ -225,15 +234,38 @@ pub mod arrow_tests {
     use uuid::Uuid;
 
     use super::*;
+    #[cfg(feature = "pool")]
+    use crate::pool::ConnectionManager;
     use crate::prelude::*;
 
     /// # Errors
-    pub fn setup_test_arrow_client(ch: &'static ClickHouseContainer) -> ClientBuilder {
-        // Create arrow client
+    pub fn setup_test_arrow_client(url: &str, user: &str, password: &str) -> ClientBuilder {
         Client::<ArrowFormat>::builder()
-            .with_endpoint(ch.get_native_url())
-            .with_username(&ch.user)
-            .with_password(&ch.password)
+            .with_endpoint(url)
+            .with_username(user)
+            .with_password(password)
+    }
+
+    /// # Errors
+    #[cfg(feature = "pool")]
+    pub async fn setup_test_arrow_pool(
+        builder: ClientBuilder,
+        pool_size: u32,
+        timeout: Option<u16>,
+    ) -> Result<bb8::Pool<ConnectionManager<ArrowFormat>>> {
+        let manager = builder.build_pool_manager::<ArrowFormat>(false).await?;
+        bb8::Pool::builder()
+            .max_size(pool_size)
+            .min_idle(pool_size)
+            .test_on_check_out(true)
+            .max_lifetime(Duration::from_secs(60 * 60 * 2))
+            .idle_timeout(Duration::from_secs(60 * 60 * 2))
+            .connection_timeout(Duration::from_secs(timeout.map_or(30, u64::from)))
+            .retry_connection(false)
+            .queue_strategy(bb8::QueueStrategy::Fifo)
+            .build(manager)
+            .await
+            .map_err(|e| Error::External(Box::new(e)))
     }
 
     /// # Errors

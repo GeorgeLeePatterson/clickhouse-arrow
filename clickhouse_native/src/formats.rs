@@ -21,10 +21,11 @@ pub trait ClientFormat: sealed::ClientFormatImpl<Self::Data> + Send + Sync + 'st
 }
 
 pub(crate) mod sealed {
-    use crate::client::connection::ConnectionMetadata;
+    use crate::Type;
+    use crate::client::connection::ClientMetadata;
     use crate::errors::Result;
+    use crate::io::{ClickhouseRead, ClickhouseWrite};
     use crate::query::Qid;
-    use crate::{ClickhouseRead, ClickhouseWrite, Type};
 
     pub(crate) trait ClientFormatImpl<T>: std::fmt::Debug
     where
@@ -34,15 +35,17 @@ pub(crate) mod sealed {
 
         fn read<R: ClickhouseRead + 'static>(
             reader: &mut R,
-            metadata: ConnectionMetadata,
+            revision: u64,
+            metadata: ClientMetadata,
         ) -> impl Future<Output = Result<Option<T>>> + Send + '_;
 
-        fn write<'a, W: ClickhouseWrite + 'static>(
+        fn write<'a, W: ClickhouseWrite>(
             writer: &'a mut W,
             data: T,
             qid: Qid,
             header: Option<&'a [(String, Type)]>,
-            metadata: ConnectionMetadata,
+            revision: u64,
+            metadata: ClientMetadata,
         ) -> impl Future<Output = Result<()>> + Send + 'a;
     }
 }

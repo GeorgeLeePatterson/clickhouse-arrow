@@ -5,7 +5,6 @@ use crate::{Point, Result, Value};
 
 pub(crate) struct PointDeserializer;
 
-#[async_trait::async_trait]
 impl Deserializer for PointDeserializer {
     async fn read_prefix<R: ClickhouseRead>(
         _type_: &Type,

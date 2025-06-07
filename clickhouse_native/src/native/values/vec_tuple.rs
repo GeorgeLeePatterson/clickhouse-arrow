@@ -3,6 +3,7 @@ use crate::{Error, FromSql, Result, ToSql, Type, Value};
 
 /// A `Vec` wrapper that is encoded as a tuple in SQL as opposed to a Vec
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VecTuple<T>(pub Vec<T>);
 
 impl<T: ToSql> ToSql for VecTuple<T> {

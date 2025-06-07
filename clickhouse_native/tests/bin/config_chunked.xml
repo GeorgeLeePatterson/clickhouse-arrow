@@ -1,0 +1,39 @@
+<clickhouse>
+    <listen_host>::</listen_host>
+    <tcp_port>9000</tcp_port>
+    <http_port>8123</http_port>
+    <max_table_size_to_drop>0</max_table_size_to_drop>
+    <path>/var/lib/clickhouse/</path>
+    <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+    <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_log>
+    <trace_log>
+        <database>system</database>
+        <table>trace_log</table>
+        <partition_by>event_date</partition_by>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </trace_log>
+    <logger>
+        <level>test</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>>
+        <console>1</console>
+    </logger>
+    <user_directories>
+        <users_xml>
+            <path>/etc/clickhouse-server/users.xml</path>
+        </users_xml>
+    </user_directories>
+
+    <!-- Chunked Protocol -->
+    <proto_caps>
+        <send>chunked_optional</send>
+        <recv>chunked_optional</recv>
+    </proto_caps>
+
+</clickhouse>

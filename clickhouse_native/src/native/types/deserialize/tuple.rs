@@ -5,7 +5,6 @@ use crate::{Error, Result};
 
 pub(crate) struct TupleDeserializer;
 
-#[async_trait::async_trait]
 impl Deserializer for TupleDeserializer {
     async fn read_prefix<R: ClickhouseRead>(
         type_: &Type,
@@ -44,9 +43,7 @@ impl Deserializer for TupleDeserializer {
                         values.push(value);
                     }
                     _ => {
-                        return Err(Error::DeserializeError(
-                            "Expected tuple".to_string(),
-                        ));
+                        return Err(Error::DeserializeError("Expected tuple".to_string()));
                     }
                 }
             }

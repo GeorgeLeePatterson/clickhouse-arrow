@@ -1,7 +1,7 @@
 use std::num::TryFromIntError;
 use std::sync::Arc;
 
-use chrono::{Duration, FixedOffset, NaiveDate, ParseError, TimeZone, Utc};
+use chrono::{Duration, FixedOffset, NaiveDate, TimeZone, Utc};
 use chrono_tz::{Tz, UTC};
 
 use crate::{Error, FromSql, Result, ToSql, Type, Value, unexpected_type};
@@ -251,7 +251,7 @@ impl<'de> serde::Deserialize<'de> for DateTime {
         let raw: String = String::deserialize(deserializer)?;
         let date: chrono::DateTime<FixedOffset> =
             chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&raw)
-                .map_err(|e: ParseError| serde::de::Error::custom(e.to_string()))?;
+                .map_err(|e: chrono::ParseError| serde::de::Error::custom(e.to_string()))?;
 
         date.try_into().map_err(|e: TryFromIntError| serde::de::Error::custom(e.to_string()))
     }
@@ -400,7 +400,7 @@ impl<'de> serde::Deserialize<'de> for DynDateTime64 {
         let raw: String = String::deserialize(deserializer)?;
         let date: chrono::DateTime<Utc> = Utc.from_utc_datetime(
             &chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&raw)
-                .map_err(|e: ParseError| serde::de::Error::custom(e.to_string()))?
+                .map_err(|e: chrono::ParseError| serde::de::Error::custom(e.to_string()))?
                 .naive_utc(),
         );
 
@@ -430,7 +430,7 @@ impl<'de, const PRECISION: usize> serde::Deserialize<'de> for DateTime64<PRECISI
         let raw: String = String::deserialize(deserializer)?;
         let date: chrono::DateTime<Utc> = Utc.from_utc_datetime(
             &chrono::DateTime::<FixedOffset>::parse_from_rfc3339(&raw)
-                .map_err(|e: ParseError| serde::de::Error::custom(e.to_string()))?
+                .map_err(|e: chrono::ParseError| serde::de::Error::custom(e.to_string()))?
                 .naive_utc(),
         );
 
@@ -465,9 +465,7 @@ impl ToSql for chrono::DateTime<Utc> {
         Ok(Value::DateTime64(DynDateTime64(
             UTC,
             self.timestamp_micros().try_into().map_err(|e| {
-                Error::DeserializeError(format!(
-                    "failed to convert DateTime64: {e:?}"
-                ))
+                Error::DeserializeError(format!("failed to convert DateTime64: {e:?}"))
             })?,
             6,
         )))
@@ -486,20 +484,14 @@ impl FromSql for chrono::DateTime<Utc> {
                 let seconds = datetime.1 / 10u64.pow(datetime_2);
                 let units = datetime.1 % 10u64.pow(datetime_2);
                 let units_ns = units * 10u64.pow(9 - datetime_2);
-                let (seconds, units_ns): (i64, u32) = seconds
-                    .try_into()
-                    .and_then(|k| Ok((k, units_ns.try_into()?)))
-                    .map_err(|e| {
-                        Error::DeserializeError(format!(
-                            "failed to convert DateTime: {e:?}"
-                        ))
-                    })?;
+                let (seconds, units_ns): (i64, u32) =
+                    seconds.try_into().and_then(|k| Ok((k, units_ns.try_into()?))).map_err(
+                        |e| Error::DeserializeError(format!("failed to convert DateTime: {e:?}")),
+                    )?;
                 Ok(datetime.0.timestamp_opt(seconds, units_ns).unwrap().with_timezone(&Utc))
             }
             Value::DateTime(date) => Ok(date.try_into().map_err(|e| {
-                Error::DeserializeError(format!(
-                    "failed to convert DateTime: {e:?}"
-                ))
+                Error::DeserializeError(format!("failed to convert DateTime: {e:?}"))
             })?),
             _ => unimplemented!(),
         }
@@ -545,9 +537,7 @@ impl ToSql for chrono::DateTime<Tz> {
         Ok(Value::DateTime64(DynDateTime64(
             self.timezone(),
             self.timestamp_micros().try_into().map_err(|e| {
-                Error::DeserializeError(format!(
-                    "failed to convert DateTime64: {e:?}"
-                ))
+                Error::DeserializeError(format!("failed to convert DateTime64: {e:?}"))
             })?,
             6,
         )))
@@ -566,20 +556,14 @@ impl FromSql for chrono::DateTime<Tz> {
                 let seconds = datetime.1 / 10u64.pow(datetime_2);
                 let units = datetime.1 % 10u64.pow(datetime_2);
                 let units_ns = units * 10u64.pow(9 - datetime_2);
-                let (seconds, units_ns): (i64, u32) = seconds
-                    .try_into()
-                    .and_then(|k| Ok((k, units_ns.try_into()?)))
-                    .map_err(|e| {
-                        Error::DeserializeError(format!(
-                            "failed to convert DateTime: {e:?}"
-                        ))
-                    })?;
+                let (seconds, units_ns): (i64, u32) =
+                    seconds.try_into().and_then(|k| Ok((k, units_ns.try_into()?))).map_err(
+                        |e| Error::DeserializeError(format!("failed to convert DateTime: {e:?}")),
+                    )?;
                 Ok(datetime.0.timestamp_opt(seconds, units_ns).unwrap())
             }
             Value::DateTime(date) => Ok(date.try_into().map_err(|e| {
-                Error::DeserializeError(format!(
-                    "failed to convert DateTime: {e:?}"
-                ))
+                Error::DeserializeError(format!("failed to convert DateTime: {e:?}"))
             })?),
             _ => unimplemented!(),
         }

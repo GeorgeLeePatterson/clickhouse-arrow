@@ -20,7 +20,7 @@ use crate::common::header;
 ///
 /// # Panics
 pub async fn test_arrow_compat(ch: &'static ClickHouseContainer) {
-    let (client, options) = bootstrap(ch).await;
+    let (client, options) = bootstrap(ch, None).await;
 
     let ids = vec![0, 1, 2];
     let names = vec!["John", "Jane", "Mary"];

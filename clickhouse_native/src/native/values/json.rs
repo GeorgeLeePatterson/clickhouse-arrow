@@ -21,9 +21,6 @@ impl<T: DeserializeOwned> FromSql for Json<T> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
         let raw: String = FromSql::from_sql(type_, value)?;
 
-        Ok(Json(
-            serde_json::from_str(&raw)
-                .map_err(|e| Error::DeserializeError(e.to_string()))?,
-        ))
+        Ok(Json(serde_json::from_str(&raw).map_err(|e| Error::DeserializeError(e.to_string()))?))
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use tracing::error;
@@ -419,11 +420,48 @@ pub(crate) fn create_table_statement_from_arrow(
     if schema.fields().is_empty() {
         return Err(Error::DDLMalformed("Arrow Schema is empty, cannot create table".into()));
     }
-    let definition = RecordBatchDefinition { arrow_options, schema, defaults: options.defaults() };
+    let definition = RecordBatchDefinition {
+        arrow_options,
+        schema: Arc::clone(schema),
+        defaults: options.defaults().cloned(),
+    };
     create_table_statement(database, table, Some(definition), options)
 }
 
-// TODO: Remove - docs
+/// Generates a `ClickHouse` `CREATE TABLE` statement from a type that implements [`crate::Row`] and
+/// [`CreateOptions`].
+///
+/// # Arguments
+/// - `database`: Optional database name (e.g., `my_db`). If `None`, the table is created in the
+///   default database.
+/// - `table`: The table name.
+/// - `options`: The `CreateOptions` specifying engine, ordering, and other settings.
+///
+/// # Returns
+/// A `Result` containing the SQL statement or a `Error` if the schema is invalid or
+/// options fail validation.
+///
+/// # Errors
+/// - Returns `DDLMalformed` if the schema is empty or options validation fails (e.g., invalid
+///   engine).
+/// - Returns `TypeConversion` if the schema is disallowed by `ClickHouse`
+///
+/// # Example
+/// ```rust,ignore
+/// use clickhouse_native::Row;
+/// use clickhouse_native::sql::{CreateOptions, create_table_statement_from_native};
+///
+/// #[derive(Row)]
+/// struct MyRow {
+///     id: String,
+///     name: String,
+/// }
+///
+/// let options = CreateOptions::new("MergeTree")
+///     .with_order_by(&["id".to_string()]);
+/// let sql = create_table_statement_from_native::<MyRow>(None, "my_table", &options).unwrap();
+/// assert!(sql.contains("CREATE TABLE IF NOT EXISTS `my_table`"));
+/// ```
 pub(crate) fn create_table_statement_from_native<T: Row>(
     database: Option<&str>,
     table: &str,
@@ -489,8 +527,9 @@ pub(crate) fn create_table_statement<T: ColumnDefine>(
 
 /// A type that describe the schema of its fields to be used in a `CREATE TABLE ...` query.
 ///
-/// Generally this is not implemented manually, but using `clickhouse_native::Row`. But it's helpful
-/// to implement manually as formats are provided.
+/// Generally this is not implemented manually, but using `clickhouse_native::Row` since it's
+/// implemented on any `T: Row`. But it's helpful to implement manually if additional formats are
+/// created.
 pub trait ColumnDefine: Sized {
     type DefaultValue: std::fmt::Display + std::fmt::Debug;
 
@@ -539,13 +578,14 @@ impl<T: Row> ColumnDefine for T {
     }
 }
 
-struct RecordBatchDefinition<'a> {
-    arrow_options: Option<ArrowOptions>,
-    schema:        &'a SchemaRef,
-    defaults:      Option<&'a HashMap<String, String>>,
+/// Helper struct to encapsulate schema creation logic for Arrow schemas.
+pub(crate) struct RecordBatchDefinition {
+    pub(crate) arrow_options: Option<ArrowOptions>,
+    pub(crate) schema:        SchemaRef,
+    pub(crate) defaults:      Option<HashMap<String, String>>,
 }
 
-impl ColumnDefine for RecordBatchDefinition<'_> {
+impl ColumnDefine for RecordBatchDefinition {
     type DefaultValue = String;
 
     fn definitions() -> Option<Vec<ColumnDefinition<String>>> { None }
@@ -561,11 +601,12 @@ impl ColumnDefine for RecordBatchDefinition<'_> {
                     error!("Arrow conversion failed for field {field:?}: {error}");
                 })?;
 
-            let default_val = if let Some(d) = self.defaults.and_then(|d| d.get(field.name())) {
-                if !d.is_empty() && d != "NULL" { Some(d.clone()) } else { None }
-            } else {
-                None
-            };
+            let default_val =
+                if let Some(d) = self.defaults.as_ref().and_then(|d| d.get(field.name())) {
+                    if !d.is_empty() && d != "NULL" { Some(d.clone()) } else { None }
+                } else {
+                    None
+                };
 
             fields.push((field.name().to_string(), type_, default_val));
         }
@@ -970,7 +1011,8 @@ mod tests {
             // Deserialize Date as Date32
             .with_use_date32_for_date(true)
             // Ignore fields that ClickHouse doesn't support.
-            .with_strict_schema_conversion(true);
+            .with_strict_schema(false)
+            .with_disable_strict_schema_ddl(true);
 
         let sql = create_table_statement_from_arrow(
             None,

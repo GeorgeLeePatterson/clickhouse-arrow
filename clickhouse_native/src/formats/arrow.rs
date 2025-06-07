@@ -3,8 +3,8 @@ use arrow::datatypes::SchemaRef;
 
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
-use crate::compression::{decompress_data, write_compressed_data};
-use crate::connection::ConnectionMetadata;
+use crate::compression::{DecompressionReader, compress_data};
+use crate::connection::ClientMetadata;
 use crate::io::{ClickhouseRead, ClickhouseWrite};
 use crate::native::protocol::CompressionMethod;
 use crate::prelude::*;
@@ -27,51 +27,45 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
 
     async fn read<R: ClickhouseRead + 'static>(
         reader: &mut R,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<Option<RecordBatch>> {
         let arrow_options = metadata.arrow_options;
-        match metadata.compression {
-            CompressionMethod::None => {
-                RecordBatch::read(reader, metadata.revision, arrow_options).await
-            }
-            CompressionMethod::LZ4 => {
-                let decompressed = decompress_data(reader, metadata.compression, None)
-                    .await
-                    .inspect_err(|error| error!(?error, "decompressing data"))?;
-                RecordBatch::read(&mut decompressed.as_slice(), metadata.revision, arrow_options)
-                    .await
-            }
+        if let CompressionMethod::None = metadata.compression {
+            RecordBatch::read(reader, revision, arrow_options).await
+        } else {
+            let mut streaming_reader =
+                DecompressionReader::new(metadata.compression, reader).await?;
+            RecordBatch::read(&mut streaming_reader, revision, arrow_options).await
         }
         .inspect_err(|error| error!(?error, "deserializing arrow record batch"))
         .map(RecordBatch::into_option)
     }
 
-    async fn write<W: ClickhouseWrite + 'static>(
+    async fn write<W: ClickhouseWrite>(
         writer: &mut W,
         batch: RecordBatch,
         qid: Qid,
         header: Option<&[(String, Type)]>,
-        metadata: ConnectionMetadata,
+        revision: u64,
+        metadata: ClientMetadata,
     ) -> Result<()> {
-        match metadata.compression {
-            CompressionMethod::None => {
-                batch
-                    .write(writer, metadata.revision, header, metadata.arrow_options)
-                    .instrument(trace_span!("serialize_block"))
-                    .await
-                    .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
-            }
-            CompressionMethod::LZ4 => {
-                let mut raw = vec![];
-                batch
-                    .write(&mut raw, metadata.revision, header, metadata.arrow_options)
-                    .instrument(trace_span!("serialize_block"))
-                    .await
-                    .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
-                write_compressed_data(writer, raw, metadata.compression)
-                    .await
-                    .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "compressing"))?;
-            }
+        if let CompressionMethod::None = metadata.compression {
+            batch
+                .write(writer, revision, header, metadata.arrow_options)
+                .instrument(trace_span!("serialize_block"))
+                .await
+                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
+        } else {
+            let mut raw = vec![];
+            batch
+                .write(&mut raw, revision, header, metadata.arrow_options)
+                .instrument(trace_span!("serialize_block"))
+                .await
+                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
+            compress_data(writer, raw, metadata.compression)
+                .await
+                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "compressing"))?;
         }
 
         Ok(())
