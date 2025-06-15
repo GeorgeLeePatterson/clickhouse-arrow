@@ -25,8 +25,9 @@ use async_trait::async_trait;
 
 use super::types::ch_to_arrow_type;
 use crate::formats::DeserializerState;
+use crate::geo::normalize_geo_type;
 use crate::io::ClickhouseRead;
-use crate::{ArrowOptions, Error, Result, Type};
+use crate::{ArrowOptions, Result, Type};
 
 /// Trait for deserializing ClickHouse’s native format into Arrow arrays.
 ///
@@ -177,11 +178,17 @@ impl ClickhouseArrowDeserializer for Type {
             }
             // Tuple
             Type::Tuple(inner) => tuple::deserialize(inner, reader, rows, nulls, state).await?,
-            _ => return Err(Error::ArrowUnsupportedType(format!("{self:?}"))),
+            // Geo types
+            Type::Polygon | Type::MultiPolygon | Type::Point | Type::Ring => {
+                // Geo types should be converted earlier, this is a fallback
+                let normalized = normalize_geo_type(self).unwrap();
+                normalized.deserialize(reader, rows, nulls, state).await?
+            }
         })
     }
 }
 
+// TODO: Remove - geo unit tests
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;

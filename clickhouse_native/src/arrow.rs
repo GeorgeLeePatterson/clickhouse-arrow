@@ -8,3 +8,4 @@ pub mod utils;
 
 // Re-export arrow crate
 pub use arrow;
+pub use types::ch_to_arrow_type;

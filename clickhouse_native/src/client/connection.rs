@@ -66,6 +66,12 @@ impl ClientMetadata {
         }
     }
 
+    /// Helper function to switch compression type
+    pub(crate) fn with_compression(mut self, compression: CompressionMethod) -> Self {
+        self.compression = compression;
+        self
+    }
+
     /// Helper function to provide settings for compression
     pub(crate) fn compression_settings(self) -> Settings {
         match self.compression {

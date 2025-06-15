@@ -21,6 +21,9 @@ pub trait ClientFormat: sealed::ClientFormatImpl<Self::Data> + Send + Sync + 'st
 }
 
 pub(crate) mod sealed {
+    #[cfg(feature = "row_binary")]
+    use futures_util::Stream;
+
     use crate::Type;
     use crate::client::connection::ClientMetadata;
     use crate::errors::Result;
@@ -47,6 +50,21 @@ pub(crate) mod sealed {
             revision: u64,
             metadata: ClientMetadata,
         ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+        // Only relevant for RowBinary
+        #[cfg(feature = "row_binary")]
+        fn read_rows<S>(
+            _reader: &mut S,
+            _schema: Self::Schema,
+            _overrides: Option<crate::prelude::SchemaConversions>,
+            _metadata: ClientMetadata,
+            _summmary: crate::row::protocol::HttpSummary,
+        ) -> impl Future<Output = Result<Vec<T>>> + Send
+        where
+            S: Stream<Item = Result<bytes::Bytes>> + Unpin + Send,
+        {
+            async { unimplemented!() }
+        }
     }
 }
 

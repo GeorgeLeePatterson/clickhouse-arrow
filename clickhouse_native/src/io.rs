@@ -91,3 +91,56 @@ impl<T: AsyncWrite + Unpin + Send + Sync> ClickhouseWrite for T {
         Ok(())
     }
 }
+
+#[cfg(feature = "row_binary")]
+pub(crate) trait ClickhouseBytesRead: bytes::Buf + Unpin + Send + Sync {
+    #[inline]
+    fn try_get_var_uint(&mut self) -> Result<u64> {
+        // Unrolled for speed
+        if !self.has_remaining() {
+            return Err(Error::Protocol("Unexpected EOF reading varint".into()));
+        }
+        let b = self.get_u8();
+        let mut out = u64::from(b & 0x7F);
+        if (b & 0x80) == 0 {
+            return Ok(out);
+        }
+
+        for i in 1..9 {
+            if !self.has_remaining() {
+                return Err(Error::Protocol("Unexpected EOF reading varint".into()));
+            }
+            let b = self.get_u8();
+            out |= u64::from(b & 0x7F) << (7 * i);
+            if (b & 0x80) == 0 {
+                return Ok(out);
+            }
+        }
+
+        Ok(out)
+    }
+
+    #[inline]
+    fn try_get_string(&mut self) -> Result<bytes::Bytes> {
+        #[expect(clippy::cast_possible_truncation)]
+        let len = self.try_get_var_uint()? as usize;
+
+        if len > MAX_STRING_SIZE {
+            return Err(Error::Protocol(format!("string too large: {len}")));
+        }
+
+        if len == 0 {
+            return Ok(bytes::Bytes::new());
+        }
+
+        if self.remaining() < len {
+            return Err(Error::Protocol("Not enough data for string".into()));
+        }
+
+        // Zero-copy slice from the Bytes!
+        Ok(self.copy_to_bytes(len))
+    }
+}
+
+#[cfg(feature = "row_binary")]
+impl<T: bytes::Buf + Unpin + Send + Sync> ClickhouseBytesRead for T {}

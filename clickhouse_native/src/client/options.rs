@@ -98,11 +98,16 @@ pub struct Extension {
     /// Options specific to communicating with `ClickHouse` over their cloud offering.
     #[cfg(feature = "cloud")]
     pub cloud:        CloudOptions,
+    /// Options specific to `RowBinary` over `HTTP` for queries
+    #[cfg(feature = "row_binary")]
+    pub http:         Option<http::HttpOptions>,
     /// Options related to server/client protocol send chunking.
     /// This may be removed, as it may be defaulted.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub chunked_send: ChunkedProtocolMode,
     /// Options related to server/client protocol recv chunking.
     /// This may be removed, as it may be defaulted
+    #[cfg_attr(feature = "serde", serde(default))]
     pub chunked_recv: ChunkedProtocolMode,
 }
 
@@ -111,6 +116,26 @@ impl Extension {
     #[must_use]
     pub fn with_arrow(mut self, options: ArrowOptions) -> Self {
         self.arrow = Some(options);
+        self
+    }
+
+    #[must_use]
+    pub fn with_set_arrow(mut self, f: impl Fn(ArrowOptions) -> ArrowOptions) -> Self {
+        self.arrow = Some(f(self.arrow.unwrap_or_default()));
+        self
+    }
+
+    #[cfg(feature = "row_binary")]
+    #[must_use]
+    pub fn with_http(mut self, options: http::HttpOptions) -> Self {
+        self.http = Some(options);
+        self
+    }
+
+    #[cfg(feature = "row_binary")]
+    #[must_use]
+    pub fn with_set_http(mut self, f: impl Fn(http::HttpOptions) -> http::HttpOptions) -> Self {
+        self.http = Some(f(self.http.unwrap_or_default()));
         self
     }
 
@@ -622,6 +647,48 @@ impl<'a> FromIterator<(&'a str, bool)> for ArrowOptions {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CloudOptions {
+    #[cfg_attr(feature = "serde", serde(default))]
     pub timeout: Option<u64>,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub wakeup:  bool,
+}
+
+// TODO: Remove - docs
+#[cfg(feature = "row_binary")]
+pub(crate) mod http {
+    /// Extra configuration options for http connections to `ClickHouse`.
+    #[non_exhaustive]
+    #[derive(Debug, Default, Clone, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct HttpOptions {
+        /// Provide a different address to connect to that differs from the native endpoint
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub proxy:      Option<String>,
+        /// Provide a port to connect to. Will use default `8192` when tls is off, `8443` otherwise
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub port:       Option<u16>,
+        /// Override User-Agent header
+        #[cfg_attr(feature = "serde", serde(default))]
+        pub user_agent: Option<String>,
+    }
+
+    impl HttpOptions {
+        #[must_use]
+        pub fn with_proxy(mut self, endpoint: impl Into<String>) -> Self {
+            self.proxy = Some(endpoint.into());
+            self
+        }
+
+        #[must_use]
+        pub fn with_port(mut self, port: u16) -> Self {
+            self.port = Some(port);
+            self
+        }
+
+        #[must_use]
+        pub fn with_user_agent(mut self, ua: impl Into<String>) -> Self {
+            self.user_agent = Some(ua.into());
+            self
+        }
+    }
 }

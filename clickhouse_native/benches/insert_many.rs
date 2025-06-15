@@ -74,7 +74,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             .map(|_| arrow_tests::create_test_batch(rows / batch_size, false))
             .collect::<Vec<_>>();
         let test_rows = common::create_test_rows(rows);
-        let test_kh_rows = common::create_test_klickhouse_rows(rows);
         let schema = batches[0].schema();
 
         // Setup clients
@@ -85,7 +84,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             .block_on(arrow_client_builder.build::<ArrowFormat>())
             .expect("clickhouse native arrow setup");
         let rs_client = common::setup_clickhouse_rs(ch);
-        let kh_client = rt.block_on(common::setup_klickhouse(ch)).expect("klickhouse client setup");
 
         // Setup database
         rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_client))
@@ -98,14 +96,10 @@ fn criterion_benchmark(c: &mut Criterion) {
         let rs_table_ref = rt
             .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
             .expect("clickhouse rs table");
-        let kh_table_ref = rt
-            .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
-            .expect("klickhouse table");
 
         // Wrap clients in Arc for sharing across iterations
         let arrow_client = Arc::new(arrow_client);
         let rs_client = Arc::new(rs_client);
-        let kh_client = Arc::new(kh_client);
 
         // Benchmark native arrow insert
         insert_arrow(
@@ -123,16 +117,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             rows,
             rs_client.as_ref(),
             &test_rows,
-            &mut insert_group,
-            &rt,
-        );
-
-        // Benchmark klickhouse insert
-        common::insert_kh(
-            &kh_table_ref,
-            rows,
-            kh_client.as_ref(),
-            &test_kh_rows,
             &mut insert_group,
             &rt,
         );

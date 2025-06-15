@@ -1,4 +1,8 @@
+use futures_util::Stream;
+
 use crate::io::{ClickhouseRead, ClickhouseWrite};
+use crate::prelude::SchemaConversions;
+use crate::schema::ColumnDefine;
 use crate::{Result, Type};
 
 /// Trait for serializing and deserializing data into `ClickHouse`'s native block format.
@@ -47,6 +51,35 @@ pub(crate) trait ProtocolData<Return> {
         revision: u64,
         options: Self::Options,
     ) -> impl Future<Output = Result<Return>> + Send;
+}
+
+/// Trait for serializing and deserializing data into `ClickHouse`'s row binary format.
+///
+/// # Type Parameters
+/// - `Return`: The type of data produced by deserialization (e.g., `RecordBatch`).
+#[cfg(feature = "row_binary")]
+pub(crate) trait RowData<Return> {
+    /// The implementation specific options
+    type Row: ColumnDefine;
+
+    /// Reads a `ClickHouse` `RowBinary` block and constructs the data.
+    ///
+    /// # Arguments
+    /// - `reader`: The async reader providing the block data (e.g., a TCP stream).
+    /// - `definition`: The column definition for the block.
+    /// - `overrides`: Optional schema conversions.
+    ///
+    /// # Returns
+    /// A `Future` resolving to a `Result` of `Vec<Return>` (e.g., `Vec<RecordBatch>`) or an `Error`
+    /// if deserialization fails.
+    fn read_rows<R>(
+        reader: &mut R,
+        definition: Self::Row,
+        overrides: Option<SchemaConversions>,
+        summmary: crate::row::protocol::HttpSummary,
+    ) -> impl Future<Output = Result<Vec<Return>>> + Send
+    where
+        R: Stream<Item = Result<bytes::Bytes>> + Unpin + Send;
 }
 
 /// Simple trait to determine whether a `Block` of data (whatever impls `ProtocolData`) is empty, ie

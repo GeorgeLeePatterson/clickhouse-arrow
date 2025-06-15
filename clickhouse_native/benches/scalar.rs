@@ -5,14 +5,13 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::record_batch::RecordBatch;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use clickhouse::{Client as ClickhouseRsClient, Row as ClickhouseRow};
 use clickhouse_native::CompressionMethod;
 use clickhouse_native::prelude::*;
 use clickhouse_native::test_utils::{arrow_tests, get_or_create_container};
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, BenchmarkId, Criterion, criterion_group, criterion_main};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
@@ -30,86 +29,61 @@ pub(crate) fn query_rs_scalar(
     group: &mut BenchmarkGroup<'_, WallTime>,
     rt: &Runtime,
 ) {
-    let _ = group.sample_size(10).measurement_time(Duration::from_secs(40)).bench_with_input(
-        BenchmarkId::new("clickhouse_rowbinary", rows),
+    let _ = group.sample_size(10).measurement_time(Duration::from_secs(60)).bench_with_input(
+        BenchmarkId::new("clickhouse_rs", rows),
         &(query, client),
         |b, (query, client)| {
             b.to_async(rt).iter(|| async move {
                 let result = client.query(query).fetch_all::<ChTestRow>().await.unwrap();
-                black_box(result)
+                let len = result.len();
+                black_box((len, result))
             });
         },
     );
 }
 
-fn query_arrow_all(
+fn query_arrow_http(
     query: &str,
     rows: usize,
     client: &ArrowClient,
+    schema: &SchemaRef,
     group: &mut BenchmarkGroup<'_, WallTime>,
     rt: &Runtime,
 ) {
-    let _ = group.sample_size(10).measurement_time(Duration::from_secs(40)).bench_with_input(
-        BenchmarkId::new("clickhouse_arrow", rows),
-        &(query, client),
-        |b, (query, client)| {
+    let _ = group.sample_size(10).measurement_time(Duration::from_secs(60)).bench_with_input(
+        BenchmarkId::new("clickhouse_arrow_row_binary", rows),
+        &(query, client, Arc::clone(schema)),
+        |b, (query, client, schema)| {
             b.to_async(rt).iter(|| async move {
-                let mut stream = client
-                    .query(*query, None)
+                let batches = client
+                    .query_http(*query, None, Arc::clone(schema), None, None)
                     .await
                     .inspect_err(|e| print_msg(format!("Query error: {e:?}")))
                     .unwrap();
-                let mut batches = Vec::with_capacity(100);
-                while let Some(b) = stream.next().await {
-                    batches
-                        .push(b.inspect_err(|e| print_msg(format!("Batch error: {e:?}"))).unwrap());
-                }
                 black_box(batches)
             });
         },
     );
 }
 
-fn query_arrow(
+fn query_arrow_native(
+    query: &str,
     rows: usize,
-    split: usize,
     client: &Arc<ArrowClient>,
     group: &mut BenchmarkGroup<'_, WallTime>,
     rt: &Runtime,
 ) {
-    let size = rows.div_ceil(split);
-    let query = format!("SELECT number from system.numbers_mt LIMIT {size}");
-    let _ = group.sample_size(10).measurement_time(Duration::from_secs(40)).bench_with_input(
-        BenchmarkId::new(format!("clickhouse_arrow_{split}"), rows),
+    let _ = group.sample_size(10).measurement_time(Duration::from_secs(60)).bench_with_input(
+        BenchmarkId::new("clickhouse_arrow_native", rows),
         &(query, client),
         |b, (query, client)| {
             b.to_async(rt).iter(|| async move {
-                let mut tasks = tokio::task::JoinSet::<Vec<RecordBatch>>::new();
-                for _ in 0..split {
-                    let client = Arc::clone(client);
-                    let query = query.to_string();
-                    drop(tasks.spawn(async move {
-                        let mut stream = client
-                            .query(query, None)
-                            .await
-                            .inspect_err(|e| print_msg(format!("Query error: {e:?}")))
-                            .unwrap();
-                        let mut batches = Vec::with_capacity(1024);
-                        while let Some(b) = stream.next().await {
-                            batches.push(
-                                b.inspect_err(|e| print_msg(format!("Batch error: {e:?}")))
-                                    .unwrap(),
-                            );
-                        }
-                        batches
-                    }));
-                }
-                let mut all_batches = Vec::with_capacity(split * 1024);
-                #[expect(clippy::disallowed_methods)]
-                while let Some(batches) = tasks.join_next().await {
-                    all_batches.extend(batches.unwrap());
-                }
-                black_box(all_batches)
+                let stream = client
+                    .query(*query, None)
+                    .await
+                    .inspect_err(|e| print_msg(format!("Query error: {e:?}")))
+                    .unwrap();
+                black_box(stream)
             });
         },
     );
@@ -131,33 +105,33 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Test with different row counts
     let rows = 500_000_000;
     let query = format!("SELECT number FROM system.numbers_mt LIMIT {rows}");
+    let schema = Arc::new(Schema::new(vec![Field::new("number", DataType::UInt64, false)]));
 
     print_msg(format!("Running test for {rows} rows"));
 
     // Setup clients
     let arrow_client_builder =
         arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-            .with_compression(CompressionMethod::ZSTD);
+            .with_compression(CompressionMethod::LZ4)
+            .with_http_options(|opts| opts.with_port(ch.get_http_port()));
     let arrow_client = rt
         .block_on(arrow_client_builder.build::<ArrowFormat>())
         .expect("clickhouse native arrow setup");
 
-    let rs_client = common::setup_clickhouse_rs(ch)
-        .with_compression(clickhouse::Compression::Lz4)
-        .with_option("output_format_parallel_formatting", "0");
+    let rs_client = common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::Lz4);
 
     // Wrap clients in Arc for sharing across iterations
     let arrow_client = Arc::new(arrow_client);
     let rs_client = Arc::new(rs_client);
 
-    // Benchmark native arrow query
-    query_arrow_all(&query, rows, &arrow_client, &mut query_group, &rt);
-
     // Benchmark clickhouse-rs query
     query_rs_scalar(&query, rows, rs_client.as_ref(), &mut query_group, &rt);
 
     // Benchmark native arrow query
-    query_arrow(rows, 20, &arrow_client, &mut query_group, &rt);
+    query_arrow_http(&query, rows, &arrow_client, &schema, &mut query_group, &rt);
+
+    // Benchmark native arrow query
+    query_arrow_native(&query, rows, &arrow_client, &mut query_group, &rt);
 
     query_group.finish();
 

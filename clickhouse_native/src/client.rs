@@ -11,6 +11,7 @@ mod chunk;
 #[cfg(feature = "cloud")]
 mod cloud;
 pub(crate) mod connection;
+pub(crate) mod http;
 mod internal;
 mod options;
 mod reader;
@@ -32,6 +33,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 pub use self::builder::*;
 pub use self::connection::ConnectionStatus;
 pub(crate) use self::internal::{Message, Operation};
+#[cfg(feature = "row_binary")]
+pub use self::options::http::HttpOptions;
 pub use self::options::*;
 pub use self::response::*;
 pub use self::tcp::Destination;
@@ -128,6 +131,9 @@ pub struct Client<T: ClientFormat> {
     connection:    Arc<connection::Connection<T>>,
     events:        Arc<broadcast::Sender<Event>>,
     settings:      Option<Arc<Settings>>,
+    /// A `RowBinary` client used to reduce latency for queries
+    #[cfg(feature = "row_binary")]
+    http:          Arc<http::HttpClient>,
 }
 
 impl<T: ClientFormat> Client<T> {
@@ -233,6 +239,15 @@ impl<T: ClientFormat> Client<T> {
             debug!(server.address = %addr.ip(), server.port = addr.port(), "Initiating connection");
         }
 
+        // If row_binary is enabled, create the http client
+        #[cfg(feature = "row_binary")]
+        let http_client = http::HttpClient::try_new(
+            destination.domain(),
+            &options,
+            settings.as_deref(),
+            client_id,
+        )?;
+
         let (event_tx, _) = broadcast::channel(EVENTS_CAPACITY);
         let events = Arc::new(event_tx);
         let conn_ev = Arc::clone(&events);
@@ -243,7 +258,14 @@ impl<T: ClientFormat> Client<T> {
 
         debug!("created connection successfully");
 
-        Ok(Client { client_id, connection, events, settings })
+        Ok(Client {
+            client_id,
+            connection,
+            events,
+            settings,
+            #[cfg(feature = "row_binary")]
+            http: Arc::new(http_client),
+        })
     }
 
     /// Retrieves the status of the underlying `ClickHouse` connection.
@@ -2203,6 +2225,33 @@ impl Client<ArrowFormat> {
         )?;
         self.execute(stmt, qid).await?;
         Ok(())
+    }
+}
+
+// RowBinary impls
+#[cfg(feature = "row_binary")]
+impl Client<ArrowFormat> {
+    #[instrument(
+        name = "clickhouse.query_http",
+        skip_all
+        fields(
+            db.system = "clickhouse",
+            db.operation = "query",
+            db.format = ArrowFormat::FORMAT,
+            clickhouse.client.id = self.client_id,
+            clickhouse.query.id
+        )
+    )]
+    pub async fn query_http(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        schema: SchemaRef,
+        overrides: Option<SchemaConversions>,
+        qid: Option<Qid>,
+    ) -> Result<Vec<RecordBatch>> {
+        let (query, qid) = record_query(qid, query.into(), self.client_id);
+        self.http.query::<ArrowFormat, _>(&query, params, schema, overrides, qid).await
     }
 }
 

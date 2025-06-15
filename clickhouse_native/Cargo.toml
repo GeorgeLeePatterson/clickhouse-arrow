@@ -9,7 +9,7 @@ license.workspace = true
 all-features = false
 
 [features]
-default = ["derive", "serde", "pool", "fast_mode"]
+default = ["derive", "serde", "pool", "fast_mode", "row_binary"]
 derive = ["clickhouse_native_derive"]
 geo-types = ["dep:geo-types"]
 serde = [
@@ -22,7 +22,16 @@ serde = [
 cloud = ["dep:ureq"]
 pool = ["dep:bb8"]
 rust_decimal = ["dep:rust_decimal"]
+# TODO: Remove - Change name to something else to reflect the exposure of an inner pool
 fast_mode = ["dep:arc-swap"]
+row_binary = [
+    "serde",
+    "dep:bytes",
+    "dep:hyper",
+    "dep:hyper-rustls",
+    "dep:hyper-util",
+    "dep:url",
+]
 
 test_utils = [
     "dep:testcontainers",
@@ -71,19 +80,28 @@ zstd = "0.13"
 # Optional
 arc-swap = { version = "1", optional = true }
 bb8 = { version = "0.9", optional = true }
+bytes = { version = "1", optional = true }
 clickhouse_native_derive = { version = "0.2", optional = true, path = "../clickhouse_native_derive" }
 geo-types = { version = "0.7", optional = true }
+hyper = { version = "1", features = ["http1", "client"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy"], optional = true }
+hyper-rustls = { version = "0.27", default-features = false, features = [
+    "http1",
+    "tls12",
+    "aws-lc-rs",
+    "webpki-roots"
+], optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 testcontainers = { version = "0.24", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
+url = { version = "2", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.6", features = ["async_tokio", "html_reports"] }
 clickhouse = { version = "0.13" }
-klickhouse = { version = "0.14", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
@@ -130,6 +148,10 @@ required-features = ["test_utils"]
 
 [[example]]
 name = "insert_multi"
+required-features = ["test_utils"]
+
+[[example]]
+name = "row_binary"
 required-features = ["test_utils"]
 
 # BENCHES

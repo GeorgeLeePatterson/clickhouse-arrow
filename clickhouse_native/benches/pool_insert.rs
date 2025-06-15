@@ -85,12 +85,10 @@ fn criterion_benchmark(c: &mut Criterion) {
         // Pre-create the batch and rows to avoid including this in benchmark time
         let batch = arrow_tests::create_test_batch(rows, false);
         let test_rows = common::create_test_rows(rows);
-        let test_kh_rows = common::create_test_klickhouse_rows(rows);
         let schema = batch.schema();
 
         // Setup clients
         let rs_client = common::setup_clickhouse_rs(ch);
-        let kh_client = rt.block_on(common::setup_klickhouse(ch)).expect("klickhouse client setup");
 
         // Setup database
         rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_manage))
@@ -103,13 +101,9 @@ fn criterion_benchmark(c: &mut Criterion) {
         let rs_table_ref = rt
             .block_on(arrow_tests::setup_table(&arrow_manage, common::TEST_DB_NAME, &schema))
             .expect("clickhouse rs table");
-        let kh_table_ref = rt
-            .block_on(arrow_tests::setup_table(&arrow_manage, common::TEST_DB_NAME, &schema))
-            .expect("klickhouse table");
 
         // Wrap clients in Arc for sharing across iterations
         let rs_client = Arc::new(rs_client);
-        let kh_client = Arc::new(kh_client);
 
         // Benchmark native arrow insert
         insert_arrow(&arrow_table_ref, rows, &arrow_pool, &batch, &mut insert_group, &rt);
@@ -120,16 +114,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             rows,
             rs_client.as_ref(),
             &test_rows,
-            &mut insert_group,
-            &rt,
-        );
-
-        // Benchmark klickhouse insert
-        common::insert_kh(
-            &kh_table_ref,
-            rows,
-            kh_client.as_ref(),
-            &test_kh_rows,
             &mut insert_group,
             &rt,
         );

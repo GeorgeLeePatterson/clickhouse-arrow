@@ -15,6 +15,7 @@ pub use super::types::{
 use crate::flags::debug_arrow;
 use crate::formats::protocol_data::ProtocolData;
 use crate::formats::{DeserializerState, SerializerState};
+use crate::geo::normalize_geo_type;
 use crate::io::{ClickhouseRead, ClickhouseWrite};
 use crate::native::block_info::BlockInfo;
 use crate::native::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
@@ -93,6 +94,14 @@ impl ProtocolData<RecordBatch> for RecordBatch {
                 &super::types::arrow_to_ch_type(data_type, is_nullable, Some(options))?
             };
 
+            // Simplify geo types
+            let type_ =
+                if matches!(type_, Type::Point | Type::Polygon | Type::MultiPolygon | Type::Ring) {
+                    &normalize_geo_type(type_).unwrap()
+                } else {
+                    type_
+                };
+
             if debug_arrow() {
                 trace!(name, ?data_type, is_nullable, ?type_, "serializing column {i}");
             }
@@ -107,15 +116,15 @@ impl ProtocolData<RecordBatch> for RecordBatch {
                 writer.write_u8(0).await?;
             }
 
-            if !column.is_empty() {
-                type_.serialize_prefix(writer, &mut state).await?;
-                type_.serialize(writer, column, field, &mut state).await?;
+            if column.is_empty() {
+                if debug_arrow() {
+                    warn!(name, "column {i} empty");
+                }
                 continue;
             }
 
-            if debug_arrow() {
-                warn!(name, "column {i} empty");
-            }
+            type_.serialize_prefix(writer, &mut state).await?;
+            type_.serialize(writer, column, field, &mut state).await?;
         }
 
         Ok(())
@@ -214,6 +223,7 @@ impl ProtocolData<RecordBatch> for RecordBatch {
     }
 }
 
+// TODO: Remove - geo unit tests
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;

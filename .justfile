@@ -43,6 +43,10 @@ bench:
     cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench --profile=release -F test_utils && \
      open ../target/criterion/report/index.html
 
+bench-lto:
+    cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test_utils && \
+     open ../target/criterion/report/index.html
+
 bench-one bench:
     cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench \
      --profile=release \
@@ -50,13 +54,14 @@ bench-one bench:
      --bench "{{ bench }}" && \
      open ../target/criterion/report/index.html
 
-bench-lto:
+bench-one-lto bench:
     cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench \
      --profile=release-lto \
-     -F test_utils && \
+     -F test_utils \
+     --bench "{{ bench }}" && \
      open ../target/criterion/report/index.html
 
-# --- EXAMPLE ---
+# --- EXAMPLES ---
 debug-profile example:
     cd clickhouse_native && RUSTFLAGS='-g' cargo build \
      -F test_utils \
@@ -77,6 +82,9 @@ release-lto example:
     codesign -s - -v -f --entitlements assets/mac.entitlements "target/release-lto/examples/{{ example }}"
 
 example example *args='':
+    cargo run --profile=release -F test_utils --example "{{ example }}" -- "{{ args }}"
+
+example-lto example *args='':
     cargo run --profile=release-lto -F test_utils --example "{{ example }}" -- "{{ args }}"
 
 example-debug example *args='':

@@ -13,10 +13,8 @@
 /// nulls (e.g., empty strings for `Nullable(String)`, zeroed buffers for
 /// `Nullable(FixedSizedString)`).
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::Arc;
 
 use arrow::array::*;
-use tokio::io::AsyncReadExt;
 
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
@@ -34,20 +32,21 @@ use crate::{Error, Result, Type};
 /// - `$null_mask`: The null mask slice (`1`=null, `0`=non-null).
 /// - `$st`: The statement to read and convert the value (e.g., `String::from_utf8_lossy`).
 macro_rules! deserialize_binary {
-    ($builder_type:ty, $rows:expr, $off:expr, $null_mask:expr, { $st:expr }) => {{
+    ($builder:expr, $rows:expr, $null_mask:expr, { $st:expr }) => {{
         #[allow(unused_imports)]
         use ::tokio::io::AsyncReadExt as _;
 
-        let mut builder = <$builder_type>::with_capacity($rows, $off);
         for i in 0..$rows {
-            let value = $st;
             if $null_mask.is_empty() || $null_mask[i] == 0 {
-                builder.append_value(value);
+                $builder.append_value($st);
             } else {
-                builder.append_null();
+                #[allow(dropping_references)]
+                #[allow(let_underscore_drop)]
+                let _ = $st;
+                $builder.append_null();
             }
         }
-        Ok(::std::sync::Arc::new(builder.finish()) as ArrayRef)
+        Ok(::std::sync::Arc::new($builder.finish()) as ArrayRef)
     }};
 }
 
@@ -64,20 +63,19 @@ macro_rules! deserialize_binary {
 /// - `$null_mask`: The null mask slice (`1`=null, `0`=non-null).
 /// - `$st`: The statement to read and convert the value (e.g., read bytes or convert `Ipv4Addr`).
 macro_rules! deserialize_binary_fixed {
-    ($builder_type:ty, $rows:expr, $off:expr, $null_mask:expr, { $st:expr }) => {{
+    ($builder:expr, $rows:expr, $null_mask:expr, { $st:expr }) => {{
         #[allow(unused_imports)]
         use ::tokio::io::AsyncReadExt as _;
 
-        let mut builder = <$builder_type>::with_capacity($rows, $off);
         for i in 0..$rows {
             let value = $st;
             if $null_mask.is_empty() || $null_mask[i] == 0 {
-                builder.append_value(value)?;
+                $builder.append_value(value)?;
             } else {
-                builder.append_null();
+                $builder.append_null();
             }
         }
-        Ok(::std::sync::Arc::new(builder.finish()) as ArrayRef)
+        Ok(::std::sync::Arc::new($builder.finish()) as ArrayRef)
     }};
 }
 
@@ -148,32 +146,44 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
 
     match type_hint.strip_null() {
         // String, Binary, UUID, IPv4, IPv6
-        Type::String | Type::Object => {
-            deserialize_binary!(StringBuilder, rows, offset, null_mask, {
-                { String::from_utf8_lossy(&reader.read_string().await?).to_string() }
+        Type::String => {
+            let mut builder = StringBuilder::with_capacity(rows, offset);
+            deserialize_binary!(&mut builder, rows, null_mask, {
+                String::from_utf8_lossy(&reader.read_string().await?)
+            })
+        }
+        Type::Object => {
+            let mut builder = StringBuilder::with_capacity(rows, offset);
+            deserialize_binary!(&mut builder, rows, null_mask, {
+                if cfg!(feature = "serde") {
+                    serde_json::from_str::<serde_json::Value>(
+                        String::from_utf8_lossy(&reader.read_string().await?).as_ref(),
+                    )
+                    .map_err(|e| Error::ArrowDeserialize(format!("Failed to parse JSON: {e}")))?
+                    .to_string()
+                } else {
+                    String::from_utf8_lossy(&reader.read_string().await?).to_string()
+                }
             })
         }
         Type::FixedSizedString(n) => {
             let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, *n as i32);
-            for i in 0..rows {
-                let mut buf = vec![0u8; *n];
-                let _ = reader.read_exact(&mut buf).await?;
-                if !null_mask.is_empty() && null_mask[i] != 0 {
-                    builder.append_null();
-                } else {
-                    builder.append_value(&buf)?;
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
+                {
+                    let mut buf = vec![0u8; *n];
+                    let _ = reader.read_exact(&mut buf).await?;
+                    buf
                 }
-            }
-            Ok(Arc::new(builder.finish()) as ArrayRef)
+            })
         }
         Type::Binary => {
-            deserialize_binary!(BinaryBuilder, rows, offset, null_mask, {
-                { reader.read_string().await? }
-            })
+            let mut builder = BinaryBuilder::with_capacity(rows, offset);
+            deserialize_binary!(&mut builder, rows, null_mask, { reader.read_string().await? })
         }
         Type::FixedSizedBinary(n) => {
             let len = *n as i32;
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, len, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, len);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut buf = vec![0u8; *n];
                     let _ = reader.read_exact(&mut buf).await?;
@@ -182,16 +192,18 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
             })
         }
         Type::Uuid => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 16, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 16);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut buf = [0u8; 16];
                     let _ = reader.read_exact(&mut buf).await?;
-                    buf.to_vec()
+                    buf
                 }
             })
         }
         Type::Ipv4 => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 4, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 4);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let ipv4_int = reader.read_u32_le().await?;
                     let ip_addr = Ipv4Addr::from(ipv4_int);
@@ -200,7 +212,8 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
             })
         }
         Type::Ipv6 => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 16, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 16);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut octets = [0u8; 16];
                     let _ = reader.read_exact(&mut octets[..]).await?;
@@ -210,7 +223,8 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
         }
         // Special numeric types that need to be read as bytes
         Type::Int128 => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 16, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 16);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut buf = [0u8; 16];
                     let _ = reader.read_exact(&mut buf).await?;
@@ -219,7 +233,8 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
             })
         }
         Type::Int256 => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 32, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 32);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut buf = [0u8; 32];
                     let _ = reader.read_exact(&mut buf).await?;
@@ -229,7 +244,8 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
             })
         }
         Type::UInt128 => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 16, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 16);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut buf = [0u8; 16];
                     let _ = reader.read_exact(&mut buf).await?;
@@ -238,7 +254,8 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
             })
         }
         Type::UInt256 => {
-            deserialize_binary_fixed!(FixedSizeBinaryBuilder, rows, 32, null_mask, {
+            let mut builder = FixedSizeBinaryBuilder::with_capacity(rows, 32);
+            deserialize_binary_fixed!(&mut builder, rows, null_mask, {
                 {
                     let mut buf = [0u8; 32];
                     let _ = reader.read_exact(&mut buf).await?;

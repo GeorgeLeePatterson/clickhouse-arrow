@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -215,6 +216,14 @@ impl CreateOptions {
     /// # Returns
     /// An optional reference to the `HashMap` of column names to default values.
     pub fn defaults(&self) -> Option<&HashMap<String, String>> { self.defaults.as_ref() }
+
+    /// Returns the configured default values, if any.
+    ///
+    /// # Returns
+    /// An optional reference to the `HashMap` of column names to default values.
+    pub fn schema_conversions(&self) -> Option<&SchemaConversions> {
+        self.schema_conversions.as_ref()
+    }
 
     /// Builds the table options part of a `ClickHouse` `CREATE TABLE` statement.
     ///
@@ -488,39 +497,33 @@ pub(crate) fn create_table_statement<T: ColumnDefine>(
 
     let db_pre = database.map(|c| format!("{c}.")).unwrap_or_default();
     let table = table.trim_matches('`');
-    let create = format!("CREATE TABLE IF NOT EXISTS {db_pre}`{table}` (\n");
     let mut sql = String::new();
-    sql.push_str(&create);
+    let _ = writeln!(sql, "CREATE TABLE IF NOT EXISTS {db_pre}`{table}` (");
 
     let total = definitions.len();
     for (i, (name, type_, default_value)) in definitions.into_iter().enumerate() {
-        sql.push_str("  ");
-        sql.push_str(&name);
-        sql.push(' ');
-        sql.push_str(&type_.to_string());
+        let _ = write!(sql, "  {name} {type_}");
         if let Some(d) = options
             .defaults
             .as_ref()
             .and_then(|d| d.get(&name))
             .or(default_value.map(|d| d.to_string()).as_ref())
         {
-            sql.push_str(" DEFAULT");
+            let _ = write!(sql, " DEFAULT");
             if !d.is_empty() && d != "NULL" {
-                sql.push(' ');
-                sql.push_str(d);
+                let _ = write!(sql, " {d}");
             }
         } else if options.defaults_for_nullable && matches!(type_, Type::Nullable(_)) {
-            sql.push_str(" DEFAULT");
+            let _ = write!(sql, " DEFAULT");
         }
 
         if i < (total - 1) {
-            sql.push(',');
-            sql.push('\n');
+            let _ = writeln!(sql, ",");
         }
     }
 
-    sql.push_str("\n)\n");
-    sql.push_str(&options.build()?);
+    let _ = writeln!(sql, "\n)");
+    let _ = write!(sql, "{}", options.build()?);
 
     Ok(sql)
 }
@@ -600,14 +603,12 @@ impl ColumnDefine for RecordBatchDefinition {
                 schema_conversion(field, conversions, self.arrow_options).inspect_err(|error| {
                     error!("Arrow conversion failed for field {field:?}: {error}");
                 })?;
-
             let default_val =
                 if let Some(d) = self.defaults.as_ref().and_then(|d| d.get(field.name())) {
                     if !d.is_empty() && d != "NULL" { Some(d.clone()) } else { None }
                 } else {
                     None
                 };
-
             fields.push((field.name().to_string(), type_, default_val));
         }
         Ok(Some(fields))

@@ -1,4 +1,5 @@
 pub(crate) mod deserialize;
+pub mod geo;
 pub(crate) mod low_cardinality;
 pub(crate) mod serialize;
 #[cfg(test)]

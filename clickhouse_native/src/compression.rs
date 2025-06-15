@@ -102,11 +102,11 @@ pub(crate) async fn decompress_data(
     let checksum_high = reader
         .read_u64_le()
         .await
-        .map_err(|_| Error::Protocol("Failed to read checksum high".to_string()))?;
+        .map_err(|e| Error::Protocol(format!("Failed to read checksum high: {e}")))?;
     let checksum_low = reader
         .read_u64_le()
         .await
-        .map_err(|_| Error::Protocol("Failed to read checksum low".to_string()))?;
+        .map_err(|e| Error::Protocol(format!("Failed to read checksum low: {e}")))?;
     let checksum = (u128::from(checksum_high) << 64) | u128::from(checksum_low);
 
     // Read compression header (9 bytes)
@@ -279,6 +279,258 @@ impl<R: ClickhouseRead> AsyncRead for DecompressionReader<'_, R> {
         Poll::Ready(Ok(()))
     }
 }
+
+#[cfg(feature = "row_binary")]
+pub(crate) mod http {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use bytes::{Buf, BufMut, Bytes, BytesMut};
+    use futures_util::{Stream, ready};
+
+    use crate::prelude::*;
+
+    #[pin_project::pin_project]
+    pub(crate) struct Decompressor<S> {
+        #[pin]
+        stream:          S,
+        buffer:          BytesMut,
+        compression:     CompressionMethod,
+        header:          Option<CompressHeader>,
+        checksum_buffer: Vec<u8>,
+        header_template: [u8; 9], // Pre-allocated header space
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct CompressHeader {
+        checksum:          u128,
+        compressed_size:   u32,
+        decompressed_size: u32,
+    }
+
+    impl<S> Decompressor<S>
+    where
+        S: Stream<Item = Result<Bytes>> + Unpin + Send,
+    {
+        pub(crate) fn new(stream: S, compression: CompressionMethod) -> Self {
+            Self {
+                stream,
+                buffer: BytesMut::with_capacity(8 * 1024 * 1024),
+                compression,
+                header: None,
+                checksum_buffer: Vec::with_capacity(1024 * 1024),
+                header_template: [0; 9],
+            }
+        }
+
+        fn try_parse_header_and_advance(&mut self) -> Result<Option<CompressHeader>> {
+            if self.buffer.len() < 25 {
+                return Ok(None); // Need 16 checksum + 9 header bytes
+            }
+            // Parse checksum (16 bytes)
+            let (high, low) = (self.buffer.get_u64_le(), self.buffer.get_u64_le());
+            let checksum = (u128::from(high) << 64) | u128::from(low);
+            // Parse header (9 bytes)
+            let type_byte = self.buffer.get_u8();
+            let compressed_size = self.buffer.get_u32_le();
+            let decompressed_size = self.buffer.get_u32_le();
+            // Validate type
+            if type_byte != self.compression.byte() {
+                return Err(Error::Protocol(format!(
+                    "Unexpected compression type: expected {}, got {type_byte:02x}",
+                    self.compression.byte()
+                )));
+            }
+            // Sanity checks
+            if compressed_size > 100_000_000 || decompressed_size > 1_000_000_000 {
+                return Err(Error::Protocol("Block size too large".to_string()));
+            }
+            Ok(Some(CompressHeader { checksum, compressed_size, decompressed_size }))
+        }
+
+        fn try_decompress_current_block(
+            &mut self,
+            block_info: CompressHeader,
+        ) -> Result<Option<Bytes>> {
+            let compressed_size = block_info.compressed_size;
+            let decompressed_size = block_info.decompressed_size;
+            // We need compressed_size - 9 bytes (since header was already consumed)
+            let payload_size = (compressed_size as usize).saturating_sub(9);
+            if self.buffer.len() < payload_size {
+                return Ok(None); // Need more data
+            }
+            // Get a reference to validate checksum
+            let payload = &self.buffer[..payload_size];
+            // Build header template once
+            self.header_template[0] = self.compression.byte();
+            self.header_template[1..5].copy_from_slice(&compressed_size.to_le_bytes());
+            self.header_template[5..9].copy_from_slice(&decompressed_size.to_le_bytes());
+            // Build complete compressed block for checksum validation
+            self.checksum_buffer.clear();
+            self.checksum_buffer.reserve(compressed_size as usize); // Only need 9 bytes now
+            self.checksum_buffer.extend_from_slice(&self.header_template);
+            self.checksum_buffer.extend_from_slice(payload);
+            // Validate checksum
+            let calc_checksum = cityhash_rs::cityhash_102_128(&self.checksum_buffer);
+            if calc_checksum != block_info.checksum {
+                return Err(Error::Protocol(format!(
+                    "Checksum mismatch: expected {:032x}, got {:032x}",
+                    block_info.checksum, calc_checksum
+                )));
+            }
+            // Decompress just the payload
+            let decompressed = match self.compression {
+                CompressionMethod::LZ4 => {
+                    lz4_flex::decompress(payload, block_info.decompressed_size as usize).map_err(
+                        |e| Error::DeserializeError(format!("LZ4 decompress error: {e}")),
+                    )?
+                }
+                CompressionMethod::ZSTD => {
+                    zstd::bulk::decompress(payload, block_info.decompressed_size as usize).map_err(
+                        |e| Error::DeserializeError(format!("ZSTD decompress error: {e}")),
+                    )?
+                }
+                CompressionMethod::None => {
+                    return Err(Error::DeserializeError(
+                        "Attempted to decompress uncompressed data".into(),
+                    ));
+                }
+            };
+
+            self.buffer.advance(payload_size);
+            Ok(Some(Bytes::from(decompressed)))
+        }
+    }
+
+    impl<S> Stream for Decompressor<S>
+    where
+        S: Stream<Item = Result<Bytes>> + Unpin + Send,
+    {
+        type Item = Result<Bytes>;
+
+        fn poll_next(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Bytes>>> {
+            loop {
+                // If we don't have block info yet, try to parse header
+                if self.header.is_none() {
+                    match self.try_parse_header_and_advance() {
+                        Ok(Some(block_info)) => {
+                            self.header = Some(block_info);
+                        }
+                        // Need more data for header, fall through to read from stream
+                        Ok(None) => {}
+                        Err(e) => return Poll::Ready(Some(Err(e))),
+                    }
+                }
+
+                // If we have block info, try to decompress
+                if let Some(block_info) = self.header {
+                    match self.try_decompress_current_block(block_info) {
+                        Ok(Some(decompressed)) => {
+                            // Reset for next block
+                            self.header = None;
+                            return Poll::Ready(Some(Ok(decompressed)));
+                        }
+                        // Need more data for payload, fall through to read from stream
+                        Ok(None) => {}
+                        Err(e) => return Poll::Ready(Some(Err(e))),
+                    }
+                }
+
+                // Need more data from the underlying stream
+                match ready!(self.as_mut().project().stream.as_mut().poll_next(cx)) {
+                    Some(Ok(chunk)) => {
+                        self.buffer.put(chunk);
+                        // Continue loop to try processing again
+                    }
+                    Some(Err(e)) => return Poll::Ready(Some(Err(e))),
+                    None => {
+                        // Stream ended
+                        if self.buffer.is_empty() && self.header.is_none() {
+                            return Poll::Ready(None);
+                        }
+                        return Poll::Ready(Some(Err(Error::Protocol(
+                            "Stream ended with incomplete block".to_string(),
+                        ))));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// TODO: Remove - decide if benchmarking sync decompression is worth it
+// #[allow(unused)]
+// pub(crate) fn decompress_sync(
+//     // TODO: Feature gate?
+//     reader: &mut impl Buf,
+//     compression: CompressionMethod,
+// ) -> Result<Vec<u8>> {
+//     // Read checksum (16 bytes)
+//     let checksum_high = reader
+//         .try_get_u64_le()
+//         .map_err(|e| Error::Protocol(format!("Failed to read checksum high: {e}")))?;
+//     let checksum_low = reader
+//         .try_get_u64_le()
+//         .map_err(|e| Error::Protocol(format!("Failed to read checksum low: {e}")))?;
+//     let checksum = (u128::from(checksum_high) << 64) | u128::from(checksum_low);
+
+//     // Read compression header (9 bytes)
+//     let type_byte = reader
+//         .try_get_u8()
+//         .map_err(|e| Error::Protocol(format!("Failed to read compression type: {e}")))?;
+//     if type_byte != compression.byte() {
+//         return Err(Error::Protocol(format!(
+//             "Unexpected compression algorithm for {compression}: {type_byte:02x}"
+//         )));
+//     }
+
+//     let compressed_size = reader
+//         .try_get_u32_le()
+//         .map_err(|e| Error::Protocol(format!("Failed to read compressed size: {e}")))?;
+//     let decompressed_size = reader
+//         .try_get_u32_le()
+//         .map_err(|e| Error::Protocol(format!("Failed to read decompressed size: {e}")))?;
+
+//     // Sanity checks
+//     if compressed_size > 100_000_000 || decompressed_size > 1_000_000_000 {
+//         return Err(Error::Protocol("Chunk size too large".to_string()));
+//     }
+
+//     // Build the complete compressed block for checksum validation
+//     let mut compressed = vec![0u8; compressed_size as usize];
+//     reader
+//         .try_copy_to_slice(&mut compressed[9..])
+//         .map_err(|e| Error::Protocol(format!("Failed to read compressed payload: {e}")))?;
+//     compressed[0] = type_byte;
+//     compressed[1..5].copy_from_slice(&compressed_size.to_le_bytes());
+//     compressed[5..9].copy_from_slice(&decompressed_size.to_le_bytes());
+
+//     // Validate checksum
+//     let calc_checksum = cityhash_rs::cityhash_102_128(&compressed);
+//     if calc_checksum != checksum {
+//         return Err(Error::Protocol(format!(
+//             "Checksum mismatch: expected {checksum:032x}, got {calc_checksum:032x}"
+//         )));
+//     }
+
+//     // Decompress based on compression method
+//     match compression {
+//         CompressionMethod::LZ4 => {
+//             lz4_flex::decompress(&compressed[9..], decompressed_size as usize)
+//                 .map_err(|e| Error::DeserializeError(format!("LZ4 decompress error: {e}")))
+//         }
+//         CompressionMethod::ZSTD => {
+//             zstd::bulk::decompress(&compressed[9..], decompressed_size as usize)
+//                 .map_err(|e| Error::DeserializeError(format!("ZSTD decompress error: {e}")))
+//         }
+//         CompressionMethod::None => {
+//             Err(Error::DeserializeError("Attempted to decompress uncompressed data".into()))
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {

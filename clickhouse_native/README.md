@@ -18,6 +18,10 @@ Uses internal types and custom traits if a dependency on arrow is not required.
 
 > [!NOTE] I am considering putting arrow behind a feature flag to provide a subset of features without arrow dependencies. If that sounds interesting to you, let me know.
 
+### `CreateOptions`, `SchemaConversions`, and schemas
+
+TODO: Remove - add these docs, IMPORTANT!
+
 ## Queries
 
 ### Query Settings

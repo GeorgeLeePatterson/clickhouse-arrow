@@ -88,7 +88,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             .expect("clickhouse native arrow setup");
 
         let rs_client = common::setup_clickhouse_rs(ch);
-        let kh_client = rt.block_on(common::setup_klickhouse(ch)).expect("klickhouse client setup");
 
         // Setup database
         rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_client))
@@ -101,28 +100,20 @@ fn criterion_benchmark(c: &mut Criterion) {
         let rs_table_ref = rt
             .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
             .expect("clickhouse rs table");
-        let kh_table_ref = rt
-            .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
-            .expect("klickhouse table");
 
         // Wrap clients in Arc for sharing across iterations
         let arrow_client = Arc::new(arrow_client);
         let rs_client = Arc::new(rs_client);
-        let kh_client = Arc::new(kh_client);
 
         // Insert into each table
         rt.block_on(insert_arrow(&arrow_table_ref, arrow_client.as_ref(), batch.clone()));
         rt.block_on(insert_arrow(&rs_table_ref, arrow_client.as_ref(), batch.clone()));
-        rt.block_on(insert_arrow(&kh_table_ref, arrow_client.as_ref(), batch));
 
         // Benchmark native arrow query
         query_arrow(&arrow_table_ref, rows, arrow_client.as_ref(), &mut query_group, &rt);
 
         // Benchmark clickhouse-rs query
         common::query_rs(&rs_table_ref, rows, rs_client.as_ref(), &mut query_group, &rt);
-
-        // Benchmark klickhouse query
-        common::query_kh(&kh_table_ref, rows, kh_client.as_ref(), &mut query_group, &rt);
     }
 
     query_group.finish();

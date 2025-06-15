@@ -1,4 +1,6 @@
 //! A wrapper around a `JoinHandle` that handles panics.
+//!
+//! Taken from [Datafusion](https://github.com/apache/datafusion/blob/ca0b760af6137c0dbec8b07daa5f48e262420cb5/datafusion/common-runtime/src/common.rs)
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};

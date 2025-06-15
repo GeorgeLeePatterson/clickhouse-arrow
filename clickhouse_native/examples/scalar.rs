@@ -1,10 +1,12 @@
 #![expect(unused_crate_dependencies)]
 mod common;
 
+use std::sync::Arc;
+
+use arrow::datatypes::*;
 use clickhouse::{Client as ClickhouseRsClient, Row as ClickhouseRow};
 use clickhouse_native::prelude::*;
 use clickhouse_native::test_utils::{ClickHouseContainer, arrow_tests};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
@@ -27,9 +29,9 @@ async fn main() -> Result<(), Box<dyn std::any::Any + Send>> {
 
 fn setup_arrow_client(ch: &'static ClickHouseContainer) -> ClientBuilder {
     arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-        // .with_compression(CompressionMethod::LZ4)
-        .with_compression(CompressionMethod::None)
-        .with_setting("output_format_write_statistics", 1)
+        .with_compression(CompressionMethod::LZ4)
+        .with_setting("wait_end_of_query", 0)
+        .with_http_options(|http| http.with_port(ch.get_http_port()))
 }
 
 fn setup_clickhouse_rs(ch: &'static ClickHouseContainer) -> ClickhouseRsClient {
@@ -38,9 +40,9 @@ fn setup_clickhouse_rs(ch: &'static ClickHouseContainer) -> ClickhouseRsClient {
         .with_user(&ch.user)
         .with_password(&ch.password)
         .with_database("default")
-        // .with_compression(clickhouse::Compression::Lz4)
-        .with_compression(clickhouse::Compression::None)
-        .with_option("output_format_parallel_formatting", "0")
+        .with_compression(clickhouse::Compression::Lz4)
+    // .with_compression(clickhouse::Compression::None)
+    // .with_option("output_format_parallel_formatting", "0")
 }
 
 async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
@@ -54,9 +56,11 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
     let rows = 500_000_000;
     let query = format!("SELECT number FROM system.numbers_mt LIMIT {rows}");
 
+    let schema = Arc::new(Schema::new(vec![Field::new("number", DataType::UInt64, false)]));
+
     for i in 0..num_runs {
         common::header(format!("Select run #{}", i + 1));
-        select_data(&query, i, &arrow_client, &rs_client).await?;
+        select_data(&query, i, Arc::clone(&schema), &arrow_client, &rs_client).await?;
     }
 
     common::timing("ALL SELECTS", start);
@@ -67,6 +71,7 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
 async fn select_data(
     query: &str,
     i: usize,
+    schema: SchemaRef,
     client: &ArrowClient,
     rs_client: &ClickhouseRsClient,
 ) -> Result<()> {
@@ -76,27 +81,12 @@ async fn select_data(
     let run_start = Instant::now();
 
     // Select batch
-    let mut stream = client.query(query, Some(Qid::new())).await.inspect_err(|error| {
-        eprintln!("\nQuery error:\n{error:?}\n");
-    })?;
-    common::timing("  >> Query", run_start);
-    let wait_start = Instant::now();
-
-    // Stream results
-    let mut iter = 0;
-    let mut result_start = Instant::now();
-    while let Some(maybe_batch) = stream.next().await {
-        if iter == 0 {
-            common::timing("  >> WAIT First Batch", wait_start);
-        }
-
-        iter += 1;
-        let batch = maybe_batch.inspect_err(|error| eprintln!("\nBatch error:\n{error:?}\n"))?;
-        let rows = batch.num_rows();
-        common::timing(format!("  >> Batch {iter} (rows = {rows})"), result_start);
-        result_start = Instant::now();
-    }
-
+    let _result = client
+        .query_http(query, None, schema, None, Some(Qid::new()))
+        .await
+        .inspect_err(|error| {
+            eprintln!("\nQuery error:\n{error:?}\n");
+        })?;
     let arrow_final = run_start.elapsed().as_secs_f64();
     common::timing(format!("ARROW RUN {}", i + 1), run_start);
 

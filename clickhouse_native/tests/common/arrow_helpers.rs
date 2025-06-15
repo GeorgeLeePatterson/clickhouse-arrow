@@ -230,6 +230,7 @@ pub mod assertions {
     }
 }
 
+// TODO: Remove - add geo types
 #[expect(clippy::too_many_lines)]
 pub fn test_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![

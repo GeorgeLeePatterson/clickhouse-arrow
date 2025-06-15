@@ -1,5 +1,7 @@
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
+#[cfg(feature = "row_binary")]
+use futures_util::Stream;
 
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
@@ -69,5 +71,34 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "row_binary")]
+    async fn read_rows<R>(
+        reader: &mut R,
+        schema: Self::Schema,
+        overrides: Option<SchemaConversions>,
+        metadata: ClientMetadata,
+        summary: crate::row::protocol::HttpSummary,
+    ) -> Result<Vec<RecordBatch>>
+    where
+        R: Stream<Item = Result<bytes::Bytes, Error>> + Unpin + Send,
+    {
+        use super::protocol_data::RowData;
+
+        let arrow_options = metadata.arrow_options;
+
+        // Create schema definition
+        let definition =
+            RecordBatchDefinition { arrow_options: Some(arrow_options), schema, defaults: None };
+
+        if let CompressionMethod::None = metadata.compression {
+            RecordBatch::read_rows(reader, definition, overrides, summary).await
+        } else {
+            let mut streaming_reader =
+                crate::compression::http::Decompressor::new(reader, metadata.compression);
+            RecordBatch::read_rows(&mut streaming_reader, definition, overrides, summary).await
+        }
+        .inspect_err(|error| error!(?error, "deserializing arrow record batch"))
     }
 }

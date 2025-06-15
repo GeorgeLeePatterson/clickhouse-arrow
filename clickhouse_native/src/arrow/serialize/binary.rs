@@ -32,7 +32,7 @@ pub(super) async fn serialize<W: ClickhouseWrite>(
     writer: &mut W,
 ) -> Result<()> {
     match type_hint.strip_null() {
-        Type::String => write_string_values(values, writer).await?,
+        Type::String | Type::Object => write_string_values(values, writer).await?,
         Type::Binary => write_binary_values(values, writer).await?,
         Type::FixedSizedString(len) => write_fixed_string_values(values, writer, *len).await?,
         Type::FixedSizedBinary(len) => write_fixed_binary_values(values, writer, *len).await?,

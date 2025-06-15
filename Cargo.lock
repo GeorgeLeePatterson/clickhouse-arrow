@@ -750,6 +750,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "bb8",
+ "bytes",
  "chrono",
  "chrono-tz",
  "cityhash-rs",
@@ -758,8 +759,10 @@ dependencies = [
  "criterion",
  "futures-util",
  "geo-types",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
  "indexmap 2.9.0",
- "klickhouse",
  "lz4_flex",
  "opentelemetry-semantic-conventions",
  "parking_lot",
@@ -780,6 +783,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "url",
  "uuid",
  "webpki-roots 1.0.0",
  "zstd",
@@ -811,29 +815,6 @@ checksum = "4a65ebfec4fb190b6f90e944a817d60499ee0744e582530e2c9900a22e591d9a"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
-]
-
-[[package]]
-name = "compiler-tools"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc80bd305611ea6275a49dfa4b7525f5dbf628274e4ad92382e89231c2074e91"
-dependencies = [
- "regex",
- "serde",
-]
-
-[[package]]
-name = "compiler-tools-derive"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0748adeee3cbac61b70d26e701515182d22d227baabe596d190f2b4154895842"
-dependencies = [
- "indexmap 2.9.0",
- "proc-macro2",
- "quote",
- "regex",
- "syn 2.0.100",
 ]
 
 [[package]]
@@ -1448,6 +1429,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 0.26.8",
 ]
 
 [[package]]
@@ -1730,43 +1712,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "klickhouse"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f54188349939b1505dee5d42a51ea0c86de59b41656f1a92932ea98cf3b7b7d8"
-dependencies = [
- "chrono",
- "chrono-tz",
- "cityhash-rs",
- "compiler-tools",
- "compiler-tools-derive",
- "futures-util",
- "indexmap 2.9.0",
- "klickhouse_derive",
- "log",
- "lz4",
- "paste",
- "rustc_version",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "tokio",
- "tokio-stream",
- "uuid",
-]
-
-[[package]]
-name = "klickhouse_derive"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12cd36350e8478be1c63ee0c86f10db751f11eed836e6963dd3faae8e55e93d1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.100",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1914,25 +1859,6 @@ name = "log"
 version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
-
-[[package]]
-name = "lz4"
-version = "1.28.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a20b523e860d03443e98350ceaac5e71c6ba89aea7d960769ec3ce37f4de5af4"
-dependencies = [
- "lz4-sys",
-]
-
-[[package]]
-name = "lz4-sys"
-version = "1.11.1+lz4-1.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
-dependencies = [
- "cc",
- "libc",
-]
 
 [[package]]
 name = "lz4_flex"

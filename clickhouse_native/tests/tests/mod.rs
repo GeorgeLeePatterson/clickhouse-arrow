@@ -3,14 +3,13 @@ pub mod compat;
 pub mod native;
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, LazyLock};
 
-use clickhouse_native::test_utils::ClickHouseContainer;
+use clickhouse_native::test_utils::{self, ClickHouseContainer};
 use futures_util::FutureExt;
-use tracing::debug;
+use tracing::{debug, error};
 
-use super::common::init;
 use crate::common::constants::{DISABLE_CLEANUP_ENV, DISABLE_CLEANUP_ON_ERROR_ENV};
 
 /// Track how many tests have started and finished, for cleanup
@@ -43,7 +42,7 @@ pub async fn run_test_with_cleanup<F, Fut>(
     clickhouse_conf: Option<&str>,
 ) -> Result<(), Box<dyn std::any::Any + Send>>
 where
-    F: FnOnce(&'static ClickHouseContainer) -> Fut + Send + 'static,
+    F: FnOnce(Arc<ClickHouseContainer>) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     let disable_cleanup = std::env::var(DISABLE_CLEANUP_ENV)
@@ -55,23 +54,22 @@ where
         .is_some_and(|e| e.eq_ignore_ascii_case("true") || e == "1");
 
     // Initialize container and tracing
-    let ch = init(name, directives, clickhouse_conf).await;
-    let result = AssertUnwindSafe(test_fn(ch)).catch_unwind().await;
+    test_utils::init_tracing(directives);
+    let ch = test_utils::create_container(clickhouse_conf).await;
+
+    let result = AssertUnwindSafe(test_fn(Arc::clone(&ch))).catch_unwind().await;
 
     // Either path will not update TESTS_RUNNING, and will keep containers running
     if disable_cleanup || (disable_cleanup_on_error && result.is_err()) {
+        if result.is_err() {
+            error!(">>> Exiting test w/o shutdown: {name}");
+        } else {
+            debug!(">>> Exiting test w/o shutdown: {name}");
+        }
         return result;
     }
 
-    let running = TESTS_RUNNING.fetch_sub(1, Ordering::SeqCst);
+    ch.shutdown().await.expect("Shutting down container");
 
-    // Don't shutdown if other tests still running
-    if running == 1 {
-        debug!(">>> SHUTTING DOWN CONTAINER");
-        ch.shutdown().await.expect("Shutting down container");
-        return result;
-    }
-
-    debug!(">>> Exiting test w/o shutdown #{running}");
     result
 }

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::*;
 
+use crate::geo::normalize_geo_type;
 use crate::{ArrowOptions, Error, Result, Type};
 
 /// Type alias for schema conversions
@@ -87,7 +88,6 @@ pub(crate) fn schema_conversion(
     let field_nullable = field.is_nullable();
 
     let (strict_opts, conversion_opts) = generate_schema_options(options);
-
     // First convert the type to ensure base level compatibility then convert type.
     Ok(match conversions.and_then(|c| c.get(name)).map(Type::strip_null) {
         Some(Type::Enum8(values)) => {
@@ -105,6 +105,10 @@ pub(crate) fn schema_conversion(
                     "expected Date or Date32, found {type_}",
                 )));
             }
+            conv.clone()
+        }
+        // For schemas, preserve geo types
+        Some(conv @ (Type::Ring | Type::Point | Type::Polygon | Type::MultiPolygon)) => {
             conv.clone()
         }
         _ => arrow_to_ch_type(data_type, field_nullable, Some(strict_opts))?,
@@ -207,6 +211,7 @@ pub(crate) fn arrow_to_ch_type(
         tz.and_then(|s| chrono_tz::Tz::from_str(s).ok()).unwrap_or(chrono_tz::Tz::UTC)
     };
 
+    // Don't use wildcards here to ensure all types are handled explicitly.
     let inner_type = match data_type {
         DataType::Int8 => Type::Int8,
         DataType::Int16 => Type::Int16,
@@ -332,16 +337,27 @@ pub(crate) fn arrow_to_ch_type(
 }
 
 /// Convert a clickhouse [`Type`] to an arrow [`arrow::datatypes::DataType`].
+///
+/// This is exposed publicly to help with the conversion of `ClickHouse` types to `Arrow` types, for
+/// instance when trying to build an `Arrow` `Schema` that will be used to deserialize data. The
+/// internal `Type` representation drives deserialization, so this can be leveraged to align types
+/// across the `ClickHouse` `Arrow` boundary.
+///
+/// # Errors
+/// - Returns `Error::ArrowUnsupportedType` if the `ClickHouse` type is not supported by `Arrow`.
+/// - Returns `Error::TypeConversion` if the `ClickHouse` type cannot be converted to an `Arrow`
+///   type.
+///
+/// # Panics
+/// Should not panic, invariants are checked before conversion, unless arrow API changes.
 #[expect(clippy::too_many_lines)]
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_possible_wrap)]
-pub(crate) fn ch_to_arrow_type(
-    ch_type: &Type,
-    options: Option<ArrowOptions>,
-) -> Result<(DataType, bool)> {
+pub fn ch_to_arrow_type(ch_type: &Type, options: Option<ArrowOptions>) -> Result<(DataType, bool)> {
     let mut is_null = ch_type.is_nullable();
     let inner_type = ch_type.strip_null();
 
+    // Don't use wildcards here to ensure all types are handled explicitly.
     let arrow_type = match inner_type {
         // Primitives
         Type::Int8 => DataType::Int8,
@@ -370,6 +386,8 @@ pub(crate) fn ch_to_arrow_type(
         Type::FixedSizedString(len) | Type::FixedSizedBinary(len) => {
             DataType::FixedSizeBinary(*len as i32)
         }
+        Type::Binary => DataType::Binary,
+        Type::Object => DataType::Utf8,
         Type::Date32 | Type::Date => DataType::Date32,
         Type::DateTime(tz) => DataType::Timestamp(TimeUnit::Second, Some(Arc::from(tz.name()))),
         Type::DateTime64(p, tz) => match p {
@@ -385,9 +403,9 @@ pub(crate) fn ch_to_arrow_type(
         },
         Type::Ipv4 => DataType::FixedSizeBinary(4),
         Type::Array(inner_type) => {
-            if is_null && options.is_some_and(|o|
-                o.strict_schema && !o.nullable_array_default_empty
-            ) {
+            if is_null
+                && options.is_some_and(|o| o.strict_schema && !o.nullable_array_default_empty)
+            {
                 return Err(Error::TypeConversion(
                     "ClickHouse does not support nullable Arrays".to_string(),
                 ));
@@ -439,17 +457,16 @@ pub(crate) fn ch_to_arrow_type(
                 Box::new(DataType::Int32),
                 Box::new(ch_to_arrow_type(inner_type, options)?.0),
             )
-        },
+        }
         Type::Enum8(_) => DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8)),
         Type::Enum16(_) => {
             DataType::Dictionary(Box::new(DataType::Int16), Box::new(DataType::Utf8))
         }
-        Type::Binary
-        // TODO: Should anything special happen here?
-        | Type::Point | Type::Ring | Type::Polygon | Type::MultiPolygon => {
-            DataType::Binary
+        Type::Point | Type::Ring | Type::Polygon | Type::MultiPolygon => {
+            // Normalize Geo types first - Infallible due to enum check
+            let normalized = normalize_geo_type(ch_type).unwrap();
+            return ch_to_arrow_type(&normalized, options);
         }
-        Type::Object => DataType::Binary,
         // Unwrapped above
         Type::Nullable(_) => unreachable!(),
     };

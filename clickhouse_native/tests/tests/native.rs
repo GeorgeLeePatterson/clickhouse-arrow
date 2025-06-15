@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use clickhouse_native::prelude::*;
 use clickhouse_native::test_utils::ClickHouseContainer;
 use clickhouse_native::{CompressionMethod, CreateOptions, Result as ClickHouseResult};
@@ -8,7 +10,7 @@ use crate::common::header;
 use crate::common::native_helpers::*;
 
 /// # Panics
-pub async fn test_round_trip(ch: &'static ClickHouseContainer) {
+pub async fn test_round_trip(ch: Arc<ClickHouseContainer>) {
     let native_url = ch.get_native_url();
     debug!("ClickHouse Native URL: {native_url}");
 

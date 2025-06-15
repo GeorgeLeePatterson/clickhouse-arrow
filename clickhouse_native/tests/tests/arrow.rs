@@ -18,13 +18,23 @@ use crate::common::arrow_helpers::*;
 use crate::common::header;
 
 /// # Panics
-pub async fn test_round_trip_lz4(ch: &'static ClickHouseContainer) {
+pub async fn test_round_trip_lz4(ch: Arc<ClickHouseContainer>) {
     test_round_trip(ch, Some(CompressionMethod::LZ4)).await;
 }
 
 /// # Panics
-pub async fn test_round_trip_zstd(ch: &'static ClickHouseContainer) {
+pub async fn test_round_trip_zstd(ch: Arc<ClickHouseContainer>) {
     test_round_trip(ch, Some(CompressionMethod::ZSTD)).await;
+}
+
+/// # Panics
+pub async fn test_lz4_row_binary(ch: Arc<ClickHouseContainer>) {
+    test_row_binary(ch, Some(CompressionMethod::LZ4)).await;
+}
+
+/// # Panics
+pub async fn test_zstd_row_binary(ch: Arc<ClickHouseContainer>) {
+    test_row_binary(ch, Some(CompressionMethod::ZSTD)).await;
 }
 
 /// Test arrow e2e using `ClientBuilder`.
@@ -35,11 +45,8 @@ pub async fn test_round_trip_zstd(ch: &'static ClickHouseContainer) {
 /// 3. Strict schema's will be converted (when available).
 ///
 /// # Panics
-pub async fn test_round_trip(
-    ch: &'static ClickHouseContainer,
-    compression: Option<CompressionMethod>,
-) {
-    let (client, options) = bootstrap(ch, compression).await;
+pub async fn test_round_trip(ch: Arc<ClickHouseContainer>, compression: Option<CompressionMethod>) {
+    let (client, options) = bootstrap(ch.as_ref(), compression).await;
 
     // Create table with schema and enum mappings
     let schema = test_schema();
@@ -61,10 +68,110 @@ pub async fn test_round_trip(
     eprintln!("Client shutdown successfully");
 }
 
+/// Test arrow e2e row binary using `ClientBuilder`.
+///
+/// NOTES:
+/// 1. Strings as strings is used
+/// 2. Date32 for Date is used.
+/// 3. Strict schema's will be converted (when available).
+///
+/// # Panics
+pub async fn test_row_binary(ch: Arc<ClickHouseContainer>, compression: Option<CompressionMethod>) {
+    let http_port = ch.get_http_port();
+    let (client, options) = bootstrap_with_options(
+        ch.as_ref(),
+        compression,
+        Some(|builder: ClientBuilder| builder.with_http_options(|http| http.with_port(http_port))),
+    )
+    .await;
+
+    // Create table with schema and enum mappings
+    let schema = test_schema();
+
+    // Create test RecordBatch
+    let batch = test_record_batch();
+
+    // Create schema
+    let (db, table) = create_schema(&client, Arc::clone(&schema), &options)
+        .await
+        .expect("Schema creation failed");
+
+    let table_ref = format!("{db}.{table}");
+
+    let query_id = Qid::new();
+    header(query_id, format!("Inserting RecordBatch with {} rows", batch.num_rows()));
+    let query = format!("INSERT INTO {table_ref} FORMAT Native");
+    let result = client
+        .insert(&query, batch.clone(), Some(query_id))
+        .await
+        .inspect_err(|error| error!(?error, "Insertion failed: {query_id}"))
+        .expect("Insertion failed")
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<ClickHouseResult<Vec<_>>>()
+        .inspect_err(|error| error!(?error, "Failed to insert RecordBatch: {query_id}"))
+        .expect("Failed to insert RecordBatch");
+
+    drop(result);
+
+    // Sleep wait for data
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Query and verify results
+    let query_id = Qid::new();
+    header(query_id, format!("Querying table: {table_ref}"));
+    let query = format!("SELECT * FROM {table_ref}");
+    let queried_batches =
+        // Be sure to align the schema with the CreateOptions, namely SchemaConversions
+        client.query_http(
+            &query,
+            None,
+            schema,
+            options.schema_conversions().cloned(),
+            Some(query_id)
+        ).await.expect("Query failed");
+
+    arrow::util::pretty::print_batches(&queried_batches).expect("Print batches");
+
+    // Verify queried data matches inserted data
+    header(query_id, "Verifying queried data");
+    let inserted_batch = batch;
+
+    assert!(!queried_batches.is_empty(), "Expected data");
+
+    let total_rows = queried_batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    assert_eq!(total_rows, inserted_batch.num_rows(), "Row count mismatch");
+
+    for (i, col) in queried_batches[0].columns().iter().enumerate() {
+        let inserted_column = inserted_batch.column(i);
+        crate::roundtrip_exceptions!(
+            (col.data_type(), inserted_column.data_type()) => {
+                dict(k1, v1, _k2, _v2) => {{
+                    assert_dictionaries(i, col, inserted_column, k1, v1);
+                }};
+                list(field1, field2) => {{
+                    assert_lists(i, col, inserted_column, field1, field2);
+                }};
+                utc_default() => {{
+                    assert_datetimes_utf_default(col, inserted_column);
+                }};
+            };
+            _ => { assert_eq!(col, inserted_column, "Column {i} mismatch"); }
+        );
+    }
+
+    // Drop schema
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+
+    client.shutdown().await.unwrap();
+    eprintln!("Client shutdown successfully");
+}
+
 // Test arrow schema functions
 /// # Panics
-pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
-    let (client, options) = bootstrap(ch, None).await;
+pub async fn test_schema_utils(ch: Arc<ClickHouseContainer>) {
+    let (client, options) = bootstrap(ch.as_ref(), None).await;
 
     // Create table with schema and enum mappings
     let schema = test_schema();
@@ -127,8 +234,8 @@ pub async fn test_schema_utils(ch: &'static ClickHouseContainer) {
 }
 
 /// # Panics
-pub async fn test_execute_queries(ch: &'static ClickHouseContainer) {
-    let (client, _) = bootstrap(ch, None).await;
+pub async fn test_execute_queries(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap(ch.as_ref(), None).await;
 
     let settings_query = "SET allow_experimental_object_type = 1;";
 
@@ -167,16 +274,23 @@ pub async fn test_execute_queries(ch: &'static ClickHouseContainer) {
 }
 
 // Utility functions
-
 pub(super) async fn bootstrap(
-    ch: &'static ClickHouseContainer,
+    ch: &ClickHouseContainer,
     compression: Option<CompressionMethod>,
+) -> (ArrowClient, CreateOptions) {
+    bootstrap_with_options(ch, compression, None::<fn(ClientBuilder) -> ClientBuilder>).await
+}
+
+pub(super) async fn bootstrap_with_options(
+    ch: &ClickHouseContainer,
+    compression: Option<CompressionMethod>,
+    builder_options: Option<impl Fn(ClientBuilder) -> ClientBuilder>,
 ) -> (ArrowClient, CreateOptions) {
     let native_url = ch.get_native_url();
     debug!("ClickHouse Native URL: {native_url}");
 
     // Create ClientBuilder and ConnectionManager
-    let client = Client::<ArrowFormat>::builder()
+    let builder = Client::<ArrowFormat>::builder()
         .with_endpoint(native_url)
         .with_username(&ch.user)
         .with_password(&ch.password)
@@ -193,10 +307,15 @@ pub(super) async fn bootstrap(
                 .with_strict_schema(false)
                 .with_nullable_array_default_empty(true)
                 .with_disable_strict_schema_ddl(true),
-        )
-        .build()
-        .await
-        .expect("Building client");
+        );
+
+    let builder = if let Some(builder_options) = builder_options {
+        builder_options(builder)
+    } else {
+        builder
+    };
+
+    let client = builder.build().await.expect("Building client");
 
     // Settings allows converting from "default" types that are compatible
     let schema_conversions = HashMap::from_iter([

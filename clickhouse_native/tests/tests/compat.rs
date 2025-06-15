@@ -19,8 +19,8 @@ use crate::common::header;
 /// 3. Strict schema's will be converted (when available).
 ///
 /// # Panics
-pub async fn test_arrow_compat(ch: &'static ClickHouseContainer) {
-    let (client, options) = bootstrap(ch, None).await;
+pub async fn test_arrow_compat(ch: Arc<ClickHouseContainer>) {
+    let (client, options) = bootstrap(ch.as_ref(), None).await;
 
     let ids = vec![0, 1, 2];
     let names = vec!["John", "Jane", "Mary"];

@@ -1,18 +1,19 @@
+mod binary;
 mod enums;
 mod list;
 mod low_cardinality;
 mod map;
 mod null;
 mod primitive;
-mod string;
 mod tuple;
 
 use arrow::array::*;
 use arrow::datatypes::*;
 
 use crate::formats::SerializerState;
+use crate::geo::normalize_geo_type;
 use crate::io::ClickhouseWrite;
-use crate::{Error, Result, Type};
+use crate::{Result, Type};
 
 /// Trait for serializing Arrow arrays into ClickHouse's native protocol.
 ///
@@ -135,8 +136,12 @@ impl ClickhouseArrowSerializer for Type {
                 primitive::serialize(self, column, field, writer).await?;
             }
             // Strings/Binary
-            Type::String | Type::Binary | Type::FixedSizedString(_) | Type::FixedSizedBinary(_) => {
-                string::serialize(self, column, writer).await?;
+            Type::String
+            | Type::Binary
+            | Type::FixedSizedString(_)
+            | Type::FixedSizedBinary(_)
+            | Type::Object => {
+                binary::serialize(self, column, writer).await?;
             }
             // Dictionary-Like
             Type::Enum8(_) | Type::Enum16(_) => {
@@ -158,15 +163,20 @@ impl ClickhouseArrowSerializer for Type {
             Type::Tuple(_) => {
                 tuple::serialize(self, column, writer, state).await?;
             }
-            _ => {
-                return Err(Error::ArrowSerialize(format!("Unsupported type: {self:?}")));
+            Type::Ring | Type::Polygon | Type::Point | Type::MultiPolygon => {
+                // Type should be converted earlier, if not this is a fallback
+                let normalized = normalize_geo_type(base_type).unwrap();
+                normalized.serialize(writer, column, field, state).await?;
             }
+            // Null stripped above
+            Type::Nullable(_) => unreachable!(),
         }
 
         Ok(())
     }
 }
 
+// TODO: Remove - geo unit tests
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;

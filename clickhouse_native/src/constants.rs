@@ -7,7 +7,7 @@ pub(super) const CONN_READ_BUFFER_DEFAULT: usize = 1024 * 1024;
 pub(super) const CONN_WRITE_BUFFER_DEFAULT: usize = 10 * 1024 * 1024;
 
 // 8MB send and receive buffer sizes
-pub(super) const TCP_READ_BUFFER_SIZE: u32 = 16 * 1024; // 16KB
+pub(super) const TCP_READ_BUFFER_SIZE: u32 = 65536 * 2; // 16 * 1024; // 16KB
 pub(super) const TCP_WRITE_BUFFER_SIZE: u32 = 8 * 1024 * 1024; // 8MB
 // Connection, read, and write
 pub(super) const TCP_CONNECT_TIMEOUT: u64 = 30;

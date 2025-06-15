@@ -1,4 +1,3 @@
-#![expect(clippy::cast_possible_wrap)]
 #![expect(clippy::cast_possible_truncation)]
 /// Deserialization logic for `ClickHouse` primitive types into Arrow arrays.
 ///
@@ -20,12 +19,10 @@ use std::sync::Arc;
 use arrow::array::*;
 use arrow::datatypes::*;
 
+use crate::deserialize::DAYS_1900_TO_1970;
 use crate::formats::DeserializerState;
 use crate::io::ClickhouseRead;
 use crate::{Error, Result, Type};
-
-// For Date32: Days from 1900-01-01 to 1970-01-01
-const DAYS_1900_TO_1970: i32 = 25_567;
 
 /// Macro to deserialize primitive types into Arrow arrays.
 ///
@@ -43,22 +40,7 @@ const DAYS_1900_TO_1970: i32 = 25_567;
 /// - `builder => $builder`: Alternative syntax for builders requiring initialization (e.g.,
 ///   `TimestampSecondBuilder` with timezone).
 macro_rules! deserialize_primitive {
-    ($builder_type:ty, $rows:expr, $null_mask:expr, { $st:expr }) => {{
-        #[allow(unused_imports)]
-        use ::tokio::io::AsyncReadExt as _;
-
-        let mut builder = <$builder_type>::with_capacity($rows);
-        for i in 0..$rows {
-            let value = $st;
-            if $null_mask.is_empty() || $null_mask[i] == 0 {
-                builder.append_value(value);
-            } else {
-                builder.append_null();
-            }
-        }
-        Ok(::std::sync::Arc::new(builder.finish()) as ArrayRef)
-    }};
-    (builder => $builder:expr, $rows:expr, $null_mask:expr, { $st:expr }) => {{
+    ($builder:expr, $rows:expr, $null_mask:expr, { $st:expr }) => {{
         #[allow(unused_imports)]
         use ::tokio::io::AsyncReadExt as _;
 
@@ -71,7 +53,20 @@ macro_rules! deserialize_primitive {
             }
         }
         Ok(::std::sync::Arc::new($builder.finish()) as ArrayRef)
-    }};
+    }}; /* (builder => $builder:expr, $rows:expr, $null_mask:expr, { $st:expr }) => {{
+         *     #[allow(unused_imports)]
+         *     use ::tokio::io::AsyncReadExt as _; */
+
+        /*     for i in 0..$rows {
+         *         let value = $st;
+         *         if $null_mask.is_empty() || $null_mask[i] == 0 {
+         *             $builder.append_value(value);
+         *         } else {
+         *             $builder.append_null();
+         *         }
+         *     }
+         *     Ok(::std::sync::Arc::new($builder.finish()) as ArrayRef)
+         * }}; */
 }
 
 /// Deserializes a `ClickHouse` primitive type into an Arrow array.
@@ -138,64 +133,56 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
     match type_hint.strip_null() {
         // Numeric, DateTime, Decimal
         Type::Int8 => {
-            deserialize_primitive!(PrimitiveBuilder<Int8Type>, rows, null_mask, {
-                { reader.read_i8().await? }
-            })
+            let mut builder = PrimitiveBuilder::<Int8Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { { reader.read_i8().await? } })
         }
         Type::Int16 => {
-            deserialize_primitive!(PrimitiveBuilder<Int16Type>, rows, null_mask, {
-                reader.read_i16_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<Int16Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_i16_le().await? })
         }
         Type::Int32 => {
-            deserialize_primitive!(PrimitiveBuilder<Int32Type>, rows, null_mask, {
-                reader.read_i32_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<Int32Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_i32_le().await? })
         }
         Type::Int64 => {
-            deserialize_primitive!(PrimitiveBuilder<Int64Type>, rows, null_mask, {
-                reader.read_i64_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<Int64Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_i64_le().await? })
         }
         Type::UInt8 => {
-            deserialize_primitive!(PrimitiveBuilder<UInt8Type>, rows, null_mask, {
-                reader.read_u8().await?
-            })
+            let mut builder = PrimitiveBuilder::<UInt8Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_u8().await? })
         }
         Type::UInt16 => {
-            deserialize_primitive!(PrimitiveBuilder<UInt16Type>, rows, null_mask, {
-                reader.read_u16_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<UInt16Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_u16_le().await? })
         }
         Type::UInt32 => {
-            deserialize_primitive!(PrimitiveBuilder<UInt32Type>, rows, null_mask, {
-                reader.read_u32_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<UInt32Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_u32_le().await? })
         }
         Type::UInt64 => {
-            deserialize_primitive!(PrimitiveBuilder<UInt64Type>, rows, null_mask, {
-                reader.read_u64_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<UInt64Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_u64_le().await? })
         }
         Type::Float32 => {
-            deserialize_primitive!(PrimitiveBuilder<Float32Type>, rows, null_mask, {
-                reader.read_f32_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<Float32Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_f32_le().await? })
         }
         Type::Float64 => {
-            deserialize_primitive!(PrimitiveBuilder<Float64Type>, rows, null_mask, {
-                reader.read_f64_le().await?
-            })
+            let mut builder = PrimitiveBuilder::<Float64Type>::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, { reader.read_f64_le().await? })
         }
         Type::Date => {
-            deserialize_primitive!(Date32Builder, rows, null_mask, {
+            let mut builder = Date32Builder::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, {
                 {
                     reader.read_u16_le().await.map(i32::from)? // Cast to i32 for Arrow Date32
                 }
             })
         }
         Type::Date32 => {
-            deserialize_primitive!(Date32Builder, rows, null_mask, {
+            let mut builder = Date32Builder::with_capacity(rows);
+            deserialize_primitive!(&mut builder, rows, null_mask, {
                 {
                     let days = reader.read_i32_le().await?;
                     days - DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
@@ -205,114 +192,88 @@ pub(crate) async fn deserialize<R: ClickhouseRead>(
         Type::DateTime(tz) => {
             let mut b =
                 TimestampSecondBuilder::with_capacity(rows).with_timezone(Arc::from(tz.name()));
-            deserialize_primitive!(builder => &mut b, rows, null_mask, {
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
                     reader.read_u32_le().await.map(i64::from)? // Cast to i64 for Arrow TimestampSecond
                 }
             })
         }
-        Type::DateTime64(3, tz) => {
+        Type::DateTime64(0, tz) => {
             let mut b = TimestampMillisecondBuilder::with_capacity(rows)
                 .with_timezone(Arc::from(tz.name()));
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        reader.read_u64_le().await.map(|v| v as i64)? // Cast to i64 for Arrow TimestampMillisecond
-                    }
+                    reader.read_i64_le().await? // Cast to i64 for Arrow TimestampMillisecond
                 }
-            )
+            })
         }
-        Type::DateTime64(6, tz) => {
+        Type::DateTime64(1..=3, tz) => {
+            let mut b = TimestampMillisecondBuilder::with_capacity(rows)
+                .with_timezone(Arc::from(tz.name()));
+            deserialize_primitive!(&mut b, rows, null_mask, {
+                {
+                    reader.read_i64_le().await? // Cast to i64 for Arrow TimestampMillisecond
+                }
+            })
+        }
+        Type::DateTime64(4..=6, tz) => {
             let mut b = TimestampMicrosecondBuilder::with_capacity(rows)
                 .with_timezone(Arc::from(tz.name()));
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        reader.read_u64_le().await.map(|v| v as i64)? // Cast to i64 for Arrow TimestampMicrosecond
-                    }
+                    reader.read_i64_le().await? // Cast to i64 for Arrow TimestampMicrosecond
                 }
-            )
+            })
         }
-        Type::DateTime64(9, tz) => {
+        Type::DateTime64(7..=9, tz) => {
             let mut b =
                 TimestampNanosecondBuilder::with_capacity(rows).with_timezone(Arc::from(tz.name()));
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        reader.read_u64_le().await.map(|v| v as i64)? // Cast to i64 for Arrow TimestampNanosecond
-                    }
+                    reader.read_i64_le().await? // Cast to i64 for Arrow TimestampNanosecond
                 }
-            )
+            })
         }
         Type::Decimal32(s) => {
             let mut b =
                 Decimal128Builder::with_capacity(rows).with_precision_and_scale(9, *s as i8)?;
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        reader.read_i32_le().await.map(i128::from)? // Decimal128
-                    }
+                    reader.read_i32_le().await.map(i128::from)? // Decimal128
                 }
-            )
+            })
         }
         Type::Decimal64(s) => {
             let mut b =
                 Decimal128Builder::with_capacity(rows).with_precision_and_scale(18, *s as i8)?;
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        reader.read_i64_le().await.map(i128::from)? // Decimal128
-                    }
+                    reader.read_i64_le().await.map(i128::from)? // Decimal128
                 }
-            )
+            })
         }
         Type::Decimal128(s) => {
             let mut b =
                 Decimal128Builder::with_capacity(rows).with_precision_and_scale(38, *s as i8)?;
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        let mut buf = [0u8; 16];
-                        let _ = reader.read_exact(&mut buf).await?;
-                        i128::from_le_bytes(buf)
-                    }
+                    let mut buf = [0u8; 16];
+                    let _ = reader.read_exact(&mut buf).await?;
+                    i128::from_le_bytes(buf)
                 }
-            )
+            })
         }
         Type::Decimal256(s) => {
             let mut b =
                 Decimal256Builder::with_capacity(rows).with_precision_and_scale(76, *s as i8)?;
-            deserialize_primitive!(
-                builder => &mut b,
-                rows,
-                null_mask,
+            deserialize_primitive!(&mut b, rows, null_mask, {
                 {
-                    {
-                        let mut buf = [0u8; 32];
-                        let _ = reader.read_exact(&mut buf).await?;
-                        buf.reverse();
-                        i256::from_le_bytes(buf)
-                    }
+                    let mut buf = [0u8; 32];
+                    let _ = reader.read_exact(&mut buf).await?;
+                    buf.reverse();
+                    i256::from_le_bytes(buf)
                 }
-            )
+            })
         }
         _ => Err(Error::ArrowDeserialize(format!("Expected primitive, got {type_hint:?}"))),
     }

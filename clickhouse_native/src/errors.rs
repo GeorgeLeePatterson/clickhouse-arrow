@@ -98,6 +98,11 @@ pub enum Error {
     ArrowTypeMismatch { expected: String, provided: String },
     #[error("Unsupported arrow type: {0}")]
     ArrowUnsupportedType(String),
+
+    // RowBinary
+    #[cfg(feature = "row_binary")]
+    #[error(transparent)]
+    RowBinaryRead(#[from] bytes::TryGetError),
 }
 
 impl Error {

@@ -1,6 +1,5 @@
 use std::env;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -8,7 +7,7 @@ use testcontainers::core::{IntoContainerPort, Mount};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt, TestcontainersError};
 use tokio::sync::RwLock;
-use tokio::time::{Instant, sleep};
+use tokio::time::sleep;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error};
 use tracing_subscriber::EnvFilter;
@@ -101,37 +100,11 @@ pub async fn get_or_create_container(conf: Option<&str>) -> &'static Arc<ClickHo
 
 /// # Panics
 /// You bet it panics. Better be careful.
-pub async fn get_or_create_container_multi(
-    name: &str,
-    flag: &AtomicU8,
-    conf: Option<&str>,
-) -> &'static Arc<ClickHouseContainer> {
-    if let Some(c) = CONTAINER.get() {
-        c
-    } else {
-        if flag.fetch_add(1, Ordering::SeqCst) == 0 {
-            debug!(">>> ({name}) Setting start flag for container");
-            let ch = ClickHouseContainer::try_new(conf)
-                .await
-                .expect("Failed to initialize ClickHouse container");
-            return CONTAINER.get_or_init(|| Arc::new(ch));
-        }
-
-        let max = Duration::from_secs(5);
-        let start = Instant::now();
-        loop {
-            if let Some(c) = CONTAINER.get() {
-                debug!(">>> ({name}) Container set, returning");
-                return c;
-            }
-
-            assert!(
-                max.checked_sub(start.elapsed()).is_some(),
-                "Timeout during get or create of ClickHouseContainer"
-            );
-            sleep(Duration::from_millis(100)).await;
-        }
-    }
+pub async fn create_container(conf: Option<&str>) -> Arc<ClickHouseContainer> {
+    let ch = ClickHouseContainer::try_new(conf)
+        .await
+        .expect("Failed to initialize ClickHouse container");
+    Arc::new(ch)
 }
 
 pub struct ClickHouseContainer {
