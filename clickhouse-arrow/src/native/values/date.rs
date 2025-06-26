@@ -6,7 +6,7 @@ use chrono_tz::{Tz, UTC};
 
 use crate::{Error, FromSql, Result, ToSql, Type, Value, unexpected_type};
 
-/// Wrapper type for ClickHouse `Date` type.
+/// Wrapper type for `ClickHouse` `Date` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
 pub struct Date(pub u16);
 
@@ -152,7 +152,7 @@ impl From<Date32> for NaiveDate {
     }
 }
 
-/// Wrapper type for ClickHouse `DateTime` type.
+/// Wrapper type for `ClickHouse` `DateTime` type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DateTime(pub Tz, pub u32);
 
@@ -327,11 +327,11 @@ impl TryFrom<chrono::DateTime<Utc>> for DateTime {
     }
 }
 
-/// Wrapper type for ClickHouse `DateTime64` type.
+/// Wrapper type for `ClickHouse` `DateTime64` type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DateTime64<const PRECISION: usize>(pub Tz, pub u64);
 
-/// Wrapper type for ClickHouse `DateTime64` type with dynamic precision.
+/// Wrapper type for `ClickHouse` `DateTime64` type with dynamic precision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DynDateTime64(pub Tz, pub u64, pub usize);
 

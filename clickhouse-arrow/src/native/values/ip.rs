@@ -4,7 +4,7 @@ use std::ops::Deref;
 
 use super::*;
 
-/// Wrapper type for ClickHouse `IPv4` type.
+/// Wrapper type for `ClickHouse` `IPv4` type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Ipv4(pub Ipv4Addr);
@@ -31,7 +31,7 @@ impl Default for Ipv4 {
     fn default() -> Self { Self(Ipv4Addr::UNSPECIFIED) }
 }
 
-/// Wrapper type for ClickHouse `IPv6` type.
+/// Wrapper type for `ClickHouse` `IPv6` type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Ipv6(pub Ipv6Addr);

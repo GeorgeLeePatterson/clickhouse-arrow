@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::{FromSql, Result, ToSql, Type, Value, unexpected_type};
 
-/// Wrapper type for ClickHouse `Int256` type.
+/// Wrapper type for `ClickHouse` `Int256` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
 #[allow(non_camel_case_types)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -158,7 +158,7 @@ impl std::ops::Mul<i256> for i256 {
     }
 }
 
-/// Wrapper type for ClickHouse `UInt256` type.
+/// Wrapper type for `ClickHouse` `UInt256` type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[allow(non_camel_case_types)]

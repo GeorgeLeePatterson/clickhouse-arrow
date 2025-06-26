@@ -11,7 +11,7 @@ pub mod unit_value;
 /// Type alias for the definition of a column for schema creation
 pub type ColumnDefinition<T = Value> = (String, Type, Option<T>);
 
-/// A type that can be converted to a raw ClickHouse SQL value.
+/// A type that can be converted to a raw `ClickHouse` SQL value.
 pub trait ToSql {
     /// # Errors
     fn to_sql(self, type_hint: Option<&Type>) -> Result<Value>;
@@ -25,7 +25,7 @@ pub fn unexpected_type(type_: &Type) -> Error {
     Error::DeserializeError(format!("unexpected type: {type_}"))
 }
 
-/// A type that can be converted from a raw ClickHouse SQL value.
+/// A type that can be converted from a raw `ClickHouse` SQL value.
 pub trait FromSql: Sized {
     /// # Errors
     fn from_sql(type_: &Type, value: Value) -> Result<Self>;
@@ -35,7 +35,7 @@ impl FromSql for Value {
     fn from_sql(_type_: &Type, value: Value) -> Result<Self> { Ok(value) }
 }
 
-/// A row that can be deserialized and serialized from a raw ClickHouse SQL value.
+/// A row that can be deserialized and serialized from a raw `ClickHouse` SQL value.
 /// Generally this is not implemented manually, but using `clickhouse_arrow_derive::Row`,
 /// i.e. `#[derive(clickhouse_arrow::Row)]`.
 ///

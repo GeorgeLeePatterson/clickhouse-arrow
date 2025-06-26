@@ -1,4 +1,4 @@
-# 🛰️ ClickHouse Native for Rust
+# 🛰️ ClickHouse Arrow Client for Rust
 
 This workspace provides a modern, efficient Rust client for `ClickHouse` using the native protocol with flexible data handling capabilities.
 
@@ -23,7 +23,7 @@ The `Row` macro. Procedural macros to (de)serialize rust data types into `ClickH
 
 For detailed documentation and examples, please refer to the library crate's README:
 
-- [ClickHouse Native Client Documentation](./clickhouse-arrow/README.md)
+- [ClickHouse Arrow Client Documentation](./clickhouse-arrow/README.md)
 
 ## Example Usage
 

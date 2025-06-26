@@ -23,7 +23,7 @@ use crate::formats::{DeserializerState, SerializerState};
 use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::{Date32, Error, Result};
 
-/// A raw ClickHouse type.
+/// A raw `ClickHouse` type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Type {

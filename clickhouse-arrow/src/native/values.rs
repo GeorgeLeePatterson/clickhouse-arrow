@@ -270,7 +270,7 @@ impl Value {
     /// Returns an error if the conversion fails.
     pub fn from_value<T: ToSql>(value: T) -> Result<Self> { value.to_sql(None) }
 
-    /// Guesses a [`Type`] from the value, may not correspond to actual column type in ClickHouse
+    /// Guesses a [`Type`] from the value, may not correspond to actual column type in `ClickHouse`
     pub fn guess_type(&self) -> Type {
         match self {
             Value::Int8(_) => Type::Int8,
