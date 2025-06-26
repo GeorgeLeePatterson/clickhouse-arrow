@@ -1,5 +1,5 @@
 [workspace]
-members = ["clickhouse_native", "clickhouse_native_derive"]
+members = ["clickhouse-arrow", "clickhouse-arrow-derive"]
 resolver = "3"
 
 [workspace.package]

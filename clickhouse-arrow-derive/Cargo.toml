@@ -1,0 +1,12 @@
+[package]
+name = "clickhouse-arrow-derive"
+version = "0.2.0"
+edition.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1.0"
+syn = "2"

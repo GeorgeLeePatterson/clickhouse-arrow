@@ -27,12 +27,12 @@ test-integration test_name:
 
 coverage:
     cargo llvm-cov --html \
-     --ignore-filename-regex "(clickhouse_native_derive|errors|error_codes|examples|test_utils).*" \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-dir coverage -F test_utils --open
 
 # --- DOCS ---
 docs:
-    cd clickhouse_native && cargo doc --open
+    cd clickhouse-arrow && cargo doc --open
 
 # --- BENCHES ---
 [confirm('Delete all benchmark reports?')]
@@ -40,22 +40,22 @@ clear-benches:
     rm -rf target/criterion/*
 
 bench:
-    cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench --profile=release -F test_utils && \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release -F test_utils && \
      open ../target/criterion/report/index.html
 
 bench-lto:
-    cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test_utils && \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test_utils && \
      open ../target/criterion/report/index.html
 
 bench-one bench:
-    cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
      --profile=release \
      -F test_utils \
      --bench "{{ bench }}" && \
      open ../target/criterion/report/index.html
 
 bench-one-lto bench:
-    cd clickhouse_native && RUST_LOG={{ LOG }} cargo bench \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
      --profile=release-lto \
      -F test_utils \
      --bench "{{ bench }}" && \
@@ -63,19 +63,19 @@ bench-one-lto bench:
 
 # --- EXAMPLES ---
 debug-profile example:
-    cd clickhouse_native && RUSTFLAGS='-g' cargo build \
+    cd clickhouse-arrow && RUSTFLAGS='-g' cargo build \
      -F test_utils \
      --example "{{ example }}"
 
 release-debug example:
-    cd clickhouse_native && RUSTFLAGS='-g' cargo build \
+    cd clickhouse-arrow && RUSTFLAGS='-g' cargo build \
      --profile=release-with-debug \
      -F test_utils \
      --example "{{ example }}"
     codesign -s - -v -f --entitlements assets/mac.entitlements "target/release-with-debug/examples/{{ example }}"
 
 release-lto example:
-    cd clickhouse_native && cargo build \
+    cd clickhouse-arrow && cargo build \
      --profile=release-lto \
      -F test_utils \
      --example "{{ example }}"
@@ -89,6 +89,9 @@ example-lto example *args='':
 
 example-debug example *args='':
     cargo run -F test_utils --example "{{ example }}" -- "{{ args }}"
+
+example-release-debug example *args='':
+    cargo run --profile=release-with-debug -F test_utils --example "{{ example }}" -- "{{ args }}"
 
 examples *args='':
     @for ex in {{ examples }}; do \
@@ -115,18 +118,33 @@ samply example *args='': (release-debug example)
 check-features *ARGS=features:
     @echo "Checking no features..."
     cargo clippy --no-default-features --all-targets
+    @echo "Building no features..."
+    cargo check --no-default-features --all-targets
     @echo "Checking default features..."
     cargo clippy --all-targets
+    @echo "Building default features..."
+    cargo check --all-targets
     @echo "Checking all features..."
     cargo clippy --all-features --all-targets
+    @echo "Building all features..."
+    cargo check --all-features --all-targets
+    @echo "Checking each feature..."
     @for feature in {{ ARGS }}; do \
-        echo "Checking feature: $feature"; \
+        echo "Checking & Building feature: $feature"; \
         cargo clippy --no-default-features --features $feature --all-targets; \
+        cargo check --no-default-features --features $feature --all-targets; \
+    done
+    @echo "Checking each feature with defaults..."
+    @for feature in {{ ARGS }}; do \
+        echo "Checking feature (with defaults): $feature"; \
+        cargo clippy --features $feature --all-targets; \
+        cargo check --features $feature --all-targets; \
     done
     @echo "Checking all provided features..."
     cargo clippy --no-default-features --features "{{ ARGS }}" --all-targets
+    cargo check --no-default-features --features "{{ ARGS }}" --all-targets
 
 fmt:
     @echo "Running rustfmt..."
-    # cd clickhouse_native && cargo +nightly fmt --all --check
+    # cd clickhouse-arrow && cargo +nightly fmt --all --check
     cargo +nightly fmt --check -- --config-path ./rustfmt.toml
