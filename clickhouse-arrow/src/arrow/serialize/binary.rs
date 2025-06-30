@@ -4,7 +4,7 @@ use tokio::io::AsyncWriteExt;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
-/// Serializes an Arrow array to ClickHouse’s native format for string or binary types.
+/// Serializes an Arrow array to `ClickHouse`’s native format for string or binary types.
 ///
 /// Dispatches to specialized serialization functions based on the `Type` variant:
 /// - `String`: Serializes variable-length strings with length prefixes using `write_string_values`.

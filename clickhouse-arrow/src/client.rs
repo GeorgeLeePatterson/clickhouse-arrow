@@ -1385,7 +1385,7 @@ impl Client<NativeFormat> {
         stream.next().await.transpose()
     }
 
-    /// Creates a ClickHouse table from a Rust struct that implements the `Row` trait.
+    /// Creates a `ClickHouse` table from a Rust struct that implements the `Row` trait.
     ///
     /// This method generates and executes a `CREATE TABLE` DDL statement based on the
     /// structure of the provided `Row` type. The table schema is automatically derived

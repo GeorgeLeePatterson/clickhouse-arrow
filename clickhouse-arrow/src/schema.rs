@@ -276,6 +276,8 @@ impl CreateOptions {
                 )));
             }
 
+            // TODO: Remove this lint when let chains is stable
+            #[allow(clippy::collapsible_if)]
             // Validate sampling
             if let Some(sample) = self.sampling.as_ref() {
                 if !order_by.iter().any(|o| sample.contains(o.as_str())) {

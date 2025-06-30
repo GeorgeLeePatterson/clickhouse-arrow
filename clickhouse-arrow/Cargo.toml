@@ -90,21 +90,12 @@ arc-swap = { version = "1", optional = true }
 bb8 = { version = "0.9", optional = true }
 clickhouse-arrow-derive = { version = "0.1.0", optional = true, path = "../clickhouse-arrow-derive" }
 geo-types = { version = "0.7", optional = true }
-hyper = { version = "1", features = ["http1", "client"], optional = true }
-hyper-util = { version = "0.1", features = ["tokio", "client-legacy"], optional = true }
-hyper-rustls = { version = "0.27", default-features = false, features = [
-    "http1",
-    "tls12",
-    "aws-lc-rs",
-    "webpki-roots"
-], optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 testcontainers = { version = "0.24", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
-url = { version = "2", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.6", features = ["async_tokio", "html_reports"] }

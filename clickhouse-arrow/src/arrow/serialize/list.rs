@@ -1,7 +1,7 @@
 /// Serialization logic for `ClickHouse` `Array` types from Arrow list arrays.
 ///
 /// This module provides functions to serialize Arrow `ListArray`, `ListViewArray`,
-/// `LargeListArray`, `LargeListViewArray`, and `FixedSizeListArray` into ClickHouse’s native
+/// `LargeListArray`, `LargeListViewArray`, and `FixedSizeListArray` into `ClickHouse`’s native
 /// format for the `Array` type. It is used by the `ClickHouseArrowSerializer` implementation
 /// in `types.rs` to handle nested data structures.
 ///
@@ -71,7 +71,7 @@ fn unwrap_array_data_type(dt: &DataType) -> Result<&DataType> {
 }
 
 /// Serializes an Arrow `ListArray`, `ListViewArray`, `LargeListArray`, `LargeListViewArray`, or
-/// `FixedSizeListArray` to ClickHouse’s native format for `Array` types.
+/// `FixedSizeListArray` to `ClickHouse`’s native format for `Array` types.
 ///
 /// Writes offsets (variable-length for `ListArray`, computed for `FixedSizeListArray`) followed by
 /// serialized inner values. The inner values are serialized using the provided `inner_type` and

@@ -7,7 +7,7 @@ use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
-/// Serializes an Arrow `MapArray` to ClickHouse’s native format for `Map` types.
+/// Serializes an Arrow `MapArray` to `ClickHouse`’s native format for `Map` types.
 ///
 /// This function writes the `Map` data by serializing the key and value arrays separately, preceded
 /// by offsets indicating the total length of key-value pairs for each map entry. It follows the

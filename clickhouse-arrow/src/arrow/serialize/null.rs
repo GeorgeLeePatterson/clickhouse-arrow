@@ -1,4 +1,4 @@
-/// Serialization logic for nullability bitmaps in ClickHouse’s native format.
+/// Serialization logic for nullability bitmaps in `ClickHouse`’s native format.
 ///
 /// This module provides a function to serialize nullability bitmaps for Arrow arrays, used by
 /// the `ClickHouseArrowSerializer` implementation in `types.rs` for nullable types. It writes
@@ -26,7 +26,7 @@ use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Result, Type};
 
-/// Serializes the nullability bitmap for an Arrow array to ClickHouse’s native format.
+/// Serializes the nullability bitmap for an Arrow array to `ClickHouse`’s native format.
 ///
 /// Writes a bitmap where `1` indicates a null value and `0` indicates a non-null value. If the
 /// array has a null buffer, it constructs the bitmap based on valid indices. If no null buffer

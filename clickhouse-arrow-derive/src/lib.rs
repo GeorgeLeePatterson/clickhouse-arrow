@@ -1,3 +1,6 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::uninlined_format_args)]
+
 #[macro_use]
 extern crate syn;
 #[macro_use]

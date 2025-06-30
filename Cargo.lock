@@ -767,9 +767,6 @@ dependencies = [
  "criterion",
  "futures-util",
  "geo-types",
- "hyper",
- "hyper-rustls",
- "hyper-util",
  "indexmap 2.9.0",
  "lz4_flex",
  "opentelemetry-semantic-conventions",
@@ -791,7 +788,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
- "url",
  "uuid",
  "webpki-roots 1.0.0",
  "zstd",
@@ -1454,7 +1450,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.0",
 ]
 
 [[package]]

@@ -116,13 +116,13 @@ impl<T: ClientFormat> ConnectionManager<T> {
     /// Creates a new connection manager for the pool.
     ///
     /// This method builds a `ConnectionManager` that the pool will use to create
-    /// and manage connections to ClickHouse. Each connection will be built using
+    /// and manage connections to `ClickHouse`. Each connection will be built using
     /// the provided destination, options, and settings.
     ///
     /// # Arguments
-    /// * `destination` - The ClickHouse server address (host:port or socket address)
+    /// * `destination` - The `ClickHouse` server address (host:port or socket address)
     /// * `options` - Client configuration options
-    /// * `settings` - Optional ClickHouse settings to apply to all connections
+    /// * `settings` - Optional `ClickHouse` settings to apply to all connections
     /// * `span` - Optional tracing span ID for distributed tracing
     ///
     /// # Errors
@@ -263,6 +263,8 @@ impl ExponentialBackoff {
     pub fn next_backoff(&mut self) -> Option<Duration> {
         self.attempts += 1;
 
+        // TODO: Remove this lint when let chains is stable
+        #[allow(clippy::collapsible_if)]
         if let Some(max_time) = self.max_elapsed_time {
             if self.current_interval * self.attempts > max_time {
                 return None;

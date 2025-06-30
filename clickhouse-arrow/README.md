@@ -10,7 +10,7 @@ Currently supports revision `54477`, `DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZ
 [![Build Status](https://img.shields.io/github/actions/workflow/status/GeorgeLeePatterson/clickhouse-arrow/ci.yml?branch=main)](https://github.com/GeorgeLeePatterson/clickhouse-arrow/actions)
 [![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/GeorgeLeePatterson/clickhouse-arrow)
 
-A high-performance, async Rust client for ClickHouse with native Arrow integration. Designed to be faster and more memory-efficient than existing alternatives.
+A high-performance, async Rust client for `ClickHouse` with native Arrow integration. Designed to be faster and more memory-efficient than existing alternatives.
 
 ## Why clickhouse-arrow?
 
@@ -19,7 +19,7 @@ A high-performance, async Rust client for ClickHouse with native Arrow integrati
 - **📊 90%+ Test Coverage**: Comprehensive test suite ensuring reliability
 - **🔄 Async/Await**: Modern async API built on Tokio
 - **🗜️ Compression**: LZ4 and ZSTD support for efficient data transfer
-- **☁️ Cloud Ready**: Full ClickHouse Cloud compatibility
+- **☁️ Cloud Ready**: Full `ClickHouse` Cloud compatibility
 - **🛡️ Type Safe**: Compile-time type checking with the `#[derive(Row)]` macro
 
 ## Details
@@ -40,7 +40,7 @@ Uses internal types and custom traits if a dependency on arrow is not required.
 
 #### Creating Tables from Arrow Schemas
 
-`clickhouse-arrow` provides powerful DDL capabilities through `CreateOptions`, allowing you to create ClickHouse tables directly from Arrow schemas:
+`clickhouse-arrow` provides powerful DDL capabilities through `CreateOptions`, allowing you to create `ClickHouse` tables directly from Arrow schemas:
 
 ```rust
 use clickhouse_arrow::{Client, ArrowFormat, CreateOptions};
@@ -127,13 +127,13 @@ let map_type = DataType::Map(
 );
 ```
 
-These constants ensure your Arrow schemas align with ClickHouse's expectations and maintain compatibility with arrow-rs conventions.
+These constants ensure your Arrow schemas align with `ClickHouse`'s expectations and maintain compatibility with arrow-rs conventions.
 
 ## Performance & Benchmarks
 
 ### Benchmark Results
 
-The following benchmarks were run on [TODO: Remove - Add your machine specs, e.g., M2 MacBook Pro, 16GB RAM]:
+The following benchmarks were run on [TODO: Remove - Add your machine specs, e.g., M2 `MacBook` Pro, 16GB RAM]:
 
 #### Insert Performance
 ```

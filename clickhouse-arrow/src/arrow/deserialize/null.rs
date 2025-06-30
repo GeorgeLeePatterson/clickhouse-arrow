@@ -1,6 +1,6 @@
 /// Deserialization logic for `ClickHouse` `Nullable` types into Arrow arrays.
 ///
-/// This module provides a function to deserialize ClickHouse’s native format for `Nullable`
+/// This module provides a function to deserialize `ClickHouse`’s native format for `Nullable`
 /// types into Arrow arrays, handling nullability for any inner type (e.g., `Nullable(Int32)`,
 /// `Nullable(String)`, `Nullable(Array(T))`). It is used by the `ClickHouseArrowDeserializer`
 /// implementation in `deserialize.rs` to process nullable columns.

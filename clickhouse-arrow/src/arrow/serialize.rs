@@ -59,7 +59,7 @@ pub(crate) trait ClickHouseArrowSerializer {
     ) -> Result<()>;
 }
 
-/// Serialize an Arrow [`Field`] to ClickHouse’s native format.
+/// Serialize an Arrow [`Field`] to `ClickHouse`’s native format.
 ///
 /// This implementation dispatches serialization to specialized modules based on the `Type` variant:
 /// - Nullable types: Writes nullability bitmaps via `null::write_nullability`.

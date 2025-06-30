@@ -142,7 +142,7 @@ pub(super) use primitive_async;
 /// `Float64`), date/time types (`Date`, `DateTime`, `DateTime64`), and decimal types
 /// (`Decimal32`, `Decimal64`, `Decimal128`, `Decimal256`). Handles nullability via the provided
 /// null mask (`1`=null, `0`=non-null), producing default values (e.g., `0` for numeric types,
-/// zeroed buffers for decimals) for nulls. Aligns with ClickHouse’s native format, using
+/// zeroed buffers for decimals) for nulls. Aligns with `ClickHouse`’s native format, using
 /// little-endian for most numeric types and big-endian with byte reversal for `Decimal256`.
 ///
 /// # Arguments

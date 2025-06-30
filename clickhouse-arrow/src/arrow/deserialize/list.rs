@@ -1,8 +1,8 @@
 /// Deserialization logic for `ClickHouse` `Array` types into Arrow `ListArray`.
 ///
-/// This module provides a function to deserialize ClickHouse’s native format for `Array` types
-/// into an Arrow `ListArray`, which represents variable-length lists of inner values. It is
-/// used by the `ClickHouseArrowDeserializer` implementation in `deserialize.rs` to handle
+/// This module provides a function to deserialize `ClickHouse`’s native format for `Array`
+/// types into an Arrow `ListArray`, which represents variable-length lists of inner values. It
+/// is used by the `ClickHouseArrowDeserializer` implementation in `deserialize.rs` to handle
 /// array data, including `Array(T)` and `Nullable(Array(T))` types.
 ///
 /// The `deserialize` function reads offsets and inner values from the input stream,

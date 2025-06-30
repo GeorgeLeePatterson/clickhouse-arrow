@@ -6,12 +6,9 @@ disallowed-methods = [
     "std::sync::Mutex::new",
     "std::sync::RwLock::new",
     "std::sync::Condvar::new",
-    "std::sync::Mutex::default",
-    "std::sync::RwLock::default",
-    "std::sync::Condvar::default",
 
-    # # use std instead
-    # "once_cell::sync::Lazy::new",
+    # use std instead
+    "once_cell::sync::Lazy::new",
 
     # use crate's join_unwind instead
     "tokio::task::JoinSet::join_next",

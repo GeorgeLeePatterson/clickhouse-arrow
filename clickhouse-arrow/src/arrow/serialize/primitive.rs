@@ -2,7 +2,7 @@
 #![expect(clippy::cast_sign_loss)]
 /// Serialization logic for `ClickHouse` primitive types from Arrow arrays.
 ///
-/// This module provides functions to serialize Arrow arrays into ClickHouse’s native format
+/// This module provides functions to serialize Arrow arrays into `ClickHouse`’s native format
 /// for primitive types, including integers (`Int8` to `UInt256`), floats (`Float32`,
 /// `Float64`), decimals (`Decimal32` to `Decimal256`), dates (`Date`, `DateTime`,
 /// `DateTime64`), and IP addresses (`IPv4`, `IPv6`, `Uuid`). It is used by the
@@ -36,7 +36,7 @@ use tokio::io::AsyncWriteExt;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
-/// Serializes an Arrow array to ClickHouse’s native format for primitive types.
+/// Serializes an Arrow array to `ClickHouse`’s native format for primitive types.
 ///
 /// Dispatches to specialized serialization functions based on the `Type` variant, handling:
 /// - Integers: `Int8`, `Int16`, `Int32`, `Int64`, `Int128`, `Int256`, `UInt8`, `UInt16`, `UInt32`,

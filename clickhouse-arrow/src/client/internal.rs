@@ -229,6 +229,8 @@ impl<T: ClientFormat> InternalConn<T> {
             result = self.receive_packet(reader), if self.executing.is_some() => {
                 result.inspect_err(|error| error!(?error, { ATT_CID } = cid, "Fatal error"))?;
 
+                // TODO: Remove this lint when let chains is stable
+                #[allow(clippy::collapsible_if)]
                 // Queue up next query if any
                 if self.executing.is_none() {
                     if let Some(query) = self.pending.pop_front() {

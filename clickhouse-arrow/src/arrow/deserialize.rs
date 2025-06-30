@@ -195,7 +195,7 @@ macro_rules! deser_bulk_async {
 }
 pub(super) use deser_bulk_async;
 
-/// Trait for deserializing ClickHouse’s native format into Arrow arrays.
+/// Trait for deserializing `ClickHouse`’s native format into Arrow arrays.
 ///
 /// Implementations convert data from a `ClickHouseRead` reader into an `ArrayRef`, handling
 /// nullability and maintaining deserialization state. The trait is used to map `ClickHouse `types

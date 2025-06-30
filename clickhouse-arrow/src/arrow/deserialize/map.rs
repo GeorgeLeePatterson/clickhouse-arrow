@@ -1,6 +1,6 @@
 /// Deserialization logic for `ClickHouse` `Map` types into Arrow `MapArray`.
 ///
-/// This module provides a function to deserialize ClickHouse’s native format for `Map` types
+/// This module provides a function to deserialize `ClickHouse`’s native format for `Map` types
 /// into an Arrow `MapArray`, which is a list of key-value pairs stored as a `StructArray` with
 /// offsets. It is used by the `ClickHouseArrowDeserializer` implementation in `deserialize.rs`
 /// to handle map data.

@@ -478,7 +478,7 @@ async fn roundtrip_geo() {
 fn test_value_methods() {
     let inner = Value::String(b"hello".to_vec());
     let val = Value::Array(vec![inner.clone()]);
-    assert_eq!(val.unwrap_array_ref().unwrap(), &[inner.clone()] as &[_]);
+    assert_eq!(val.unwrap_array_ref().unwrap(), std::slice::from_ref(&inner) as &[_]);
     assert_eq!(val.clone().unwrap_array().unwrap(), vec![inner.clone()]);
     assert_eq!(val.unarray().unwrap(), vec![inner.clone()]);
     assert!(Value::Int8(0).unwrap_array_ref().is_err());

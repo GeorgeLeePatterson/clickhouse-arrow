@@ -12,12 +12,6 @@ examples := "insert pool select"
 default:
     @just --list
 
-# --- CARGO RELEASE ---
-patch:
-    cargo release patch
-minor:
-    cargo release minor
-
 # --- TESTS ---
 test:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
@@ -154,6 +148,8 @@ fmt:
     @echo "Running rustfmt..."
     # cd clickhouse-arrow && cargo +nightly fmt --all --check
     cargo +nightly fmt --check -- --config-path ./rustfmt.toml
+fix:
+    cargo clippy --fix --all-features --all-targets --allow-dirty
 
 # --- MAINTENANCE ---
 
@@ -189,3 +185,11 @@ check-outdated:
 # Run security audit
 audit:
     cargo audit
+
+# Release patch version
+patch:
+    cargo release patch
+
+# Release minor version
+minor:
+    cargo release minor

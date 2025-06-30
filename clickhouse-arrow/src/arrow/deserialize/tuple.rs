@@ -1,7 +1,7 @@
 /// Deserialization logic for `ClickHouse` `Tuple` types into Arrow `StructArray`.
 ///
-/// This module provides a function to deserialize ClickHouse’s native format for `Tuple` types
-/// into an Arrow `StructArray`, which represents a collection of fields.
+/// This module provides a function to deserialize `ClickHouse`’s native format for `Tuple`
+/// types into an Arrow `StructArray`, which represents a collection of fields.
 use std::sync::Arc;
 
 use arrow::array::*;

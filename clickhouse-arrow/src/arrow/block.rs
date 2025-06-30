@@ -506,7 +506,7 @@ mod tests {
         assert!(matches!(e.kind(), std::io::ErrorKind::UnexpectedEof));
     }
 
-    /// Tests round-trip serialization and deserialization of a single-column `Int32` RecordBatch.
+    /// Tests round-trip serialization and deserialization of a single-column `Int32` `RecordBatch`.
     #[tokio::test]
     async fn test_round_trip_single_column_int32() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -542,8 +542,8 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a multi-column RecordBatch with mixed
-    /// types.
+    /// Tests round-trip serialization and deserialization of a multi-column `RecordBatch` with
+    /// mixed types.
     #[tokio::test]
     async fn test_round_trip_multi_column_mixed_types() {
         let schema = Arc::new(Schema::new(vec![
@@ -604,7 +604,7 @@ mod tests {
         ]);
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Map column.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Map column.
     #[tokio::test]
     async fn test_round_trip_map_column() {
         let key_field = Field::new(STRUCT_KEY_FIELD_NAME, DataType::Utf8, false);
@@ -666,7 +666,7 @@ mod tests {
         ]);
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with zero rows.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with zero rows.
     #[tokio::test]
     async fn test_round_trip_zero_rows() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -703,7 +703,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of an empty RecordBatch (zero columns,
+    /// Tests round-trip serialization and deserialization of an empty `RecordBatch` (zero columns,
     /// zero rows).
     #[tokio::test]
     async fn test_round_trip_empty_block() {
@@ -814,7 +814,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Float64 column.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Float64 column.
     #[tokio::test]
     async fn test_round_trip_float64() {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, false)]));
@@ -851,7 +851,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
     /// Nullable(DateTime) column.
     #[tokio::test]
     async fn test_round_trip_nullable_datetime() {
@@ -897,7 +897,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Decimal128
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Decimal128
     /// column.
     #[tokio::test]
     async fn test_round_trip_decimal128() {
@@ -942,7 +942,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
     /// LowCardinality(String) column.
     #[tokio::test]
     async fn test_round_trip_low_cardinality_string() {
@@ -985,9 +985,9 @@ mod tests {
             Arc::new(StringArray::from(vec!["cat", "dog"])).as_ref()
         );
     }
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Dictionary(Int8,
-    /// Utf8) column, expecting LowCardinality(String) mapping to Dictionary(Int32, Utf8) when
-    /// header is None.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
+    /// Dictionary(Int8, Utf8) column, expecting LowCardinality(String) mapping to
+    /// Dictionary(Int32, Utf8) when header is None.
     #[tokio::test]
     async fn test_round_trip_dictionary_int8_no_header() {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -1034,8 +1034,8 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Dictionary(Int8,
-    /// Utf8) column, using header to specify Enum8.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
+    /// Dictionary(Int8, Utf8) column, using header to specify Enum8.
     #[tokio::test]
     async fn test_round_trip_dictionary_int8_with_enum8_header() {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -1108,8 +1108,8 @@ mod tests {
         assert_eq!(deser_values, expected_values);
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Dictionary(Int8,
-    /// Utf8) column, using header to specify LowCardinality(String).
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
+    /// Dictionary(Int8, Utf8) column, using header to specify LowCardinality(String).
     #[tokio::test]
     async fn test_round_trip_dictionary_int8_with_low_cardinality_header() {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -1157,9 +1157,9 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Dictionary(Int16,
-    /// Utf8) column, expecting LowCardinality(String) mapping to Dictionary(Int32, Utf8) when
-    /// header is None.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
+    /// Dictionary(Int16, Utf8) column, expecting LowCardinality(String) mapping to
+    /// Dictionary(Int32, Utf8) when header is None.
     #[tokio::test]
     async fn test_round_trip_dictionary_int16_no_header() {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -1206,9 +1206,9 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Dictionary(Int32,
-    /// Utf8) column, expecting LowCardinality(String) mapping to Dictionary(Int32, Utf8) when
-    /// header is None.
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
+    /// Dictionary(Int32, Utf8) column, expecting LowCardinality(String) mapping to
+    /// Dictionary(Int32, Utf8) when header is None.
     #[tokio::test]
     async fn test_round_trip_dictionary_int32_no_header() {
         let schema = Arc::new(Schema::new(vec![Field::new(
@@ -1251,7 +1251,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a Tuple(Int32,
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Tuple(Int32,
     /// String) column.
     #[tokio::test]
     async fn test_round_trip_tuple() {
@@ -1308,7 +1308,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with a large number of
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a large number of
     /// rows.
     #[tokio::test]
     async fn test_round_trip_large_batch() {
@@ -1344,7 +1344,7 @@ mod tests {
         assert_eq!(deserialized.column(0).as_ref(), array.as_ref());
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with non-UTF-8 Binary
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with non-UTF-8 Binary
     /// data.
     #[tokio::test]
     async fn test_round_trip_non_utf8_binary() {
@@ -1384,7 +1384,7 @@ mod tests {
         );
     }
 
-    /// Tests round-trip serialization and deserialization of a RecordBatch with max/min Int32
+    /// Tests round-trip serialization and deserialization of a `RecordBatch` with max/min Int32
     /// values.
     #[tokio::test]
     async fn test_round_trip_max_min_int32() {
@@ -1555,7 +1555,7 @@ mod tests_sync {
     use crate::arrow::types::LIST_ITEM_FIELD_NAME;
     use crate::native::protocol::DBMS_TCP_PROTOCOL_VERSION;
 
-    // Helper to create a simple RecordBatch for testing
+    // Helper to create a simple `RecordBatch` for testing
     fn create_test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),

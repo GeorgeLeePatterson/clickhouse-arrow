@@ -7,7 +7,7 @@ use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::native::types::Type;
 use crate::{Error, Result};
 
-/// Serializes an Arrow `StructArray` to ClickHouse’s native format for `Tuple` types.
+/// Serializes an Arrow `StructArray` to `ClickHouse`’s native format for `Tuple` types.
 ///
 /// This function writes the `Tuple` data by serializing each field of the `StructArray` as a
 /// separate column, delegating to the inner types’ serialization logic. It follows the native
