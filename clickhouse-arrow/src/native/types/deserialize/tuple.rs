@@ -1,5 +1,5 @@
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::ClickHouseRead;
+use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::native::values::Value;
 use crate::{Error, Result};
 
@@ -49,5 +49,14 @@ impl Deserializer for TupleDeserializer {
             }
         }
         Ok(tuples)
+    }
+
+    fn read_sync(
+        _type_: &Type,
+        _reader: &mut impl ClickHouseBytesRead,
+        _rows: usize,
+        _state: &mut DeserializerState,
+    ) -> Result<Vec<Value>> {
+        Err(Error::DeserializeError("TupleDeserializer sync not yet implemented".to_string()))
     }
 }

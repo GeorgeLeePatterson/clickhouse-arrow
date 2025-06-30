@@ -13,8 +13,6 @@ pub mod native;
 mod pool;
 pub mod prelude;
 mod query;
-#[cfg(feature = "row_binary")]
-mod row;
 mod schema;
 mod settings;
 pub mod spawn;

@@ -8,10 +8,15 @@ license.workspace = true
 [package.metadata.docs.rs]
 all-features = false
 
+# FEATURES
+
 [features]
-default = ["derive", "serde", "pool", "fast_mode"]
+default = ["derive", "serde", "pool", "inner_pool"]
+
+# -- Default --
+# Enable derive macros serializing and deserializing rust structures
 derive = ["clickhouse-arrow-derive"]
-geo-types = ["dep:geo-types"]
+# Enable serde serialization and deserialization for configuration and some types
 serde = [
     "dep:serde",
     "dep:serde_json",
@@ -19,25 +24,26 @@ serde = [
     "chrono/serde",
     "chrono-tz/serde",
 ]
-cloud = ["dep:ureq"]
+# Enable `bb8` pool for managing connections to ClickHouse
 pool = ["dep:bb8"]
-rust_decimal = ["dep:rust_decimal"]
-# TODO: Remove - Change name to something else to reflect the exposure of an inner pool
-fast_mode = ["dep:arc-swap"]
-row_binary = [
-    "serde",
-    "dep:hyper",
-    "dep:hyper-rustls",
-    "dep:hyper-util",
-    "dep:url",
-]
+# Configure the inner connection to pool multiple TCP connections, great for low latency use cases.
+inner_pool = ["dep:arc-swap"]
 
-profile = ["dep:tracy-client"]
+# -- Optional --
+# Use extended geo types that ClickHouse supports
+geo-types = ["dep:geo-types"]
+# Enable options related to ClickHouse cloud, ie pinging the cloud for wakeup
+cloud = ["dep:ureq"]
+# Enable `rust_decimal` types for serialization and deserialization
+rust_decimal = ["dep:rust_decimal"]
+
+# -- Testing --
 test_utils = [
-    "profile",
     "dep:testcontainers",
     "dep:tracing-subscriber",
 ]
+
+# DEPENDENCIES
 
 [dependencies]
 arrow = { version = "55", features = [
@@ -82,7 +88,7 @@ zstd = "0.13"
 # Optional
 arc-swap = { version = "1", optional = true }
 bb8 = { version = "0.9", optional = true }
-clickhouse-arrow-derive = { version = "0.2", optional = true, path = "../clickhouse-arrow-derive" }
+clickhouse-arrow-derive = { version = "0.1.0", optional = true, path = "../clickhouse-arrow-derive" }
 geo-types = { version = "0.7", optional = true }
 hyper = { version = "1", features = ["http1", "client"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"], optional = true }
@@ -92,7 +98,6 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
     "aws-lc-rs",
     "webpki-roots"
 ], optional = true }
-tracy-client = { version = "0.18", optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
@@ -149,11 +154,7 @@ name = "scalar"
 required-features = ["test_utils"]
 
 [[example]]
-name = "insert_multi"
-required-features = ["test_utils"]
-
-[[example]]
-name = "row_binary"
+name = "insert_multi_threaded"
 required-features = ["test_utils"]
 
 # BENCHES

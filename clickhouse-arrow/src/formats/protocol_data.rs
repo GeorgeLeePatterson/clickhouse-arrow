@@ -1,6 +1,3 @@
-#[cfg(feature = "row_binary")]
-use futures_util::Stream;
-
 use super::DeserializerState;
 use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::{Result, Type};
@@ -43,11 +40,7 @@ pub(crate) trait ProtocolData<Return, Deser: Default> {
         _options: Self::Options,
     ) -> Result<()>
     where
-        Self: Sized,
-    {
-        // TODO: Remove
-        unimplemented!()
-    }
+        Self: Sized;
 
     /// Reads a `ClickHouse` native block and constructs the data.
     ///
@@ -72,39 +65,7 @@ pub(crate) trait ProtocolData<Return, Deser: Default> {
         _revision: u64,
         _options: Self::Options,
         _state: &mut DeserializerState<Deser>,
-    ) -> Result<Return> {
-        // TODO: Remove
-        unimplemented!()
-    }
-}
-
-/// Trait for serializing and deserializing data into `ClickHouse`'s row binary format.
-///
-/// # Type Parameters
-/// - `Return`: The type of data produced by deserialization (e.g., `RecordBatch`).
-#[cfg(feature = "row_binary")]
-pub(crate) trait RowData<Return> {
-    /// The implementation specific options
-    type Row: crate::schema::ColumnDefine;
-
-    /// Reads a `ClickHouse` `RowBinary` block and constructs the data.
-    ///
-    /// # Arguments
-    /// - `reader`: The async reader providing the block data (e.g., a TCP stream).
-    /// - `definition`: The column definition for the block.
-    /// - `overrides`: Optional schema conversions.
-    ///
-    /// # Returns
-    /// A `Future` resolving to a `Result` of `Vec<Return>` (e.g., `Vec<RecordBatch>`) or an `Error`
-    /// if deserialization fails.
-    fn read_rows<R>(
-        reader: &mut R,
-        definition: Self::Row,
-        overrides: Option<crate::prelude::SchemaConversions>,
-        summmary: crate::row::protocol::HttpSummary,
-    ) -> impl Future<Output = Result<Vec<Return>>> + Send
-    where
-        R: Stream<Item = Result<bytes::Bytes>> + Unpin + Send;
+    ) -> Result<Return>;
 }
 
 /// Simple trait to determine whether a `Block` of data (whatever impls `ProtocolData`) is empty, ie

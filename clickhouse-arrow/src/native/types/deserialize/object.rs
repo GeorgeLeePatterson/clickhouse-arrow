@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{Deserializer, DeserializerState, Type};
-use crate::io::ClickHouseRead;
+use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::native::values::Value;
 use crate::{Error, Result};
 
@@ -42,6 +42,31 @@ impl Deserializer for ObjectDeserializer {
                         Value::Object(value)
                     } else {
                         Value::String(value)
+                    });
+                }
+                Ok(out)
+            }
+            _ => Err(Error::DeserializeError(
+                "ObjectDeserializer called with non-json type".to_string(),
+            )),
+        }
+    }
+
+    fn read_sync(
+        type_: &Type,
+        reader: &mut impl ClickHouseBytesRead,
+        rows: usize,
+        _state: &mut DeserializerState,
+    ) -> Result<Vec<Value>> {
+        match type_ {
+            Type::Object | Type::String | Type::Binary => {
+                let mut out = Vec::with_capacity(rows);
+                for _ in 0..rows {
+                    let value = reader.try_get_string()?;
+                    out.push(if matches!(type_, Type::Object) {
+                        Value::Object(value.to_vec())
+                    } else {
+                        Value::String(value.to_vec())
                     });
                 }
                 Ok(out)

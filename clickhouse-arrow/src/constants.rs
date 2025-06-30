@@ -1,5 +1,5 @@
 pub(super) const VERSION_MAJOR: u64 = 0;
-pub(super) const VERSION_MINOR: u64 = 4;
+pub(super) const VERSION_MINOR: u64 = 1;
 pub(super) const VERSION_PATCH: u64 = 0;
 
 // Connection BufReader & BufWriter for connections
@@ -25,9 +25,8 @@ pub const CONN_READ_BUFFER_ENV_VAR: &str = "CONNECTION_READ_BUFFER_SIZE";
 pub const CONN_WRITE_BUFFER_ENV_VAR: &str = "CONNECTION_WRITE_BUFFER_SIZE";
 
 // ClickHouse default sizes
-#[cfg_attr(not(feature = "row_binary"), expect(unused))]
-pub(crate) const CLICKHOUSE_DEFAULT_CHUNK_BYTES: usize = 523_272;
 pub(crate) const CLICKHOUSE_DEFAULT_CHUNK_ROWS: usize = 65_409;
+// pub(crate) const CLICKHOUSE_DEFAULT_CHUNK_BYTES: usize = 523_272; // For reference
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,3 @@
-#![expect(clippy::cast_possible_truncation)]
 //! Deserialization logic for `ClickHouse` primitive types into Arrow arrays.
 //!
 //! This module provides a function to deserialize `ClickHouse`’s native format for primitive
@@ -19,7 +18,7 @@ use std::sync::Arc;
 use arrow::array::*;
 use arrow::datatypes::*;
 
-use crate::deserialize::DAYS_1900_TO_1970;
+use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
@@ -62,7 +61,7 @@ macro_rules! primitive {
     (Date32 => $reader:expr) => {{
         {
             let days = $reader.try_get_i32_le()?;
-            days - crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
+            days - $crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
         }
     }};
     (DateTime => $reader:expr) => {{ $reader.try_get_u32_le().map(i64::from)? }};
@@ -107,7 +106,7 @@ macro_rules! primitive_async {
     (Date32 => $reader:expr) => {{
         {
             let days = $reader.read_i32_le().await?;
-            days - crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
+            days - $crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
         }
     }};
     (DateTime => $reader:expr) => {{ $reader.read_u32_le().await?.map(i64::from)? }};
@@ -133,6 +132,7 @@ macro_rules! primitive_async {
         }
     }};
 }
+pub(super) use primitive_async;
 
 /// Deserializes a `ClickHouse` primitive type into an Arrow array.
 ///
@@ -185,9 +185,9 @@ macro_rules! primitive_async {
 /// let expected = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
 /// assert_eq!(array.as_ref(), expected.as_ref());
 /// ```
-#[expect(clippy::too_many_lines)]
 pub(crate) async fn deserialize_async<R: ClickHouseRead>(
-    type_hint: &Type,
+    _: &Type,
+    builder: &mut TypedBuilder,
     reader: &mut R,
     rows: usize,
     null_mask: &[u8],
@@ -195,151 +195,86 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
 ) -> Result<ArrayRef> {
     use ::tokio::io::AsyncReadExt as _;
 
-    // Special types
-    super::deser!(() => type_hint.strip_null() => {
-        Type::Date32 => {{
-            let mut b = Date32Builder::with_capacity(rows);
-            for i in 0..rows {
-                super::opt_value!(b, i, null_mask, {
-                    let days = reader.read_i32_le().await?;
-                    days - DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
-                });
-            }
-            return Ok(Arc::new(b.finish()));
-        }},
-        Type::Decimal128(s) => {{
-            let mut b =
-                Decimal128Builder::with_capacity(rows).with_precision_and_scale(38, *s as i8)?;
-            for i in 0..rows {
-                super::opt_value!(b, i, null_mask, {
-                    let mut buf = [0u8; 16];
-                    let _ = reader.read_exact(&mut buf).await?;
-                    i128::from_le_bytes(buf)
-                });
-            }
-            return Ok(Arc::new(b.finish()));
-        }},
-        Type::Decimal256(s) => {{
-            let mut b =
-                Decimal256Builder::with_capacity(rows).with_precision_and_scale(76, *s as i8)?;
-            for i in 0..rows {
-                super::opt_value!(b, i, null_mask, {
-                    let mut buf = [0u8; 32];
-                    let _ = reader.read_exact(&mut buf).await?;
-                    buf.reverse();
-                    i256::from_le_bytes(buf)
-                });
-            }
-            return Ok(Arc::new(b.finish()));
+    use crate::arrow::builder::TypedBuilder as B;
+
+    // Bulk primitive cases using the provided builder
+    super::deser!(() => builder => {
+        B::Int8(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i8) },
+        B::Int16(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i16) },
+        B::Int32(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i32) },
+        B::Int64(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::UInt8(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u8) },
+        B::UInt16(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u16) },
+        B::UInt32(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u32) },
+        B::UInt64(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u64) },
+        B::Float32(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, f32) },
+        B::Float64(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, f64) },
+
+        // Decimals
+        B::Decimal32(b) => {
+            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, i32 => i128)
+        },
+        B::Decimal64(b) => {
+            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, i64 => i128)
+        },
+
+        // Dates and DateTimes
+        B::Date(b) => {
+            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, u16 => i32)
+        },
+        B::DateTime(b) => {
+            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, u32 => i64)
+        },
+        B::DateTimeS(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::DateTimeMs(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::DateTimeMu(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::DateTimeNano(b) => {
+            super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64)
         }}
-    }
+        _ => {()});
+
+    // Variable length or special handling
+    super::deser!(builder, rows => {
+    B::Date32(b) => i => {
+        super::opt_value!(b, i, null_mask, primitive_async!(Date32 => reader))
+    },
+    B::Decimal128(b) => i => {
+        super::opt_value!(b, i, null_mask, primitive_async!(Decimal128 => reader))
+    },
+    B::Decimal256(b) => i => {
+        super::opt_value!(b, i, null_mask, primitive_async!(Decimal256 => reader))
+    }}
     _ => {()});
 
-    match type_hint.strip_null() {
-        // Numeric, DateTime, Decimal
-        Type::Int8 => {
-            let mut b = PrimitiveBuilder::<Int8Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i8);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::Int16 => {
-            let mut b = PrimitiveBuilder::<Int16Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i16);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::Int32 => {
-            let mut b = PrimitiveBuilder::<Int32Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i32);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::Int64 => {
-            let mut b = PrimitiveBuilder::<Int64Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i64);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::UInt8 => {
-            let mut b = PrimitiveBuilder::<UInt8Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, u8);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::UInt16 => {
-            let mut b = PrimitiveBuilder::<UInt16Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, u16);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::UInt32 => {
-            let mut b = PrimitiveBuilder::<UInt32Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, u32);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::UInt64 => {
-            let mut b = PrimitiveBuilder::<UInt64Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, u64);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::Float32 => {
-            let mut b = PrimitiveBuilder::<Float32Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, f32);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::Float64 => {
-            let mut b = PrimitiveBuilder::<Float64Type>::with_capacity(rows);
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, f64);
-            Ok(Arc::new(b.finish()))
-        }
-        // Decimal
-        Type::Decimal32(s) => {
-            let mut b =
-                Decimal128Builder::with_capacity(rows).with_precision_and_scale(9, *s as i8)?;
-            super::deser_bulk_async!(raw; &mut b, reader, rows, null_mask, rbuffer, i32 => i128);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::Decimal64(s) => {
-            let mut b =
-                Decimal128Builder::with_capacity(rows).with_precision_and_scale(18, *s as i8)?;
-            super::deser_bulk_async!(raw; &mut b, reader, rows, null_mask, rbuffer, i64 => i128);
-            Ok(Arc::new(b.finish()))
-        }
-        // Dates
-        Type::Date => {
-            let mut b = Date32Builder::with_capacity(rows);
-            super::deser_bulk_async!(raw; &mut b, reader, rows, null_mask, rbuffer, u16 => i32);
-            Ok(Arc::new(b.finish()))
-        }
-
-        Type::DateTime(tz) => {
-            let mut b =
-                TimestampSecondBuilder::with_capacity(rows).with_timezone(Arc::from(tz.name()));
-            super::deser_bulk_async!(raw; &mut b, reader, rows, null_mask, rbuffer, u32 => i64);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::DateTime64(0, tz) => {
-            let mut b = TimestampMillisecondBuilder::with_capacity(rows)
-                .with_timezone(Arc::from(tz.name()));
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i64);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::DateTime64(1..=3, tz) => {
-            let mut b = TimestampMillisecondBuilder::with_capacity(rows)
-                .with_timezone(Arc::from(tz.name()));
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i64);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::DateTime64(4..=6, tz) => {
-            let mut b = TimestampMicrosecondBuilder::with_capacity(rows)
-                .with_timezone(Arc::from(tz.name()));
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i64);
-            Ok(Arc::new(b.finish()))
-        }
-        Type::DateTime64(7..=9, tz) => {
-            let mut b =
-                TimestampNanosecondBuilder::with_capacity(rows).with_timezone(Arc::from(tz.name()));
-            super::deser_bulk_async!(&mut b, reader, rows, null_mask, rbuffer, i64);
-            Ok(Arc::new(b.finish()))
-        }
-
-        _ => Err(Error::ArrowDeserialize(format!("Expected primitive, got {type_hint:?}"))),
-    }
+    // Finish the builder and return an ArrayRef
+    Ok(super::deser!(() => builder => {
+    // Primitives
+    B::Int8(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Int16(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Int32(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Int64(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::UInt8(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::UInt16(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::UInt32(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::UInt64(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Float32(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Float64(b) => { Arc::new(b.finish()) as ArrayRef },
+    // Decimals
+    B::Decimal32(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Decimal64(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Decimal128(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Decimal256(b) => { Arc::new(b.finish()) as ArrayRef },
+    // Dates
+    B::Date(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Date32(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::DateTime(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::DateTimeS(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::DateTimeMs(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::DateTimeMu(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef }}
+    _ => { return Err(Error::ArrowDeserialize(
+        "Unexpected builder type for primitive".into()))
+    }))
 }
 
 #[cfg(test)]
@@ -362,9 +297,14 @@ mod tests {
         let input = vec![1, 2, 3]; // Int8: [1, 2, 3]
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Int8");
+        // Create a TypedBuilder for Int8
+        let data_type = DataType::Int8;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Int8");
         let array = result.as_any().downcast_ref::<Int8Array>().unwrap();
         assert_eq!(array, &Int8Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -379,9 +319,14 @@ mod tests {
         let input = vec![1, 0, 3]; // Int8: [1, 0, 3]
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Int8)");
+        // Create a TypedBuilder for Nullable(Int8)
+        let data_type = DataType::Int8;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Int8)");
         let array = result.as_any().downcast_ref::<Int8Array>().unwrap();
         assert_eq!(array, &Int8Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -399,9 +344,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Int16");
+        // Create a TypedBuilder for Int16
+        let data_type = DataType::Int16;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Int16");
         let array = result.as_any().downcast_ref::<Int16Array>().unwrap();
         assert_eq!(array, &Int16Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -419,9 +369,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Int16)");
+        // Create a TypedBuilder for Nullable(Int16)
+        let data_type = DataType::Int16;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Int16)");
         let array = result.as_any().downcast_ref::<Int16Array>().unwrap();
         assert_eq!(array, &Int16Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -439,9 +394,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Int32");
+        // Create a TypedBuilder for Int32
+        let data_type = DataType::Int32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Int32");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array, &Int32Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -459,9 +419,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Int32)");
+        // Create a TypedBuilder for Nullable(Int32)
+        let data_type = DataType::Int32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Int32)");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array, &Int32Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -479,9 +444,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Int64");
+        // Create a TypedBuilder for Int64
+        let data_type = DataType::Int64;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Int64");
         let array = result.as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(array, &Int64Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -499,9 +469,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Int64)");
+        // Create a TypedBuilder for Nullable(Int64)
+        let data_type = DataType::Int64;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Int64)");
         let array = result.as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(array, &Int64Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -516,9 +491,14 @@ mod tests {
         let input = vec![1, 2, 3]; // UInt8: [1, 2, 3]
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize UInt8");
+        // Create a TypedBuilder for UInt8
+        let data_type = DataType::UInt8;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize UInt8");
         let array = result.as_any().downcast_ref::<UInt8Array>().unwrap();
         assert_eq!(array, &UInt8Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -533,9 +513,14 @@ mod tests {
         let input = vec![1, 0, 3]; // UInt8: [1, 0, 3]
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(UInt8)");
+        // Create a TypedBuilder for Nullable(UInt8)
+        let data_type = DataType::UInt8;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(UInt8)");
         let array = result.as_any().downcast_ref::<UInt8Array>().unwrap();
         assert_eq!(array, &UInt8Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -553,9 +538,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize UInt16");
+        // Create a TypedBuilder for UInt16
+        let data_type = DataType::UInt16;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize UInt16");
         let array = result.as_any().downcast_ref::<UInt16Array>().unwrap();
         assert_eq!(array, &UInt16Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -573,9 +563,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(UInt16)");
+        // Create a TypedBuilder for Nullable(UInt16)
+        let data_type = DataType::UInt16;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(UInt16)");
         let array = result.as_any().downcast_ref::<UInt16Array>().unwrap();
         assert_eq!(array, &UInt16Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -593,9 +588,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize UInt32");
+        // Create a TypedBuilder for UInt32
+        let data_type = DataType::UInt32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize UInt32");
         let array = result.as_any().downcast_ref::<UInt32Array>().unwrap();
         assert_eq!(array, &UInt32Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -613,9 +613,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(UInt32)");
+        // Create a TypedBuilder for Nullable(UInt32)
+        let data_type = DataType::UInt32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(UInt32)");
         let array = result.as_any().downcast_ref::<UInt32Array>().unwrap();
         assert_eq!(array, &UInt32Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -633,9 +638,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize UInt64");
+        // Create a TypedBuilder for UInt64
+        let data_type = DataType::UInt64;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize UInt64");
         let array = result.as_any().downcast_ref::<UInt64Array>().unwrap();
         assert_eq!(array, &UInt64Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -653,9 +663,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(UInt64)");
+        // Create a TypedBuilder for Nullable(UInt64)
+        let data_type = DataType::UInt64;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(UInt64)");
         let array = result.as_any().downcast_ref::<UInt64Array>().unwrap();
         assert_eq!(array, &UInt64Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -675,9 +690,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Float32");
+        // Create a TypedBuilder for Float32
+        let data_type = DataType::Float32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Float32");
         let array = result.as_any().downcast_ref::<Float32Array>().unwrap();
         assert_eq!(array, &Float32Array::from(vec![1.0, 2.0, 3.0]));
         assert_eq!(array.nulls(), None);
@@ -697,9 +717,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Float32)");
+        // Create a TypedBuilder for Nullable(Float32)
+        let data_type = DataType::Float32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Float32)");
         let array = result.as_any().downcast_ref::<Float32Array>().unwrap();
         assert_eq!(array, &Float32Array::from(vec![Some(1.0), None, Some(3.0)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -719,9 +744,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Float64");
+        // Create a TypedBuilder for Float64
+        let data_type = DataType::Float64;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Float64");
         let array = result.as_any().downcast_ref::<Float64Array>().unwrap();
         assert_eq!(array, &Float64Array::from(vec![1.0, 2.0, 3.0]));
         assert_eq!(array.nulls(), None);
@@ -741,9 +771,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Float64)");
+        // Create a TypedBuilder for Nullable(Float64)
+        let data_type = DataType::Float64;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Float64)");
         let array = result.as_any().downcast_ref::<Float64Array>().unwrap();
         assert_eq!(array, &Float64Array::from(vec![Some(1.0), None, Some(3.0)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -761,9 +796,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Date");
+        // Create a TypedBuilder for Date
+        let data_type = DataType::Date32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Date");
         let array = result.as_any().downcast_ref::<Date32Array>().unwrap();
         assert_eq!(array, &Date32Array::from(vec![1, 2, 3]));
         assert_eq!(array.nulls(), None);
@@ -781,9 +821,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Date)");
+        // Create a TypedBuilder for Nullable(Date)
+        let data_type = DataType::Date32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Date)");
         let array = result.as_any().downcast_ref::<Date32Array>().unwrap();
         assert_eq!(array, &Date32Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -802,9 +847,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize DateTime");
+        // Create a TypedBuilder for DateTime
+        let data_type = DataType::Timestamp(TimeUnit::Second, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize DateTime");
         let array = result.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
         let expected =
             TimestampSecondArray::from(vec![1000, 2000, 3000]).with_timezone_opt(Some("UTC"));
@@ -826,9 +876,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(DateTime)");
+        // Create a TypedBuilder for Nullable(DateTime)
+        let data_type = DataType::Timestamp(TimeUnit::Second, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(DateTime)");
         let array = result.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
         let expected = TimestampSecondArray::from(vec![Some(1000), None, Some(3000)])
             .with_timezone_opt(Some("UTC"));
@@ -850,9 +905,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize DateTime64(3)");
+        // Create a TypedBuilder for DateTime64(3)
+        let data_type = DataType::Timestamp(TimeUnit::Millisecond, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize DateTime64(3)");
         let array = result.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap();
         let expected =
             TimestampMillisecondArray::from(vec![1000, 2000, 3000]).with_timezone_opt(Some("UTC"));
@@ -874,9 +934,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(DateTime64(3))");
+        // Create a TypedBuilder for Nullable(DateTime64(3))
+        let data_type = DataType::Timestamp(TimeUnit::Millisecond, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(DateTime64(3))");
         let array = result.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap();
         let expected = TimestampMillisecondArray::from(vec![Some(1000), None, Some(3000)])
             .with_timezone_opt(Some("UTC"));
@@ -898,9 +963,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize DateTime64(6)");
+        // Create a TypedBuilder for DateTime64(6)
+        let data_type = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize DateTime64(6)");
         let array = result.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
         let expected =
             TimestampMicrosecondArray::from(vec![1000, 2000, 3000]).with_timezone_opt(Some("UTC"));
@@ -922,9 +992,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(DateTime64(6))");
+        // Create a TypedBuilder for Nullable(DateTime64(6))
+        let data_type = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(DateTime64(6))");
         let array = result.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
         let expected = TimestampMicrosecondArray::from(vec![Some(1000), None, Some(3000)])
             .with_timezone_opt(Some("UTC"));
@@ -946,9 +1021,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize DateTime64(9)");
+        // Create a TypedBuilder for DateTime64(9)
+        let data_type = DataType::Timestamp(TimeUnit::Nanosecond, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize DateTime64(9)");
         let array = result.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
         let expected =
             TimestampNanosecondArray::from(vec![1000, 2000, 3000]).with_timezone_opt(Some("UTC"));
@@ -970,9 +1050,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(DateTime64(9))");
+        // Create a TypedBuilder for Nullable(DateTime64(9))
+        let data_type = DataType::Timestamp(TimeUnit::Nanosecond, Some(Arc::from("UTC")));
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(DateTime64(9))");
         let array = result.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
         let expected = TimestampNanosecondArray::from(vec![Some(1000), None, Some(3000)])
             .with_timezone_opt(Some("UTC"));
@@ -993,9 +1078,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Decimal32");
+        // Create a TypedBuilder for Decimal32
+        let data_type = DataType::Decimal128(9, 2);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Decimal32");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         let expected =
             Decimal128Array::from(vec![100, 200, 300]).with_precision_and_scale(9, 2).unwrap();
@@ -1017,9 +1107,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Decimal32)");
+        // Create a TypedBuilder for Nullable(Decimal32)
+        let data_type = DataType::Decimal128(9, 2);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Decimal32)");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         let expected = Decimal128Array::from(vec![Some(100), None, Some(300)])
             .with_precision_and_scale(9, 2)
@@ -1042,9 +1137,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Decimal64");
+        // Create a TypedBuilder for Decimal64
+        let data_type = DataType::Decimal128(18, 4);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Decimal64");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         let expected =
             Decimal128Array::from(vec![100, 200, 300]).with_precision_and_scale(18, 4).unwrap();
@@ -1066,9 +1166,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Decimal64)");
+        // Create a TypedBuilder for Nullable(Decimal64)
+        let data_type = DataType::Decimal128(18, 4);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Decimal64)");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         let expected = Decimal128Array::from(vec![Some(100), None, Some(300)])
             .with_precision_and_scale(18, 4)
@@ -1091,9 +1196,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Decimal128");
+        // Create a TypedBuilder for Decimal128
+        let data_type = DataType::Decimal128(38, 8);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Decimal128");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         let expected =
             Decimal128Array::from(vec![100, 200, 300]).with_precision_and_scale(38, 8).unwrap();
@@ -1115,9 +1225,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Decimal128)");
+        // Create a TypedBuilder for Nullable(Decimal128)
+        let data_type = DataType::Decimal128(38, 8);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Decimal128)");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         let expected = Decimal128Array::from(vec![Some(100), None, Some(300)])
             .with_precision_and_scale(38, 8)
@@ -1145,9 +1260,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Decimal256");
+        // Create a TypedBuilder for Decimal256
+        let data_type = DataType::Decimal256(76, 10);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Decimal256");
         let array = result.as_any().downcast_ref::<Decimal256Array>().unwrap();
         let expected = Decimal256Array::from(vec![i256::from(100), i256::from(200)])
             .with_precision_and_scale(76, 10)
@@ -1189,9 +1309,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Decimal256)");
+        // Create a TypedBuilder for Nullable(Decimal256)
+        let data_type = DataType::Decimal256(76, 10);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Decimal256)");
         let array = result.as_any().downcast_ref::<Decimal256Array>().unwrap();
         let expected =
             Decimal256Array::from(vec![Some(i256::from(100)), None, Some(i256::from(100))])
@@ -1210,9 +1335,14 @@ mod tests {
         let input = vec![];
         let mut reader = Cursor::new(input);
 
-        let result = deserialize_async(&type_hint, &mut reader, rows, &null_mask, &mut vec![])
-            .await
-            .expect("Failed to deserialize Int32 with zero rows");
+        // Create a TypedBuilder for Int32
+        let data_type = DataType::Int32;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+                .await
+                .expect("Failed to deserialize Int32 with zero rows");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array.len(), 0);
         assert_eq!(array, &Int32Array::from(Vec::<i32>::new()));

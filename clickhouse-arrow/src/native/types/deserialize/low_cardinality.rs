@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{Deserializer, DeserializerState, Type};
-use crate::io::ClickHouseRead;
+use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::native::types::low_cardinality::*;
 use crate::{Error, Result, Value};
 
@@ -176,5 +176,14 @@ impl Deserializer for LowCardinalityDeserializer {
                 ));
             }
         })
+    }
+
+    fn read_sync(
+        _type_: &Type,
+        _reader: &mut impl ClickHouseBytesRead,
+        _rows: usize,
+        _state: &mut DeserializerState,
+    ) -> Result<Vec<Value>> {
+        Err(Error::DeserializeError("LowCardinalityDeserializer sync not yet implemented".to_string()))
     }
 }

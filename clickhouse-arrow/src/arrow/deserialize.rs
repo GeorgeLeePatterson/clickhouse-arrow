@@ -23,9 +23,6 @@ use std::sync::Arc;
 
 use arrow::array::*;
 use arrow::datatypes::*;
-// TODO: Remove
-#[cfg(feature = "profile")]
-use tracy_client::span as tracy_span;
 
 use super::builder::TypedBuilder;
 use super::types::ch_to_arrow_type;
@@ -100,7 +97,7 @@ macro_rules! opt_value {
 pub(super) use opt_value;
 
 macro_rules! deser {
-    ($b:expr, $rows:expr => { $($t:pat => $i:ident => { $st:expr }),+ } $( _ => { $rem:expr } )?) => {
+    ($b:expr, $rows:expr => {$($t:pat => $i:ident => { $st:expr }),+} $(_ => { $rem:expr })?) => {
         match $b {
         $( $t => {
             for i in 0..$rows {
@@ -233,6 +230,7 @@ pub(crate) trait ClickHouseArrowDeserializer {
     /// deserialization fails.
     async fn deserialize_arrow_async<R: ClickHouseRead>(
         &self,
+        builder: &mut TypedBuilder,
         reader: &mut R,
         data_type: &DataType,
         rows: usize,
@@ -298,6 +296,7 @@ impl ClickHouseArrowDeserializer for Type {
     // clickhouse prepends dictionary values with a value representing null (the default value).
     async fn deserialize_arrow_async<R: ClickHouseRead>(
         &self,
+        builder: &mut TypedBuilder,
         reader: &mut R,
         data_type: &DataType,
         rows: usize,
@@ -324,7 +323,7 @@ impl ClickHouseArrowDeserializer for Type {
             | Type::Decimal64(_)
             | Type::Decimal128(_)
             | Type::Decimal256(_) =>
-                primitive::deserialize_async(self, reader, rows, nulls, rbuffer).await?,
+                primitive::deserialize_async(self, builder, reader, rows, nulls, rbuffer).await?,
             // String/Binary
             Type::String
             | Type::FixedSizedString(_)
@@ -338,16 +337,19 @@ impl ClickHouseArrowDeserializer for Type {
             | Type::UInt256
             | Type::Ipv6
             | Type::Uuid
-            | Type::Ipv4 => binary::deserialize_async(self, reader, rows, nulls).await?,
+            | Type::Ipv4 => binary::deserialize_async(self, builder, reader, rows, nulls).await?,
             // Nullable
-            Type::Nullable(inner) =>
-                Box::pin(null::deserialize_async(inner, data_type, reader, rows, rbuffer)).await?,
+            Type::Nullable(inner) => Box::pin(
+                    null::deserialize_async(inner, builder, data_type, reader, rows, rbuffer)
+            ).await?,
             // Array
-            Type::Array(inner) =>
-                Box::pin(list::deserialize_async(inner, data_type, reader, rows, nulls, rbuffer)).await?,
+            Type::Array(inner) => Box::pin(
+                list::deserialize_async(inner, builder, data_type, reader, rows, nulls, rbuffer)
+            ).await?,
             // LowCardinality
             Type::LowCardinality(inner) => Box::pin(low_cardinality::deserialize_async(
                 inner,
+                builder,
                 data_type,
                 reader,
                 rows,
@@ -356,22 +358,34 @@ impl ClickHouseArrowDeserializer for Type {
             ).await?,
             // Enum
             Type::Enum8(_) | Type::Enum16(_) =>
-                enums::deserialize_async(self, reader, rows, nulls).await?,
+                enums::deserialize_async(self, builder, reader, rows, nulls).await?,
             // Map
-            Type::Map(key, value) => Box::pin(
-                map::deserialize_async(key, value, data_type, reader, rows, nulls, rbuffer)
-            ).await?,
+            Type::Map(key, value) => Box::pin(map::deserialize_async(
+                (key, value),
+                builder,
+                data_type,
+                reader,
+                rows,
+                nulls,
+                rbuffer
+            )).await?,
             // Tuple
-            Type::Tuple(inner) =>
-                Box::pin(tuple::deserialize_async(inner, data_type, reader, rows, nulls, rbuffer)).await?,
+            Type::Tuple(inner) => Box::pin(
+                tuple::deserialize_async(inner, builder, data_type, reader, rows, nulls, rbuffer)
+            ).await?,
             // Geo types
             Type::Polygon | Type::MultiPolygon | Type::Point | Type::Ring => {
                 // Geo types should be converted earlier, this is a fallback
                 let normalized = normalize_geo_type(self).unwrap();
                 let (normalized_dt, _) = ch_to_arrow_type(&normalized, None)?;
-                Box::pin(
-                    normalized.deserialize_arrow_async(reader, &normalized_dt, rows, nulls, rbuffer)
-                ).await?
+                Box::pin(normalized.deserialize_arrow_async(
+                    builder,
+                    reader,
+                    &normalized_dt,
+                    rows,
+                    nulls,
+                    rbuffer
+                )).await?
             }
         })
     }
@@ -391,10 +405,6 @@ impl ClickHouseArrowDeserializer for Type {
         use primitive::primitive;
 
         type B = TypedBuilder;
-
-        // TODO: Remove
-        #[cfg(feature = "profile")]
-        let _outer_span = tracy_span!("deserialize_column");
 
         if let Type::Nullable(inner) = self {
             return null::deserialize(inner, builder, reader, data_type, rows, rbuffer);
@@ -416,7 +426,6 @@ impl ClickHouseArrowDeserializer for Type {
             // Decimals (all fixed size)
             B::Decimal32(b) => { deser_bulk!(raw; b, reader, rows, nulls, rbuffer, i32 => i128) },
             B::Decimal64(b) => { deser_bulk!(raw; b, reader, rows, nulls, rbuffer, i64 => i128) },
-            B::Decimal128(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i128) },
 
             // Dates and DateTimes (all fixed size)
             B::Date(b) => { deser_bulk!(raw; b, reader, rows, nulls, rbuffer, u16 => i32) },
@@ -449,7 +458,9 @@ impl ClickHouseArrowDeserializer for Type {
                     },
                     Type::Ipv4 => i => { opt_value!(ok => b, i, nulls, binary!(Ipv4 => reader)) },
                     Type::Ipv6 => i => { opt_value!(ok => b, i, nulls, binary!(Ipv6 => reader)) },
-                    Type::Uuid => i => { opt_value!(ok => b, i, nulls, binary!(Fixed(16) => reader)) },
+                    Type::Uuid => i => {
+                        opt_value!(ok => b, i, nulls, binary!(Fixed(16) => reader))
+                    },
                     // Special numeric types that need to be read as bytes
                     Type::Int128 | Type::UInt128 => i => {
                         opt_value!(ok => b, i, nulls, binary!(Fixed(16)=> reader))
@@ -636,9 +647,11 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
+        let type_ = Type::Int32;
         let data_type = DataType::Int32;
-        let array = Type::Int32
-            .deserialize_arrow_async(&mut reader, &data_type, 3, &[], &mut vec![])
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let expected = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
@@ -657,8 +670,11 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let array = Type::Nullable(Box::new(Type::Int32))
-            .deserialize_arrow_async(&mut reader, &DataType::Int32, 3, &[], &mut vec![])
+        let type_ = Type::Nullable(Box::new(Type::Int32));
+        let data_type = DataType::Int32;
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let expected = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
@@ -675,8 +691,11 @@ mod tests {
             5, b'w', b'o', b'r', b'l', b'd', // "world"
         ];
         let mut reader = Cursor::new(input);
-        let array = Type::String
-            .deserialize_arrow_async(&mut reader, &DataType::Utf8, 3, &[], &mut vec![])
+        let type_ = Type::String;
+        let data_type = DataType::Utf8;
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let expected = Arc::new(StringArray::from(vec!["hello", "", "world"])) as ArrayRef;
@@ -695,8 +714,11 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
 
-        let array = Type::Nullable(Box::new(Type::String))
-            .deserialize_arrow_async(&mut reader, &DataType::Utf8, 3, &[], &mut vec![])
+        let type_ = Type::Nullable(Box::new(Type::String));
+        let data_type = DataType::Utf8;
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let expected = Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])) as ArrayRef;
@@ -722,8 +744,10 @@ mod tests {
 
         let data_type =
             DataType::List(Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false)));
-        let array = Type::Array(Box::new(Type::Int32))
-            .deserialize_arrow_async(&mut reader, &data_type, 3, &[], &mut vec![])
+        let type_ = Type::Array(Box::new(Type::Int32));
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let list_array = array.as_any().downcast_ref::<ListArray>().unwrap();
@@ -755,8 +779,10 @@ mod tests {
 
         let data_type =
             DataType::List(Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, true)));
-        let array = Type::Nullable(Box::new(Type::Array(Box::new(Type::Int32))))
-            .deserialize_arrow_async(&mut reader, &data_type, 3, &[], &mut vec![])
+        let type_ = Type::Nullable(Box::new(Type::Array(Box::new(Type::Int32))));
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let list_array = array.as_any().downcast_ref::<ListArray>().unwrap();
@@ -803,8 +829,10 @@ mod tests {
             )),
             true,
         );
-        let array = Type::Map(Box::new(Type::String), Box::new(Type::Int32))
-            .deserialize_arrow_async(&mut reader, &data_type, 3, &[], &mut vec![])
+        let type_ = Type::Map(Box::new(Type::String), Box::new(Type::Int32));
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .await
             .unwrap();
         let map_array = array.as_any().downcast_ref::<MapArray>().unwrap();
@@ -824,8 +852,11 @@ mod tests {
     async fn test_deserialize_int32_zero_rows() {
         let input = vec![];
         let mut reader = Cursor::new(input);
-        let array = Type::Int32
-            .deserialize_arrow_async(&mut reader, &DataType::Int32, 0, &[], &mut vec![])
+        let type_ = Type::Int32;
+        let data_type = DataType::Int32;
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 0, &[], &mut vec![])
             .await
             .unwrap();
         let expected = Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef;
@@ -837,8 +868,10 @@ mod tests {
         let input = vec![];
         let mut reader = Cursor::new(input);
         let data_type = DataType::List(Arc::new(Field::new("", DataType::Int32, false)));
-        let array = Type::Array(Box::new(Type::Int32))
-            .deserialize_arrow_async(&mut reader, &data_type, 0, &[], &mut vec![])
+        let type_ = Type::Array(Box::new(Type::Int32));
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 0, &[], &mut vec![])
             .await
             .unwrap();
         let list_array = array.as_any().downcast_ref::<ListArray>();
@@ -856,8 +889,10 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let data_type = DataType::Dictionary(DataType::Int32.into(), DataType::Binary.into());
-        let array = Type::LowCardinality(Box::new(Type::Binary))
-            .deserialize_arrow_async(&mut reader, &data_type, 0, &[], &mut vec![])
+        let type_ = Type::LowCardinality(Box::new(Type::Binary));
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = type_
+            .deserialize_arrow_async(&mut builder, &mut reader, &data_type, 0, &[], &mut vec![])
             .await
             .unwrap();
         let array = array.as_any().downcast_ref::<DictionaryArray<Int32Type>>();
@@ -865,6 +900,7 @@ mod tests {
         let array = array.unwrap();
         assert!(array.is_empty());
     }
+
 }
 
 #[cfg(test)]
@@ -892,7 +928,7 @@ mod tests_sync {
 
         let data_type = DataType::Int32;
         let type_ = Type::Int32;
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -914,7 +950,7 @@ mod tests_sync {
 
         let type_ = Type::Nullable(Box::new(Type::Int32));
         let data_type = DataType::Int32;
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -935,7 +971,7 @@ mod tests_sync {
 
         let type_ = Type::String;
         let data_type = DataType::Utf8;
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -957,7 +993,7 @@ mod tests_sync {
 
         let type_ = Type::Nullable(Type::String.into());
         let data_type = DataType::Utf8;
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -985,7 +1021,7 @@ mod tests_sync {
         let type_ = Type::Array(Box::new(Type::Int32));
         let data_type =
             DataType::List(Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false)));
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -1019,7 +1055,7 @@ mod tests_sync {
         let type_ = Type::Nullable(Box::new(Type::Array(Box::new(Type::Int32))));
         let data_type =
             DataType::List(Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, true)));
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -1068,7 +1104,7 @@ mod tests_sync {
             true,
         );
         let type_ = Type::Map(Box::new(Type::String), Box::new(Type::Int32));
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 3, &[], &mut vec![])
             .unwrap();
@@ -1090,7 +1126,7 @@ mod tests_sync {
         let mut reader = Cursor::new(Vec::new());
         let type_ = Type::Int32;
         let data_type = DataType::Int32;
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 0, &[], &mut vec![])
             .unwrap();
@@ -1104,7 +1140,7 @@ mod tests_sync {
         let mut reader = Cursor::new(input);
         let data_type = DataType::List(Arc::new(Field::new("", DataType::Int32, false)));
         let type_ = Type::Array(Box::new(Type::Int32));
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 0, &[], &mut vec![])
             .unwrap();
@@ -1123,7 +1159,7 @@ mod tests_sync {
         let mut reader = Cursor::new(input);
         let data_type = DataType::Dictionary(DataType::Int32.into(), DataType::Binary.into());
         let type_ = Type::LowCardinality(Box::new(Type::Binary));
-        let mut builder = TypedBuilder::try_new(&type_, &data_type, "").unwrap();
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         let array = type_
             .deserialize_arrow(&mut builder, &mut reader, &data_type, 0, &[], &mut vec![])
             .unwrap();
@@ -1132,4 +1168,5 @@ mod tests_sync {
         let array = array.unwrap();
         assert!(array.is_empty());
     }
+
 }

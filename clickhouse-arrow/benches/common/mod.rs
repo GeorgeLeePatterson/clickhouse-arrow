@@ -102,6 +102,7 @@ pub(crate) fn create_test_native_rows(rows: usize) -> Vec<ClickHouseNativeRow> {
 
 #[allow(unused)]
 pub(crate) fn insert_rs(
+    bench_id: &str,
     table: &str,
     rows: usize,
     client: &ClickHouseRsClient,
@@ -109,10 +110,15 @@ pub(crate) fn insert_rs(
     group: &mut BenchmarkGroup<'_, WallTime>,
     rt: &Runtime,
 ) {
-    let _ = group.sample_size(DEFAULT_INSERT_SAMPLE_SIZE).bench_with_input(
-        BenchmarkId::new("clickhouse_rowbinary", rows),
-        &(table, client),
-        |b, (table, client)| {
+    let id = if bench_id.is_empty() {
+        "clickhouse_rowbinary"
+    } else {
+        &format!("clickhouse_rowbinary_{bench_id}")
+    };
+    let _ = group
+        .sample_size(DEFAULT_INSERT_SAMPLE_SIZE)
+        .measurement_time(std::time::Duration::from_secs(30))
+        .bench_with_input(BenchmarkId::new(id, rows), &(table, client), |b, (table, client)| {
             b.to_async(rt).iter_batched(
                 || batch.to_vec(), // Setup: clone the rows for each iteration
                 |rows| async move {
@@ -124,8 +130,7 @@ pub(crate) fn insert_rs(
                 },
                 criterion::BatchSize::SmallInput,
             );
-        },
-    );
+        });
 }
 
 #[allow(unused)]

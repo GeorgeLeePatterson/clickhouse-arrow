@@ -30,7 +30,7 @@ impl Qid {
     }
 
     // Helper to calculate a determinstic hash from a qid
-    #[cfg_attr(not(feature = "fast_mode"), expect(unused))]
+    #[cfg_attr(not(feature = "inner_pool"), expect(unused))]
     pub(crate) fn key(self) -> usize {
         self.into_inner().as_bytes().iter().copied().map(usize::from).sum::<usize>()
     }

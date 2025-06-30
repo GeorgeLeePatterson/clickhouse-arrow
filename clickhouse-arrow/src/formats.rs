@@ -21,10 +21,7 @@ pub trait ClientFormat: sealed::ClientFormatImpl<Self::Data> + Send + Sync + 'st
 }
 
 pub(crate) mod sealed {
-    #[cfg(feature = "row_binary")]
-    use futures_util::Stream;
-
-    use super::DeserializerState;
+    use super::{DeserializerState, SerializerState};
     use crate::Type;
     use crate::client::connection::ClientMetadata;
     use crate::errors::Result;
@@ -37,8 +34,12 @@ pub(crate) mod sealed {
     {
         type Schema: std::fmt::Debug + Clone + Send + Sync + 'static;
         type Deser: Default + Send + Sync + 'static;
+        type Ser: Default + Send + Sync + 'static;
 
-        fn reset_state(_state: &mut DeserializerState<Self::Deser>) {}
+        #[expect(unused)]
+        fn finish_ser(_state: &mut SerializerState<Self::Ser>) {}
+
+        fn finish_deser(_state: &mut DeserializerState<Self::Deser>) {}
 
         fn write<'a, W: ClickHouseWrite>(
             writer: &'a mut W,
@@ -55,21 +56,6 @@ pub(crate) mod sealed {
             metadata: ClientMetadata,
             state: &'a mut DeserializerState<Self::Deser>,
         ) -> impl Future<Output = Result<Option<T>>> + Send + 'a;
-
-        // Only relevant for RowBinary
-        #[cfg(feature = "row_binary")]
-        fn read_rows<S>(
-            _reader: &mut S,
-            _schema: Self::Schema,
-            _overrides: Option<crate::prelude::SchemaConversions>,
-            _metadata: ClientMetadata,
-            _summmary: crate::row::protocol::HttpSummary,
-        ) -> impl Future<Output = Result<Vec<T>>> + Send
-        where
-            S: Stream<Item = Result<bytes::Bytes>> + Unpin + Send,
-        {
-            async { unimplemented!() }
-        }
     }
 }
 
@@ -93,14 +79,19 @@ impl<T: Default> DeserializerState<T> {
 
 /// Context maintained during serialization
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SerializerState {
-    pub(crate) options: Option<ArrowOptions>,
+pub(crate) struct SerializerState<T: Default = ()> {
+    pub(crate) options:    Option<ArrowOptions>,
+    pub(crate) serializer: T,
 }
 
-impl SerializerState {
+impl<T: Default> SerializerState<T> {
     #[must_use]
     pub(crate) fn with_arrow_options(mut self, options: ArrowOptions) -> Self {
         self.options = Some(options);
         self
     }
+
+    #[expect(unused)]
+    #[must_use]
+    pub(crate) fn serializer(&mut self) -> &mut T { &mut self.serializer }
 }

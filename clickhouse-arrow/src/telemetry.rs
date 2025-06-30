@@ -1,6 +1,6 @@
 //! ## Tracing (telemetry) utilities and constants.
 //!
-//! `clickhouse_arrow` uses the `tracing` crate to emit spans and events for debugging and
+//! `clickhouse-arrow` uses the `tracing` crate to emit spans and events for debugging and
 //! monitoring. To enable tracing, add a subscriber in your application:
 //!
 //! ```rust

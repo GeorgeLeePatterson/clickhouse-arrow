@@ -333,7 +333,12 @@ pub(crate) fn arrow_to_ch_type(
         }
     };
 
-    Ok(if is_nullable { Type::Nullable(Box::new(inner_type)) } else { inner_type })
+    // ClickHouse doesn't support Nullable(Array) or Nullable(Map)
+    Ok(if is_nullable && !matches!(inner_type, Type::Array(_) | Type::Map(_, _)) { 
+        Type::Nullable(Box::new(inner_type)) 
+    } else { 
+        inner_type 
+    })
 }
 
 /// Convert a clickhouse [`Type`] to an arrow [`arrow::datatypes::DataType`].
@@ -966,9 +971,11 @@ mod tests {
             .is_err()
         );
 
-        // Test with outer nullability ignoring error as default
+        // Test conversion back strips nullable wrapper from arrays due to ClickHouse limitations
+        // ClickHouse categorically rejects Nullable(Array(...)) at any level
         let ch_type_back = arrow_to_ch_type(&expected_arrow_type, false, None).unwrap();
-        assert_eq!(ch_type_back, ch_type);
+        let expected_back = Type::Array(Box::new(Type::Array(Box::new(Type::Int32))));
+        assert_eq!(ch_type_back, expected_back);
     }
 
     /// Tests `Nullable(LowCardinality(Int32))` round trip and failure when option is set.

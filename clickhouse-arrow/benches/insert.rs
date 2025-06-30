@@ -1,7 +1,7 @@
 #![expect(unused_crate_dependencies)]
 mod common;
 
-use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
 use clickhouse_arrow::CompressionMethod;
@@ -14,6 +14,7 @@ use tokio::runtime::Runtime;
 use self::common::{init, print_msg};
 
 fn insert_arrow(
+    compression: &str,
     table: &str,
     rows: usize,
     client: &ArrowClient,
@@ -23,28 +24,24 @@ fn insert_arrow(
 ) {
     // Benchmark native arrow insert
     let query = format!("INSERT INTO {table} FORMAT NATIVE");
-    let _ = group
-        // Reduce sample size for slower operations
-        .sample_size(50)
-        // .measurement_time(Duration::from_secs(60))
-        .bench_with_input(
-            BenchmarkId::new("clickhouse_arrow", rows),
-            &(&query, client),
-            |b, (query, client)| {
-                b.to_async(rt).iter_batched(
-                    || batch.clone(),
-                    |batch| async move {
-                        let stream = client
-                            .insert(query.as_str(), batch, None)
-                            .await
-                            .inspect_err(|e| print_msg(format!("Insert error\n{e:?}")))
-                            .unwrap();
-                        drop(stream);
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+    let _ = group.sample_size(50).measurement_time(Duration::from_secs(30)).bench_with_input(
+        BenchmarkId::new(format!("clickhouse_arrow_{compression}"), rows),
+        &(&query, client),
+        |b, (query, client)| {
+            b.to_async(rt).iter_batched(
+                || batch.clone(),
+                |batch| async move {
+                    let stream = client
+                        .insert(query.as_str(), batch, None)
+                        .await
+                        .inspect_err(|e| print_msg(format!("Insert error\n{e:?}")))
+                        .unwrap();
+                    drop(stream);
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        },
+    );
 }
 
 #[allow(clippy::too_many_lines)]
@@ -71,14 +68,27 @@ fn criterion_benchmark(c: &mut Criterion) {
         let test_rows = common::create_test_rows(rows);
         let schema = batch.schema();
 
-        // Setup clients
-        let arrow_client_builder =
-            arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-                .with_compression(CompressionMethod::None);
+        // Setup arrow clients
         let arrow_client = rt
-            .block_on(arrow_client_builder.build::<ArrowFormat>())
+            .block_on(
+                arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
+                    .with_compression(CompressionMethod::None)
+                    .build::<ArrowFormat>(),
+            )
             .expect("clickhouse native arrow setup");
-        let rs_client = common::setup_clickhouse_rs(ch);
+        let arrow_client_lz4 = rt
+            .block_on(
+                arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
+                    .with_compression(CompressionMethod::LZ4)
+                    .build::<ArrowFormat>(),
+            )
+            .expect("clickhouse native arrow setup");
+
+        // Setup rs clients
+        let rs_client =
+            common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::None);
+        let rs_client_lz4 =
+            common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::Lz4);
 
         // Setup database
         rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_client))
@@ -92,18 +102,37 @@ fn criterion_benchmark(c: &mut Criterion) {
             .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
             .expect("clickhouse rs table");
 
-        // Wrap clients in Arc for sharing across iterations
-        let arrow_client = Arc::new(arrow_client);
-        let rs_client = Arc::new(rs_client);
+        // Benchmark arrow insert no compression
+        insert_arrow("none", &arrow_table_ref, rows, &arrow_client, &batch, &mut insert_group, &rt);
 
-        // Benchmark native arrow insert
-        insert_arrow(&arrow_table_ref, rows, arrow_client.as_ref(), &batch, &mut insert_group, &rt);
-
-        // Benchmark clickhouse-rs insert
+        // Benchmark clickhouse-rs insert no compression
         common::insert_rs(
+            "none",
             &rs_table_ref,
             rows,
-            rs_client.as_ref(),
+            &rs_client,
+            &test_rows,
+            &mut insert_group,
+            &rt,
+        );
+
+        // Benchmark arrow insert lz4 compression
+        insert_arrow(
+            "lz4",
+            &arrow_table_ref,
+            rows,
+            &arrow_client_lz4,
+            &batch,
+            &mut insert_group,
+            &rt,
+        );
+
+        // Benchmark clickhouse-rs insert lz4 compression
+        common::insert_rs(
+            "lz4",
+            &rs_table_ref,
+            rows,
+            &rs_client_lz4,
             &test_rows,
             &mut insert_group,
             &rt,

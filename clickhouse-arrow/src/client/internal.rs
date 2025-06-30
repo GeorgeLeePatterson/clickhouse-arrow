@@ -121,8 +121,8 @@ impl<T: ClientFormat> InternalConn<T> {
         events: Arc<broadcast::Sender<Event>>,
         server_hello: Arc<ServerHello>,
     ) -> Self {
-        // Generate a unique connection id. Since `Connection` supports 2 connections in `fast_mode`
-        // it's helpful to distinguish.
+        // Generate a unique connection id. Since `Connection` supports up to 4 connections in
+        // `inner_pool` it's helpful to distinguish.
         let conn_id = CONN_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let cid = Box::leak(format!("{}.{conn_id}", metadata.client_id).into_boxed_str());
         let state = DeserializerState::default().with_arrow_options(metadata.arrow_options);
@@ -376,12 +376,12 @@ impl<T: ClientFormat> InternalConn<T> {
                 if error.is_fatal() {
                     return Err(error.into());
                 }
-                T::reset_state(&mut self.state);
+                T::finish_deser(&mut self.state);
             }
             ServerPacket::EndOfStream => {
                 debug!({ ATT_CON } = cid, { ATT_QID } = %qid, "END OF STREAM");
                 drop(self.executing.take());
-                T::reset_state(&mut self.state);
+                T::finish_deser(&mut self.state);
             }
             ServerPacket::Hello(_) => {
                 return Err(Error::Protocol("Unexpected Server Hello".to_string()));
@@ -513,7 +513,7 @@ impl<T: ClientFormat> InternalConn<T> {
     }
 }
 
-#[cfg(feature = "fast_mode")]
+#[cfg(feature = "inner_pool")]
 impl<Data: Send + Sync + 'static> Operation<Data> {
     /// Default helper method to calculate the "load" or weight an operation incurs
     pub(crate) fn weight(&self, finished: bool) -> u8 {

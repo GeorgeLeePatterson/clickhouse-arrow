@@ -65,20 +65,23 @@ use crate::{Error, Result, Type};
 /// ```
 pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     inner: &Type,
+    builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
     rbuffer: &mut Vec<u8>,
 ) -> Result<ArrayRef> {
-    let mut mask = vec![0u8; rows];
-    let _ = reader.read_exact(&mut mask).await?;
-    if mask.len() != rows {
-        return Err(Error::DeserializeError(format!(
-            "Mask length {} does not match rows {rows}",
-            mask.len()
-        )));
-    }
-    inner.deserialize_arrow_async(reader, data_type, rows, &mask, rbuffer).await
+    let nulls = if rows > 0 {
+        let mut mask = vec![0u8; rows];
+        let _ = reader.read_exact(&mut mask).await?;
+        if mask.len() != rows {
+            return Err(Error::DeserializeError(format!("Nulls={}, rows={rows}", mask.len())));
+        }
+        mask
+    } else {
+        vec![]
+    };
+    inner.deserialize_arrow_async(builder, reader, data_type, rows, &nulls, rbuffer).await
 }
 
 pub(crate) fn deserialize<R: ClickHouseBytesRead>(
@@ -117,7 +120,8 @@ mod tests {
     /// Tests deserialization of `Nullable(Int32)` with null values.
     #[tokio::test]
     async fn test_deserialize_nullable_int32() {
-        let inner_type = Type::Int32;
+        let type_ = Type::Nullable(Box::new(Type::Int32));
+        let inner_type = type_.strip_null();
         let rows = 3;
         let input = vec![
             // Null mask: [0, 1, 0] (0=non-null, 1=null)
@@ -127,10 +131,12 @@ mod tests {
             3, 0, 0, 0, // 3
         ];
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(&inner_type, None).unwrap().0;
-        let result = deserialize_async(&inner_type, &data_type, &mut reader, rows, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Int32)");
+        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
+        let result =
+            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Int32)");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array, &Int32Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -139,7 +145,8 @@ mod tests {
     /// Tests deserialization of `Nullable(String)` with null values.
     #[tokio::test]
     async fn test_deserialize_nullable_string() {
-        let inner_type = Type::String;
+        let type_ = Type::Nullable(Box::new(Type::String));
+        let inner_type = type_.strip_null();
         let rows = 3;
         let input = vec![
             // Null mask: [0, 1, 0] (0=non-null, 1=null)
@@ -150,10 +157,12 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let data_type = ch_to_arrow_type(&inner_type, opts).unwrap().0;
-        let result = deserialize_async(&inner_type, &data_type, &mut reader, rows, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(String)");
+        let data_type = ch_to_arrow_type(inner_type, opts).unwrap().0;
+        let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
+        let result =
+            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(String)");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(array, &StringArray::from(vec![Some("a"), None, Some("c")]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -162,7 +171,8 @@ mod tests {
     /// Tests deserialization of `Nullable(Array(Int32))` with null arrays.
     #[tokio::test]
     async fn test_deserialize_nullable_array_int32() {
-        let inner_type = Type::Array(Box::new(Type::Int32));
+        let type_ = Type::Nullable(Box::new(Type::Array(Box::new(Type::Int32))));
+        let inner_type = type_.strip_null();
         let rows = 3;
         let input = vec![
             // Null mask: [0, 1, 0] (0=non-null, 1=null)
@@ -178,10 +188,12 @@ mod tests {
             5, 0, 0, 0, // 5
         ];
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(&inner_type, None).unwrap().0;
-        let result = deserialize_async(&inner_type, &data_type, &mut reader, rows, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Array(Int32))");
+        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
+        let result =
+            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Array(Int32))");
         let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
         let values = list_array.values().as_any().downcast_ref::<Int32Array>().unwrap();
 
@@ -197,14 +209,17 @@ mod tests {
     /// Tests deserialization of `Nullable(Int32)` with zero rows.
     #[tokio::test]
     async fn test_deserialize_nullable_int32_zero_rows() {
-        let inner_type = Type::Int32;
+        let type_ = Type::Nullable(Box::new(Type::Int32));
+        let inner_type = type_.strip_null();
         let rows = 0;
         let input = vec![]; // No data for zero rows
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(&inner_type, None).unwrap().0;
-        let result = deserialize_async(&inner_type, &data_type, &mut reader, rows, &mut vec![])
-            .await
-            .expect("Failed to deserialize Nullable(Int32) with zero rows");
+        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
+        let result =
+            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+                .await
+                .expect("Failed to deserialize Nullable(Int32) with zero rows");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array.len(), 0);
         assert_eq!(array, &Int32Array::from(Vec::<i32>::new()));
@@ -213,10 +228,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_null_mask_length() {
-        let data_type = ch_to_arrow_type(&Type::String, None).unwrap().0;
+        let type_ = Type::Nullable(Box::new(Type::String));
+        let inner_type = type_.strip_null();
+        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
         assert!(
             deserialize_async(
-                &Type::String,
+                inner_type,
+                &mut builder,
                 &data_type,
                 &mut Cursor::new(vec![0_u8; 50]),
                 100,

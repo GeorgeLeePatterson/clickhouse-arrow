@@ -8,7 +8,7 @@ use super::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::deserialize::ClickHouseNativeDeserializer;
 use crate::formats::protocol_data::ProtocolData;
 use crate::formats::{DeserializerState, SerializerState};
-use crate::io::{ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::values::Value;
 use crate::prelude::*;
 use crate::serialize::ClickHouseNativeSerializer;
@@ -68,6 +68,25 @@ impl Block {
             out.push((&**name, type_.strip_low_cardinality(), column.into_iter()));
         }
         BlockRowValueIter { column_data: out }
+    }
+
+    /// Estimate the serialized size of this block for buffer allocation
+    pub fn estimate_size(&self) -> usize {
+        let mut size = 16; // BlockInfo + columns count + rows count
+
+        #[allow(clippy::cast_possible_truncation)]
+        let rows = self.rows as usize;
+
+        for (name, type_) in &self.column_types {
+            // Column name + type string
+            size += name.len() + type_.to_string().len() + 10; // +10 for length prefixes and overhead
+
+            // Estimate data size
+            size += rows * type_.estimate_capacity();
+        }
+
+        // Add 20% buffer for overhead
+        size * 6 / 5
     }
 
     /// Create a block from a vector of rows and a schema.
@@ -140,6 +159,102 @@ impl Block {
 impl ProtocolData<Self, ()> for Block {
     type Options = ();
 
+    async fn write_async<W: ClickHouseWrite>(
+        mut self,
+        writer: &mut W,
+        revision: u64,
+        _header: Option<&[(String, Type)]>,
+        _options: (),
+    ) -> Result<()> {
+        if revision > 0 {
+            self.info.write_async(writer).await?;
+        }
+
+        let columns = self.column_types.len();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let rows = self.rows as usize;
+
+        writer.write_var_uint(columns as u64).await?;
+        writer.write_var_uint(self.rows).await?;
+
+        for (name, type_) in self.column_types {
+            let mut values = Vec::with_capacity(rows);
+            values.extend(self.column_data.drain(..rows));
+
+            if values.len() != rows {
+                return Err(Error::Protocol(format!(
+                    "row and column length mismatch. {} != {}",
+                    values.len(),
+                    rows
+                )));
+            }
+
+            // EncodeStart
+            writer.write_string(&name).await?;
+            writer.write_string(type_.to_string()).await?;
+
+            if self.rows > 0 {
+                if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
+                    writer.write_u8(0).await?;
+                }
+
+                let mut state = SerializerState::default();
+                type_.serialize_prefix_async(writer, &mut state).await?;
+                type_.serialize_column(values, writer, &mut state).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write<W: ClickHouseBytesWrite>(
+        mut self,
+        writer: &mut W,
+        revision: u64,
+        _header: Option<&[(String, Type)]>,
+        _options: (),
+    ) -> Result<()> {
+        if revision > 0 {
+            self.info.write(writer)?;
+        }
+
+        let columns = self.column_types.len();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let rows = self.rows as usize;
+
+        writer.put_var_uint(columns as u64)?;
+        writer.put_var_uint(self.rows)?;
+
+        for (name, type_) in self.column_types {
+            let mut values = Vec::with_capacity(rows);
+            values.extend(self.column_data.drain(..rows));
+
+            if values.len() != rows {
+                return Err(Error::Protocol(format!(
+                    "row and column length mismatch. {} != {}",
+                    values.len(),
+                    rows
+                )));
+            }
+
+            // EncodeStart
+            writer.put_string(&name)?;
+            writer.put_string(type_.to_string())?;
+
+            if self.rows > 0 {
+                if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
+                    writer.put_u8(0);
+                }
+
+                let mut state = SerializerState::default();
+                type_.serialize_prefix(writer, &mut state);
+                type_.serialize_column_sync(values, writer, &mut state)?;
+            }
+        }
+        Ok(())
+    }
+
     async fn read_async<R: ClickHouseRead>(
         reader: &mut R,
         revision: u64,
@@ -200,51 +315,64 @@ impl ProtocolData<Self, ()> for Block {
         Ok(block)
     }
 
-    async fn write_async<W: ClickHouseWrite>(
-        mut self,
-        writer: &mut W,
+    fn read<R: ClickHouseBytesRead + 'static>(
+        reader: &mut R,
         revision: u64,
-        _header: Option<&[(String, Type)]>,
         _options: (),
-    ) -> Result<()> {
-        if revision > 0 {
-            self.info.write_async(writer).await?;
-        }
-
-        let columns = self.column_types.len();
+        state: &mut DeserializerState,
+    ) -> Result<Self> {
+        let info = if revision > 0 { BlockInfo::read(reader)? } else { BlockInfo::default() };
 
         #[allow(clippy::cast_possible_truncation)]
-        let rows = self.rows as usize;
+        let columns = reader.try_get_var_uint()? as usize;
+        let rows = reader.try_get_var_uint()?;
 
-        writer.write_var_uint(columns as u64).await?;
-        writer.write_var_uint(self.rows).await?;
+        let mut block = Block {
+            info,
+            rows,
+            column_types: Vec::with_capacity(columns),
+            column_data: Vec::with_capacity(columns),
+        };
 
-        for (name, type_) in self.column_types {
-            let mut values = Vec::with_capacity(rows);
-            values.extend(self.column_data.drain(..rows));
+        for i in 0..columns {
+            let name = String::from_utf8(
+                reader
+                    .try_get_string()
+                    .inspect_err(|e| error!("reading column name (index {i}): {e}"))?
+                    .to_vec(),
+            )?;
 
-            if values.len() != rows {
-                return Err(Error::Protocol(format!(
-                    "row and column length mismatch. {} != {}",
-                    values.len(),
-                    rows
-                )));
+            let type_name = String::from_utf8(
+                reader
+                    .try_get_string()
+                    .inspect_err(|e| error!("reading column type (name {name}): {e}"))?
+                    .to_vec(),
+            )?;
+
+            // TODO: implement
+            let mut _has_custom_serialization = false;
+            if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
+                _has_custom_serialization = reader.try_get_u8()? != 0;
             }
 
-            // EncodeStart
-            writer.write_string(&name).await?;
-            writer.write_string(type_.to_string()).await?;
+            let type_ = Type::from_str(&type_name).inspect_err(|error| {
+                error!(?error, "Type deserialize failed: name={name}, type={type_name}");
+            })?;
 
-            if self.rows > 0 {
-                if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                    writer.write_u8(0).await?;
-                }
+            #[allow(clippy::cast_possible_truncation)]
+            let mut row_data = if rows > 0 {
+                type_.deserialize_prefix(reader)?;
+                type_
+                    .deserialize_column_sync(reader, rows as usize, state)
+                    .inspect_err(|e| error!("deserialize (name {name}): {e}"))?
+            } else {
+                vec![]
+            };
 
-                let mut state = SerializerState::default();
-                type_.serialize_prefix_async(writer, &mut state).await?;
-                type_.serialize_column(values, writer, &mut state).await?;
-            }
+            block.column_types.push((name, type_));
+            block.column_data.append(&mut row_data);
         }
-        Ok(())
+
+        Ok(block)
     }
 }

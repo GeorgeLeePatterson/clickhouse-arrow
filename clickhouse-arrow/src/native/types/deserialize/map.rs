@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::ClickHouseRead;
+use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::native::protocol::MAX_STRING_SIZE;
 use crate::native::values::Value;
 use crate::{Error, Result};
@@ -78,5 +78,14 @@ impl Deserializer for MapDeserializer {
             out.push(Value::Map(key_out, value_out));
         }
         Ok(out)
+    }
+
+    fn read_sync(
+        _type_: &Type,
+        _reader: &mut impl ClickHouseBytesRead,
+        _rows: usize,
+        _state: &mut DeserializerState,
+    ) -> Result<Vec<Value>> {
+        Err(Error::DeserializeError("MapDeserializer sync not yet implemented".to_string()))
     }
 }

@@ -123,6 +123,9 @@ impl ClickHouseNativeDeserializer for Type {
                     inner_type.deserialize_prefix(reader)?;
                 }
             }
+            Type::Object => {
+                let _ = reader.try_get_i8()?;
+            }
             _ => {}
         }
         Ok(())

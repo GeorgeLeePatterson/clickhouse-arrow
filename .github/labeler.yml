@@ -1,0 +1,38 @@
+# Configuration for PR labeler action
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file: 
+      - '**/*.md'
+      - 'docs/**'
+
+dependencies:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.github/**'
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'tests/**'
+      - '**/tests/**'
+      - '**/*test*'
+
+benchmarks:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'benches/**'
+      - '**/benches/**'
+
+examples:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'examples/**'
+      - '**/examples/**'

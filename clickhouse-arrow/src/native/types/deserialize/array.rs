@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::ClickHouseRead;
+use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::{Result, Value};
 
 /// Trait to allow reading `Item`s and packing them into a `Value::*`.
@@ -55,6 +55,36 @@ impl<T: ArrayDeserializerGeneric + 'static> Deserializer for T {
         let mut items = Self::inner_type(type_)?
             .deserialize_column(reader, offsets[offsets.len() - 1] as usize, state)
             .await?
+            .into_iter()
+            .map(Self::item_mapping);
+
+        let mut out = Vec::with_capacity(rows);
+        let mut read_offset = 0u64;
+        for offset in offsets {
+            let len = offset - read_offset;
+            read_offset = offset;
+            #[expect(clippy::cast_possible_truncation)]
+            out.push(Self::inner_value((&mut items).take(len as usize).collect()));
+        }
+
+        Ok(out)
+    }
+
+    fn read_sync(
+        type_: &Type,
+        reader: &mut impl ClickHouseBytesRead,
+        rows: usize,
+        state: &mut DeserializerState,
+    ) -> Result<Vec<Value>> {
+        let mut offsets = Vec::with_capacity(rows);
+        for _ in 0..rows {
+            offsets.push(reader.try_get_u64_le()?);
+        }
+
+        // TODO: This could probably be optimized
+        #[expect(clippy::cast_possible_truncation)]
+        let mut items = Self::inner_type(type_)?
+            .deserialize_column_sync(reader, offsets[offsets.len() - 1] as usize, state)?
             .into_iter()
             .map(Self::item_mapping);
 

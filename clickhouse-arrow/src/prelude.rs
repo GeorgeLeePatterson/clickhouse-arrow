@@ -14,6 +14,19 @@ pub use crate::{ArrowClient, Client, ClientBuilder, CompressionMethod, NativeCli
 
 // TODO: Encrypt
 /// Newtype to protect secrets from being logged
+/// A wrapper type for sensitive string data like passwords.
+///
+/// This type provides protection against accidental exposure of sensitive data
+/// in logs, debug output, or error messages. The inner value is not displayed
+/// in `Debug` or `Display` implementations.
+///
+/// # Example
+/// ```
+/// use clickhouse_arrow::prelude::Secret;
+/// 
+/// let password = Secret::new("my_password");
+/// println!("{:?}", password); // Prints: Secret(REDACTED)
+/// ```
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub struct Secret(String);

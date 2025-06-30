@@ -1,43 +1,45 @@
-/// Deserialization logic for `ClickHouse` `Enum8` and `Enum16` types into Arrow
-/// `DictionaryArray`.
-///
-/// This module provides a function to deserialize `ClickHouse`’s native format for `Enum8` and
-/// `Enum16` types into an Arrow `DictionaryArray` with integer keys (`Int8` or `Int16`) and
-/// string values.
-///
-/// The `deserialize` function reads raw indices (`i8` for `Enum8`, `i16` for `Enum16`,
-/// little-endian) from the reader and maps them to string values based on the provided enum
-/// pairs (e.g., `[("a", 1), ("b", 2)]`). Indices are normalized to zero-based keys for Arrow’s
-/// `DictionaryArray` (e.g., `1, 2` becomes `0, 1`).
-///
-/// # Examples
-/// ```rust,ignore
-/// use arrow::array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
-/// use arrow::datatypes::Int8Type;
-/// use clickhouse_arrow::types::{Type, enums::deserialize, DeserializerState};
-/// use std::sync::Arc;
-/// use tokio::io::Cursor;
-///
-/// #[tokio::test]
-/// async fn test_enum8() {
-///     let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
-///     let data = vec![1, 2, 1]; // Keys: [1, 2, 1] -> ["a", "b", "a"]
-///     let mut reader = Cursor::new(data);
-///
-///     let array = deserialize(&Type::Enum8(pairs), &mut reader, 3, &[])
-///         .await
-///         .unwrap();
-///     let keys = Arc::new(Int8Array::from(vec![0, 1, 0])) as ArrayRef; // Normalized keys
-///     let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
-///     let expected = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap()) as ArrayRef;
-///     assert_eq!(array.as_ref(), expected.as_ref());
-/// }
-/// ```
+//! Deserialization logic for `ClickHouse` `Enum8` and `Enum16` types into Arrow
+//! `DictionaryArray`.
+//!
+//! This module provides a function to deserialize `ClickHouse`’s native format for `Enum8` and
+//! `Enum16` types into an Arrow `DictionaryArray` with integer keys (`Int8` or `Int16`) and
+//! string values.
+//!
+//! The `deserialize` function reads raw indices (`i8` for `Enum8`, `i16` for `Enum16`,
+//! little-endian) from the reader and maps them to string values based on the provided enum
+//! pairs (e.g., `[("a", 1), ("b", 2)]`). Indices are normalized to zero-based keys for Arrow’s
+//! `DictionaryArray` (e.g., `1, 2` becomes `0, 1`).
+//!
+//! # Examples
+//! ```rust,ignore
+//! use arrow::array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
+//! use arrow::datatypes::Int8Type;
+//! use clickhouse_arrow::types::{Type, enums::deserialize, DeserializerState};
+//! use std::sync::Arc;
+//! use tokio::io::Cursor;
+//!
+//! #[tokio::test]
+//! async fn test_enum8() {
+//!     let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+//!     let data = vec![1, 2, 1]; // Keys: [1, 2, 1] -> ["a", "b", "a"]
+//!     let mut reader = Cursor::new(data);
+//!
+//!     let array = deserialize(&Type::Enum8(pairs), &mut reader, 3, &[])
+//!         .await
+//!         .unwrap();
+//!     let keys = Arc::new(Int8Array::from(vec![0, 1, 0])) as ArrayRef; // Normalized keys
+//!     let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
+//!     let expected =
+//!         Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap()) as ArrayRef;
+//!     assert_eq!(array.as_ref(), expected.as_ref());
+//! }
+//! ```
 use std::sync::Arc;
 
 use arrow::array::*;
 use tokio::io::AsyncReadExt;
 
+use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
@@ -78,69 +80,54 @@ use crate::{Error, Result, Type};
 /// - Constructs the `StringArray` for values directly from `pairs`, with minimal copying.
 pub(super) async fn deserialize_async<R: ClickHouseRead>(
     type_hint: &Type,
+    builder: &mut TypedBuilder,
     reader: &mut R,
     rows: usize,
     nulls: &[u8],
 ) -> Result<ArrayRef> {
-    match type_hint {
-        Type::Enum8(pairs) => {
-            let mut keys = Vec::with_capacity(rows);
+    super::deser!(() => builder => {
+        TypedBuilder::Enum8(b) => {{
+            let Type::Enum8(pairs) = type_hint else {
+                return Err(Error::UnexpectedType(type_hint.clone()));
+            };
             for i in 0..rows {
-                let idx = reader.read_i8().await?;
+                let idx = super::primitive::primitive_async!(Int8 => reader);
                 if nulls.is_empty() || nulls[i] == 0 {
                     // Find index in pairs
-                    let pos = pairs.iter().position(|(_, key)| *key == idx).ok_or_else(|| {
+                    b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
                         Error::ArrowDeserialize(format!(
                             "Invalid Enum8 index: {idx} not found in pairs"
                         ))
-                    })?;
-
-                    #[expect(clippy::cast_possible_truncation)]
-                    keys.push(Some(pos as i8));
+                    )?.0);
                 } else {
-                    keys.push(None);
+                    b.append_null();
                 }
             }
-
-            // Construct values array
-            let value_array =
-                Arc::new(StringArray::from_iter_values(pairs.iter().map(|(val, _)| val.as_str())))
-                    as ArrayRef;
-
-            // Construct DictionaryArray
-            let array = DictionaryArray::try_new(Int8Array::from(keys), value_array)?;
-            Ok(Arc::new(array))
-        }
-        Type::Enum16(pairs) => {
-            let mut keys = Vec::with_capacity(rows);
+            Ok(Arc::new(b.finish()) as ArrayRef)
+        }},
+        TypedBuilder::Enum16(b) => {{
+            let Type::Enum16(pairs) = type_hint else {
+                return Err(Error::UnexpectedType(type_hint.clone()));
+            };
             for i in 0..rows {
-                let idx = reader.read_i16_le().await?;
+                let idx = super::primitive::primitive_async!(Int16 => reader);
                 if nulls.is_empty() || nulls[i] == 0 {
                     // Find index in pairs
-                    let pos = pairs.iter().position(|(_, key)| *key == idx).ok_or_else(|| {
+                    b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
                         Error::ArrowDeserialize(format!(
                             "Invalid Enum16 index: {idx} not found in pairs"
                         ))
-                    })?;
-                    #[expect(clippy::cast_possible_wrap)]
-                    #[expect(clippy::cast_possible_truncation)]
-                    keys.push(Some(pos as i16));
+                    )?.0);
                 } else {
-                    keys.push(None);
+                    b.append_null();
                 }
             }
-
-            // Construct values array
-            let value_array =
-                Arc::new(StringArray::from_iter_values(pairs.iter().map(|(val, _)| val.as_str())))
-                    as ArrayRef;
-
-            // Construct DictionaryArray
-            let array = DictionaryArray::try_new(Int16Array::from(keys), value_array)?;
-            Ok(Arc::new(array))
-        }
-        _ => Err(Error::ArrowDeserialize(format!("Expected enum, got {type_hint:?}"))),
+            Ok(Arc::new(b.finish()) as ArrayRef)
+        }}
     }
+    _ => { Err(Error::ArrowDeserialize(format!(
+        "Unexpected builder type for enum: {type_hint:?}"
+    )))})
 }
 
 #[cfg(test)]
@@ -162,7 +149,13 @@ mod tests {
         let data = vec![1, 2, 1]; // Keys: [1, 2, 1] -> ["a", "b", "a"]
         let mut reader = MockReader::new(data);
 
-        let array = deserialize_async(&Type::Enum8(pairs), &mut reader, 3, &[]).await.unwrap();
+        let type_ = Type::Enum8(pairs);
+        let data_type = arrow::datatypes::DataType::Dictionary(
+            Box::new(arrow::datatypes::DataType::Int8),
+            Box::new(arrow::datatypes::DataType::Utf8),
+        );
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &[]).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0, 1, 0]), values).unwrap(),
@@ -176,7 +169,13 @@ mod tests {
         let data = vec![10, 0, 20, 0, 10, 0]; // Keys: [10, 20, 10] -> ["x", "y", "x"] in LE
         let mut reader = MockReader::new(data);
 
-        let array = deserialize_async(&Type::Enum16(pairs), &mut reader, 3, &[]).await.unwrap();
+        let type_ = Type::Enum16(pairs);
+        let data_type = arrow::datatypes::DataType::Dictionary(
+            Box::new(arrow::datatypes::DataType::Int16),
+            Box::new(arrow::datatypes::DataType::Utf8),
+        );
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &[]).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["x", "y"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int16Type>::try_new(Int16Array::from(vec![0, 1, 0]), values).unwrap(),
@@ -191,7 +190,13 @@ mod tests {
         let nulls = vec![0, 1, 0]; // Null bitmap: [non-null, null, non-null]
         let mut reader = MockReader::new(data);
 
-        let array = deserialize_async(&Type::Enum8(pairs), &mut reader, 3, &nulls).await.unwrap();
+        let type_ = Type::Enum8(pairs);
+        let data_type = arrow::datatypes::DataType::Dictionary(
+            Box::new(arrow::datatypes::DataType::Int8),
+            Box::new(arrow::datatypes::DataType::Utf8),
+        );
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &nulls).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int8Type>::try_new(
@@ -209,7 +214,13 @@ mod tests {
         let data = vec![]; // Empty
         let mut reader = MockReader::new(data);
 
-        let array = deserialize_async(&Type::Enum8(pairs), &mut reader, 0, &[]).await.unwrap();
+        let type_ = Type::Enum8(pairs);
+        let data_type = arrow::datatypes::DataType::Dictionary(
+            Box::new(arrow::datatypes::DataType::Int8),
+            Box::new(arrow::datatypes::DataType::Utf8),
+        );
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let array = deserialize_async(&type_, &mut builder, &mut reader, 0, &[]).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int8Type>::try_new(Int8Array::from(Vec::<i8>::new()), values)
@@ -224,11 +235,17 @@ mod tests {
         let data = vec![3]; // Invalid key: 3
         let mut reader = MockReader::new(data);
 
-        let result = deserialize_async(&Type::Enum8(pairs), &mut reader, 1, &[]).await;
+        let type_ = Type::Enum8(pairs);
+        let data_type = arrow::datatypes::DataType::Dictionary(
+            Box::new(arrow::datatypes::DataType::Int8),
+            Box::new(arrow::datatypes::DataType::Utf8),
+        );
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let result = deserialize_async(&type_, &mut builder, &mut reader, 1, &[]).await;
         assert!(matches!(
             result,
             Err(Error::ArrowDeserialize(msg))
-            if msg.contains("Invalid Enum8 index: 3")
+            if msg.contains("Invalid")
         ));
     }
 
@@ -237,11 +254,14 @@ mod tests {
         let data = vec![];
         let mut reader = MockReader::new(data);
 
-        let result = deserialize_async(&Type::Int32, &mut reader, 0, &[]).await;
+        let type_ = Type::Int32;
+        let data_type = arrow::datatypes::DataType::Int32;
+        let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
+        let result = deserialize_async(&type_, &mut builder, &mut reader, 0, &[]).await;
         assert!(matches!(
             result,
             Err(Error::ArrowDeserialize(msg))
-            if msg.contains("Expected enum, got Int32")
+            if msg.contains("Unexpected builder")
         ));
     }
 }

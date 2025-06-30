@@ -100,7 +100,6 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
         let packet = ServerPacketId::from_u64(reader.read_var_uint().await?)
             .inspect_err(|error| error!(?error, "Failed to read packet ID"))?;
         trace!({ ATT_PID } = packet.as_ref(), "Read packet ID");
-        // TODO: Remove
         match packet {
             ServerPacketId::Pong => Ok(ServerPacket::Pong),
             ServerPacketId::Data => Ok(Self::read_data::<T>(reader, revision, metadata, state)

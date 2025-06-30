@@ -103,16 +103,11 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
     // Unwrap the inner type
     let inner_type = type_hint.strip_null().unwrap_array()?;
 
-    // TODO: Remove
-    eprintln!("List serialize: type_hint={type_hint:?}, inner={inner_type:?}, dt={data_type:?}");
-
     macro_rules! write_list_array {
         ($( $array_ty:ty ),* $(,)?) => {{
             $(
             if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
-                // TODO: Should this fallback to a best effort conversion of type_hint -> arrow?
                 let inner_dt = unwrap_array_data_type(data_type)?;
-
                 let offsets = array.value_offsets();
                 let values = array.values();
 
@@ -125,15 +120,8 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                     writer.write_u64_le(*offset as u64).await?;
                 }
 
-                // TODO: Remove
-                eprintln!("List serialize (array): inner dt={inner_dt:?}");
-
                 // Write inner values
                 inner_type.serialize_async(writer, values, inner_dt, state).await?;
-
-                // TODO: Remove
-                eprintln!("List serialize (array): FINISHED");
-
                 return Ok(());
             }
             )*

@@ -8,21 +8,21 @@ pub(crate) enum TypedListBuilder {
 }
 
 impl TypedListBuilder {
-    pub(crate) fn try_new(type_: &Type, data_type: &DataType, name: &str) -> Result<Self> {
+    pub(crate) fn try_new(type_: &Type, data_type: &DataType) -> Result<Self> {
         // Handle complex nested types
         let type_ = type_.strip_null();
         Ok(typed_arrow_build!(TypedListBuilder, data_type, {
             DataType::List(f) => (
                 List,
-                Box::new(TypedBuilder::try_new(type_, f.data_type(), name)?)
+                Box::new(TypedBuilder::try_new(type_, f.data_type())?)
             ),
             DataType::LargeList(f) => (
                 LargeList,
-                Box::new(TypedBuilder::try_new(type_, f.data_type(), name)?)
+                Box::new(TypedBuilder::try_new(type_, f.data_type())?)
             ),
             DataType::FixedSizeList(f, size) => (
                 FixedList,
-                (*size, Box::new(TypedBuilder::try_new(type_, f.data_type(), name)?))
+                (*size, Box::new(TypedBuilder::try_new(type_, f.data_type())?))
             ),
         }))
     }

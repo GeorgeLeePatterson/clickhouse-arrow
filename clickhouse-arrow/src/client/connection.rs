@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-#[cfg(feature = "fast_mode")]
+#[cfg(feature = "inner_pool")]
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use strum::Display;
@@ -66,13 +66,6 @@ impl ClientMetadata {
         }
     }
 
-    /// Helper function to switch compression type
-    #[cfg_attr(not(feature = "row_binary"), expect(unused))]
-    pub(crate) fn with_compression(mut self, compression: CompressionMethod) -> Self {
-        self.compression = compression;
-        self
-    }
-
     /// Helper function to provide settings for compression
     pub(crate) fn compression_settings(self) -> Settings {
         match self.compression {
@@ -103,12 +96,12 @@ pub(super) struct Connection<T: ClientFormat> {
     options:       Arc<ClientOptions>,
     io_task:       Arc<Mutex<IoHandle<T::Data>>>,
     metadata:      ClientMetadata,
-    #[cfg(not(feature = "fast_mode"))]
+    #[cfg(not(feature = "inner_pool"))]
     state:         Arc<ConnectState<T::Data>>,
     /// NOTE: Max connections must remain at 4, unless algorithm changes
-    #[cfg(feature = "fast_mode")]
+    #[cfg(feature = "inner_pool")]
     state:         Vec<ArcSwap<ConnectState<T::Data>>>,
-    #[cfg(feature = "fast_mode")]
+    #[cfg(feature = "inner_pool")]
     load_balancer: Arc<load::AtomicLoad>,
 }
 
@@ -157,15 +150,18 @@ impl<T: ClientFormat> Connection<T> {
                 .await?,
         );
 
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         let mut state = vec![ArcSwap::from(state)];
 
-        // Currently "fast_mode" = 2 connections. But this can support up to 4 (possibly more with
+        // Currently "inner_pool" = 2 connections. But this can support up to 4 (possibly more with
         // u64 load_counter)
-        #[cfg(feature = "fast_mode")]
-        state.push(ArcSwap::from(Arc::new(
-            Self::connect_inner(&addrs, &mut io_task, events, &options, metadata).await?,
-        )));
+        #[cfg(feature = "inner_pool")]
+        for _ in 0..options.ext.fast_mode_size.map_or(2, |s| s.clamp(2, 4)) {
+            let events = Arc::clone(&events);
+            state.push(ArcSwap::from(Arc::new(
+                Self::connect_inner(&addrs, &mut io_task, events, &options, metadata).await?,
+            )));
+        }
 
         Ok(Self {
             addrs: Arc::from(addrs.as_slice()),
@@ -175,7 +171,7 @@ impl<T: ClientFormat> Connection<T> {
             state,
             // Currently only using 2 connections
             // TODO: Provide inner pool configuration option
-            #[cfg(feature = "fast_mode")]
+            #[cfg(feature = "inner_pool")]
             load_balancer: Arc::new(load::AtomicLoad::new(2)),
         })
     }
@@ -288,9 +284,9 @@ impl<T: ClientFormat> Connection<T> {
         qid: Qid,
         finished: bool,
     ) -> Result<usize> {
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         let conn_idx = 0; // Dummy for non-fast mode
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         let conn_idx = {
             let key = (matches!(op, Operation::Query { .. } if !finished)
                 || matches!(op, Operation::Insert { .. } | Operation::InsertMany { .. }))
@@ -308,15 +304,15 @@ impl<T: ClientFormat> Connection<T> {
         );
 
         // Get the current state
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         let state = &self.state;
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         let state = self.state[conn_idx].load();
 
         // Get the current status
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         let status = self.state.status.load(Ordering::Acquire);
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         let status = state.status.load(Ordering::Acquire);
 
         // First check if the underlying connection is ok (until re-connects are impelemented)
@@ -341,13 +337,13 @@ impl<T: ClientFormat> Connection<T> {
     )]
     pub(crate) async fn shutdown(&self) -> Result<()> {
         trace!({ ATT_CID } = self.metadata.client_id, "Shutting down connections");
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         {
             if self.state.channel.send(Message::Shutdown).await.is_err() {
                 error!("Failed to shutdown connection");
             }
         }
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         {
             for (i, conn_state) in self.state.iter().enumerate() {
                 let state = conn_state.load();
@@ -400,9 +396,9 @@ impl<T: ClientFormat> Connection<T> {
     fn update_status(&self, idx: usize, status: ConnectionStatus) {
         trace!({ ATT_CID } = self.metadata.client_id, ?status, "Updating status conn {idx}");
 
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         let state = &self.state;
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         let state = self.state[idx].load();
 
         state.status.store(status.into(), Ordering::Release);
@@ -448,25 +444,25 @@ impl<T: ClientFormat> Connection<T> {
 
     pub(crate) fn database(&self) -> &str { &self.options.default_database }
 
-    #[cfg(feature = "fast_mode")]
+    #[cfg(feature = "inner_pool")]
     pub(crate) fn finish(&self, conn_idx: usize, weight: u8) {
         self.load_balancer.finish(usize::from(weight), conn_idx);
     }
 
     pub(crate) fn status(&self) -> ConnectionStatus {
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         let status = ConnectionStatus::from(self.state.status.load(Ordering::Acquire));
 
         // TODO: Status is strange if we have an internal pool. Figure this out.
         // Just use the first channel for now
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         let status = ConnectionStatus::from(self.state[0].load().status.load(Ordering::Acquire));
 
         status
     }
 
     fn check_channel(&self) -> Result<()> {
-        #[cfg(not(feature = "fast_mode"))]
+        #[cfg(not(feature = "inner_pool"))]
         {
             if self.state.channel.is_closed() {
                 self.update_status(0, ConnectionStatus::Closed);
@@ -478,7 +474,7 @@ impl<T: ClientFormat> Connection<T> {
 
         // TODO: Checking channel is strange if we have an internal pool. Figure this out.
         // Just return status of first connection for now
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         if self.state[0].load().channel.is_closed() {
             self.update_status(0, ConnectionStatus::Closed);
             Err(Error::ChannelClosed)
@@ -495,7 +491,7 @@ impl<T: ClientFormat> Drop for Connection<T> {
     }
 }
 
-#[cfg(feature = "fast_mode")]
+#[cfg(feature = "inner_pool")]
 mod load {
     use std::sync::atomic::{AtomicUsize, Ordering};
 

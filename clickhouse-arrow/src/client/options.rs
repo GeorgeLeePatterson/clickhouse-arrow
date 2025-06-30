@@ -141,6 +141,12 @@ impl ClientOptions {
         self.ext = ext;
         self
     }
+
+    #[must_use]
+    pub fn extend(mut self, ext: impl Fn(Extension) -> Extension) -> Self {
+        self.ext = ext(self.ext);
+        self
+    }
 }
 
 /// Extra configuration options for `ClickHouse`.
@@ -154,24 +160,28 @@ impl ClientOptions {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Extension {
     /// Options specific to (de)serializing arrow data.
-    pub arrow:        Option<ArrowOptions>,
+    pub arrow:          Option<ArrowOptions>,
     /// Options specific to communicating with `ClickHouse` over their cloud offering.
     #[cfg(feature = "cloud")]
-    pub cloud:        CloudOptions,
-    /// Options specific to `RowBinary` over `HTTP` for queries
-    #[cfg(feature = "row_binary")]
-    pub http:         Option<http::HttpOptions>,
+    pub cloud:          CloudOptions,
     /// Options related to server/client protocol send chunking.
     /// This may be removed, as it may be defaulted.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub chunked_send: ChunkedProtocolMode,
+    pub chunked_send:   ChunkedProtocolMode,
     /// Options related to server/client protocol recv chunking.
     /// This may be removed, as it may be defaulted
     #[cfg_attr(feature = "serde", serde(default))]
-    pub chunked_recv: ChunkedProtocolMode,
+    pub chunked_recv:   ChunkedProtocolMode,
+    /// Related to `inner_pool`, how many 'inner clients' to spawn. Currently capped at 4.
+    #[cfg(feature = "inner_pool")]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub fast_mode_size: Option<u8>,
 }
 
-// TODO: Remove - Docs
+/// Configuration extensions for specialized `ClickHouse` client behavior.
+///
+/// This type provides additional configuration options beyond the standard
+/// client settings, including Arrow format options and cloud-specific settings.
 impl Extension {
     #[must_use]
     pub fn with_arrow(mut self, options: ArrowOptions) -> Self {
@@ -182,20 +192,6 @@ impl Extension {
     #[must_use]
     pub fn with_set_arrow(mut self, f: impl Fn(ArrowOptions) -> ArrowOptions) -> Self {
         self.arrow = Some(f(self.arrow.unwrap_or_default()));
-        self
-    }
-
-    #[cfg(feature = "row_binary")]
-    #[must_use]
-    pub fn with_http(mut self, options: http::HttpOptions) -> Self {
-        self.http = Some(options);
-        self
-    }
-
-    #[cfg(feature = "row_binary")]
-    #[must_use]
-    pub fn with_set_http(mut self, f: impl Fn(http::HttpOptions) -> http::HttpOptions) -> Self {
-        self.http = Some(f(self.http.unwrap_or_default()));
         self
     }
 
@@ -215,6 +211,13 @@ impl Extension {
     #[must_use]
     pub fn with_cloud(mut self, options: CloudOptions) -> Self {
         self.cloud = options;
+        self
+    }
+
+    #[cfg(feature = "inner_pool")]
+    #[must_use]
+    pub fn with_fast_mode_size(mut self, size: u8) -> Self {
+        self.fast_mode_size = Some(size);
         self
     }
 }
@@ -711,44 +714,4 @@ pub struct CloudOptions {
     pub timeout: Option<u64>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub wakeup:  bool,
-}
-
-// TODO: Remove - docs
-#[cfg(feature = "row_binary")]
-pub(crate) mod http {
-    /// Extra configuration options for http connections to `ClickHouse`.
-    #[non_exhaustive]
-    #[derive(Debug, Default, Clone, PartialEq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    pub struct HttpOptions {
-        /// Provide a different address to connect to that differs from the native endpoint
-        #[cfg_attr(feature = "serde", serde(default))]
-        pub proxy:      Option<String>,
-        /// Provide a port to connect to. Will use default `8192` when tls is off, `8443` otherwise
-        #[cfg_attr(feature = "serde", serde(default))]
-        pub port:       Option<u16>,
-        /// Override User-Agent header
-        #[cfg_attr(feature = "serde", serde(default))]
-        pub user_agent: Option<String>,
-    }
-
-    impl HttpOptions {
-        #[must_use]
-        pub fn with_proxy(mut self, endpoint: impl Into<String>) -> Self {
-            self.proxy = Some(endpoint.into());
-            self
-        }
-
-        #[must_use]
-        pub fn with_port(mut self, port: u16) -> Self {
-            self.port = Some(port);
-            self
-        }
-
-        #[must_use]
-        pub fn with_user_agent(mut self, ua: impl Into<String>) -> Self {
-            self.user_agent = Some(ua.into());
-            self
-        }
-    }
 }

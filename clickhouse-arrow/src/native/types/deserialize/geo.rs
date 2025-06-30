@@ -1,5 +1,5 @@
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::ClickHouseRead;
+use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::{Point, Result, Value};
 
 pub(crate) struct PointDeserializer;
@@ -26,6 +26,29 @@ impl Deserializer for PointDeserializer {
         for col in 0..2 {
             for (row, value) in
                 Type::Float64.deserialize_column(reader, rows, state).await?.into_iter().enumerate()
+            {
+                let Value::Float64(value) = value else { unreachable!() };
+                match &mut points[row] {
+                    Value::Point(point) => point.0[col] = value,
+                    _ => {
+                        unreachable!()
+                    }
+                }
+            }
+        }
+        Ok(points)
+    }
+
+    fn read_sync(
+        _type_: &Type,
+        reader: &mut impl ClickHouseBytesRead,
+        rows: usize,
+        state: &mut DeserializerState,
+    ) -> Result<Vec<Value>> {
+        let mut points = vec![Value::Point(Point::default()); rows];
+        for col in 0..2 {
+            for (row, value) in
+                Type::Float64.deserialize_column_sync(reader, rows, state)?.into_iter().enumerate()
             {
                 let Value::Float64(value) = value else { unreachable!() };
                 match &mut points[row] {

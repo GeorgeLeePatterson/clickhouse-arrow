@@ -105,11 +105,10 @@ impl ClickHouseArrowSerializer for Type {
         // TODO: Should this take into account the field? My gut says no since the internal type is
         // intended to encode all of the ClickHouse information. BUT, list serialize, for example,
         // requires it.
-        let is_nullable = self.is_nullable();
         let base_type = self.strip_null();
 
-        if is_nullable {
-            null::serialize_nulls_async(writer, column, state).await?;
+        if self.is_nullable() {
+            null::serialize_nulls_async(self, writer, column, state).await?;
         }
 
         match base_type {
@@ -192,11 +191,10 @@ impl ClickHouseArrowSerializer for Type {
         // TODO: Should this take into account the field? My gut says no since the internal type is
         // intended to encode all of the ClickHouse information. BUT, list serialize, for example,
         // requires it.
-        let is_nullable = self.is_nullable();
         let base_type = self.strip_null();
 
-        if is_nullable {
-            null::serialize_nulls(writer, column, state);
+        if self.is_nullable() {
+            null::serialize_nulls(self, writer, column, state);
         }
 
         match base_type {
@@ -279,6 +277,7 @@ mod tests {
 
     use super::*;
     use crate::ArrowOptions;
+    use crate::arrow::deserialize::ClickHouseArrowDeserializer;
     use crate::arrow::types::{
         LIST_ITEM_FIELD_NAME, MAP_FIELD_NAME, STRUCT_KEY_FIELD_NAME, STRUCT_VALUE_FIELD_NAME,
     };
@@ -419,8 +418,7 @@ mod tests {
 
         let output = buffer.into_inner();
         assert_eq!(output, vec![
-            // Null mask: [0, 1, 0] (0=non-null, 1=null)
-            0, 1, 0, // Offsets: [2, 2, 5] (skipping first 0, null array repeats offset)
+            // Null mask: [] (0=non-null, 1=null)
             2, 0, 0, 0, 0, 0, 0, 0, // 2
             2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
             5, 0, 0, 0, 0, 0, 0, 0, // 5
@@ -539,6 +537,236 @@ mod tests {
         let output = buffer.into_inner();
         assert!(output.is_empty()); // No data for zero rows
     }
+
+    /// Tests serialization of a `Point` array.
+    #[tokio::test]
+    async fn test_serialize_point() {
+        use std::io::Read;
+
+        // Point = Tuple(Float64, Float64)
+        let type_ = Type::Point;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+
+        // Create a struct array with 3 points
+        let x_values = Float64Array::from(vec![1.0, 2.5, 3.7]);
+        let y_values = Float64Array::from(vec![10.0, 20.5, 30.7]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+        let column = Arc::new(struct_array) as ArrayRef;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        type_.serialize_async(&mut buffer, &column, &data_type, &mut state).await.unwrap();
+
+        let output = buffer.into_inner();
+        assert_eq!(output.len(), 6 * 8); // 3 points * 2 coordinates * 8 bytes each
+
+        // Verify the serialized data (column-wise: all x values, then all y values)
+        let mut cursor = Cursor::new(output);
+        let mut bytes = [0u8; 8];
+
+        // X values
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 1.0).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 2.5).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 3.7).abs() < f64::EPSILON);
+
+        // Y values
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 10.0).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 20.5).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 30.7).abs() < f64::EPSILON);
+    }
+
+    /// Tests serialization of a `Ring` array.
+    #[tokio::test]
+    async fn test_serialize_ring() {
+        use std::io::Read;
+
+        // Ring = Array(Point) = Array(Tuple(Float64, Float64))
+        let type_ = Type::Ring;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+
+        // Create a ring with 4 points
+        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
+        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+
+        let offsets = OffsetBuffer::new(vec![0, 4].into());
+        let list_array = ListArray::new(
+            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
+            offsets,
+            Arc::new(struct_array) as ArrayRef,
+            None,
+        );
+        let column = Arc::new(list_array) as ArrayRef;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        type_.serialize_async(&mut buffer, &column, &data_type, &mut state).await.unwrap();
+
+        let output = buffer.into_inner();
+        assert_eq!(output.len(), 8 + 4 * 2 * 8); // size (8) + 4 points * 2 coords * 8 bytes
+
+        let mut cursor = Cursor::new(output);
+        let mut bytes = [0u8; 8];
+
+        // Read size
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 4);
+    }
+
+    /// Tests serialization of a `Polygon` array.
+    #[tokio::test]
+    async fn test_serialize_polygon() {
+        use std::io::Read;
+
+        // Polygon = Array(Ring) = Array(Array(Tuple(Float64, Float64)))
+        let type_ = Type::Polygon;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+
+        // Create a polygon with one ring of 4 points
+        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
+        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+
+        // Create ring array
+        let ring_offsets = OffsetBuffer::new(vec![0, 4].into());
+        let ring_array = ListArray::new(
+            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
+            ring_offsets,
+            Arc::new(struct_array) as ArrayRef,
+            None,
+        );
+
+        // Create polygon array
+        let polygon_offsets = OffsetBuffer::new(vec![0, 1].into());
+        let polygon_array = ListArray::new(
+            Arc::new(Field::new("item", ring_array.data_type().clone(), false)),
+            polygon_offsets,
+            Arc::new(ring_array) as ArrayRef,
+            None,
+        );
+        let column = Arc::new(polygon_array) as ArrayRef;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        type_.serialize_async(&mut buffer, &column, &data_type, &mut state).await.unwrap();
+
+        let output = buffer.into_inner();
+        assert_eq!(output.len(), 8 + 8 + 4 * 2 * 8); // num_rings + ring_size + points
+
+        let mut cursor = Cursor::new(output);
+        let mut bytes = [0u8; 8];
+
+        // Read number of rings
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 1);
+
+        // Read ring size
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 4);
+    }
+
+    /// Tests serialization of a `MultiPolygon` array.
+    #[tokio::test]
+    async fn test_serialize_multipolygon() {
+        use std::io::Read;
+
+        // MultiPolygon = Array(Polygon) = Array(Array(Array(Tuple(Float64, Float64))))
+        let type_ = Type::MultiPolygon;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+
+        // Create a multipolygon with one polygon containing one ring of 4 points
+        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
+        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+
+        // Create ring array
+        let ring_offsets = OffsetBuffer::new(vec![0, 4].into());
+        let ring_array = ListArray::new(
+            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
+            ring_offsets,
+            Arc::new(struct_array) as ArrayRef,
+            None,
+        );
+
+        // Create polygon array
+        let polygon_offsets = OffsetBuffer::new(vec![0, 1].into());
+        let polygon_array = ListArray::new(
+            Arc::new(Field::new("item", ring_array.data_type().clone(), false)),
+            polygon_offsets,
+            Arc::new(ring_array) as ArrayRef,
+            None,
+        );
+
+        // Create multipolygon array
+        let multipolygon_offsets = OffsetBuffer::new(vec![0, 1].into());
+        let multipolygon_array = ListArray::new(
+            Arc::new(Field::new("item", polygon_array.data_type().clone(), false)),
+            multipolygon_offsets,
+            Arc::new(polygon_array) as ArrayRef,
+            None,
+        );
+        let column = Arc::new(multipolygon_array) as ArrayRef;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        type_.serialize_async(&mut buffer, &column, &data_type, &mut state).await.unwrap();
+
+        let output = buffer.into_inner();
+        assert_eq!(output.len(), 8 + 8 + 8 + 4 * 2 * 8); // num_polygons + num_rings + ring_size + points
+
+        let mut cursor = Cursor::new(output);
+        let mut bytes = [0u8; 8];
+
+        // Read number of polygons
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 1);
+
+        // Read number of rings
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 1);
+
+        // Read ring size
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 4);
+    }
 }
 
 #[cfg(test)]
@@ -551,6 +779,7 @@ mod tests_sync {
 
     use super::*;
     use crate::ArrowOptions;
+    use crate::arrow::deserialize::ClickHouseArrowDeserializer;
     use crate::arrow::types::{
         LIST_ITEM_FIELD_NAME, MAP_FIELD_NAME, STRUCT_KEY_FIELD_NAME, STRUCT_VALUE_FIELD_NAME,
     };
@@ -675,8 +904,8 @@ mod tests_sync {
             .unwrap();
 
         assert_eq!(buffer, vec![
-            // Null mask: [0, 1, 0] (0=non-null, 1=null)
-            0, 1, 0, // Offsets: [2, 2, 5] (skipping first 0, null array repeats offset)
+            // Null mask: []
+            // Offsets: [2, 2, 5] (skipping first 0, null array repeats offset)
             2, 0, 0, 0, 0, 0, 0, 0, // 2
             2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
             5, 0, 0, 0, 0, 0, 0, 0, // 5
@@ -786,5 +1015,231 @@ mod tests_sync {
         type_.serialize(&mut buffer, &array, &data_type, &mut state).unwrap();
 
         assert!(buffer.is_empty()); // No data for zero rows
+    }
+
+    /// Tests serialization of a `Point` array.
+    #[test]
+    fn test_serialize_point() {
+        use std::io::Read;
+
+        // Point = Tuple(Float64, Float64)
+        let type_ = Type::Point;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+
+        // Create a struct array with 3 points
+        let x_values = Float64Array::from(vec![1.0, 2.5, 3.7]);
+        let y_values = Float64Array::from(vec![10.0, 20.5, 30.7]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+        let column = Arc::new(struct_array) as ArrayRef;
+
+        let mut buffer = Vec::new();
+        let mut state = SerializerState::default();
+        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
+
+        assert_eq!(buffer.len(), 6 * 8); // 3 points * 2 coordinates * 8 bytes each
+
+        // Verify the serialized data (column-wise: all x values, then all y values)
+        let mut cursor = std::io::Cursor::new(buffer);
+        let mut bytes = [0u8; 8];
+
+        // X values
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 1.0).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 2.5).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 3.7).abs() < f64::EPSILON);
+
+        // Y values
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 10.0).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 20.5).abs() < f64::EPSILON);
+        cursor.read_exact(&mut bytes).unwrap();
+        assert!((f64::from_le_bytes(bytes) - 30.7).abs() < f64::EPSILON);
+    }
+
+    /// Tests serialization of a `Ring` array.
+    #[test]
+    fn test_serialize_ring() {
+        use std::io::Read;
+
+        // Ring = Array(Point) = Array(Tuple(Float64, Float64))
+        let type_ = Type::Ring;
+
+        // Create a ring with 4 points
+        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
+        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+
+        let offsets = OffsetBuffer::new(vec![0, 4].into());
+        let list_array = ListArray::new(
+            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
+            offsets,
+            Arc::new(struct_array) as ArrayRef,
+            None,
+        );
+
+        let mut buffer = Vec::new();
+        let column = Arc::new(list_array) as ArrayRef;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let mut state = SerializerState::default();
+        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
+
+        assert_eq!(buffer.len(), 8 + 4 * 2 * 8); // size (8) + 4 points * 2 coords * 8 bytes
+
+        let mut cursor = std::io::Cursor::new(buffer);
+        let mut bytes = [0u8; 8];
+
+        // Read size
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 4);
+    }
+
+    /// Tests serialization of a `Polygon` array.
+    #[test]
+    fn test_serialize_polygon() {
+        use std::io::Read;
+
+        // Polygon = Array(Ring) = Array(Array(Tuple(Float64, Float64)))
+        let type_ = Type::Polygon;
+
+        // Create a polygon with one ring of 4 points
+        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
+        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+
+        // Create ring array
+        let ring_offsets = OffsetBuffer::new(vec![0, 4].into());
+        let ring_array = ListArray::new(
+            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
+            ring_offsets,
+            Arc::new(struct_array) as ArrayRef,
+            None,
+        );
+
+        // Create polygon array
+        let polygon_offsets = OffsetBuffer::new(vec![0, 1].into());
+        let polygon_array = ListArray::new(
+            Arc::new(Field::new("item", ring_array.data_type().clone(), false)),
+            polygon_offsets,
+            Arc::new(ring_array) as ArrayRef,
+            None,
+        );
+
+        let mut buffer = Vec::new();
+        let column = Arc::new(polygon_array) as ArrayRef;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let mut state = SerializerState::default();
+        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
+
+        assert_eq!(buffer.len(), 8 + 8 + 4 * 2 * 8); // num_rings + ring_size + points
+
+        let mut cursor = std::io::Cursor::new(buffer);
+        let mut bytes = [0u8; 8];
+
+        // Read number of rings
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 1);
+
+        // Read ring size
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 4);
+    }
+
+    /// Tests serialization of a `MultiPolygon` array.
+    #[test]
+    fn test_serialize_multipolygon() {
+        use std::io::Read;
+
+        // MultiPolygon = Array(Polygon) = Array(Array(Array(Tuple(Float64, Float64))))
+        let type_ = Type::MultiPolygon;
+
+        // Create a multipolygon with one polygon containing one ring of 4 points
+        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
+        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]);
+        let struct_array = StructArray::new(
+            fields,
+            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
+            None,
+        );
+
+        // Create ring array
+        let ring_offsets = OffsetBuffer::new(vec![0, 4].into());
+        let ring_array = ListArray::new(
+            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
+            ring_offsets,
+            Arc::new(struct_array) as ArrayRef,
+            None,
+        );
+
+        // Create polygon array
+        let polygon_offsets = OffsetBuffer::new(vec![0, 1].into());
+        let polygon_array = ListArray::new(
+            Arc::new(Field::new("item", ring_array.data_type().clone(), false)),
+            polygon_offsets,
+            Arc::new(ring_array) as ArrayRef,
+            None,
+        );
+
+        // Create multipolygon array
+        let multipolygon_offsets = OffsetBuffer::new(vec![0, 1].into());
+        let multipolygon_array = ListArray::new(
+            Arc::new(Field::new("item", polygon_array.data_type().clone(), false)),
+            multipolygon_offsets,
+            Arc::new(polygon_array) as ArrayRef,
+            None,
+        );
+
+        let mut buffer = Vec::new();
+        let column = Arc::new(multipolygon_array) as ArrayRef;
+        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let mut state = SerializerState::default();
+        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
+
+        assert_eq!(buffer.len(), 8 + 8 + 8 + 4 * 2 * 8); // num_polygons + num_rings + ring_size + points
+
+        let mut cursor = std::io::Cursor::new(buffer);
+        let mut bytes = [0u8; 8];
+
+        // Read number of polygons
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 1);
+
+        // Read number of rings
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 1);
+
+        // Read ring size
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(u64::from_le_bytes(bytes), 4);
     }
 }

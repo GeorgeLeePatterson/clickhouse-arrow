@@ -887,21 +887,6 @@ impl ClientBuilder {
     }
 }
 
-// Http/RowBinary related configuration
-// TODO: Remove - docs
-#[cfg(feature = "row_binary")]
-impl ClientBuilder {
-    #[must_use]
-    pub fn with_http_options(
-        mut self,
-        f: impl Fn(super::options::http::HttpOptions) -> super::options::http::HttpOptions,
-    ) -> Self {
-        let http = self.options.ext.http.unwrap_or_default();
-        self.options.ext.http = Some(f(http));
-        self
-    }
-}
-
 // Cloud related configuration
 #[cfg(feature = "cloud")]
 impl ClientBuilder {

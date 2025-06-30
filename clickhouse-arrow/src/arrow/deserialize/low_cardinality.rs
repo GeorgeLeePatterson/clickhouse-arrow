@@ -4,7 +4,8 @@ use arrow::array::*;
 use arrow::datatypes::*;
 use tokio::io::AsyncReadExt;
 
-use super::{ClickHouseArrowDeserializer, deser_bulk_async};
+use super::ClickHouseArrowDeserializer;
+use crate::arrow::builder::TypedBuilder;
 use crate::arrow::builder::dictionary::{LowCardinalityBuilder, LowCardinalityKeyBuilder};
 use crate::io::{ClickHouseBytesRead, ClickHouseRead};
 use crate::native::types::low_cardinality::*;
@@ -78,22 +79,30 @@ use crate::{Error, Result, Type};
 /// assert_eq!(indices, &Int32Array::from(vec![0, 1, 0]));
 /// assert_eq!(values, &StringArray::from(vec!["a", "b"]));
 /// ```
-#[expect(clippy::too_many_lines)]
 #[expect(clippy::cast_possible_truncation)]
 pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     inner: &Type,
+    builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
     nulls: &[u8],
     rbuffer: &mut Vec<u8>,
 ) -> Result<ArrayRef> {
-    let DataType::Dictionary(key_type, value_type) = data_type else {
+    type Lckb = LowCardinalityKeyBuilder;
+
+    let DataType::Dictionary(_, value_type) = data_type else {
         return Err(Error::ArrowDeserialize(format!("Unexpected dict value type: {data_type:?}")));
     };
 
-    // Precompute non-null count
-    let non_null_count = nulls.iter().fold(0, |acc, &b| acc + usize::from(b == 0));
+    let TypedBuilder::LowCardinality(lowcard_builder) = builder else {
+        return Err(Error::ArrowDeserialize(format!(
+            "Unexpected builder type: {}",
+            builder.as_ref()
+        )));
+    };
+
+    let LowCardinalityBuilder { key_builder: keys, value_builder } = lowcard_builder;
 
     // Read flags to determine structure
     let flags = reader.read_u64_le().await?;
@@ -126,10 +135,16 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
             vec![]
         };
 
-        // mask, the deserializer does not read one.
         inner
             .strip_null()
-            .deserialize_arrow_async(reader, value_type, dict_size, &null_mask, rbuffer)
+            .deserialize_arrow_async(
+                value_builder,
+                reader,
+                value_type,
+                dict_size,
+                &null_mask,
+                rbuffer,
+            )
             .await?
 
     // No dictionary found
@@ -146,77 +161,51 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     }
 
     macro_rules! deser_key {
-        (($sz:ty, $m:path, $b:ident) => [$(($osz:ty, $o:path, $ob:ident)),* $(,)?]) => {
-            match **key_type {
-                $m => {
-                    let mut keys = $b::with_capacity(non_null_count);
-                    deser_bulk_async!(&mut keys, reader, rows, nulls, rbuffer, $sz);
-                    Ok(Arc::new(DictionaryArray::new(keys.finish(), dictionary)))
+        (($sz:ty, $m:ident) => [$(($osz:ty, $o:ident)),* $(,)?]) => {
+            match keys {
+                Lckb::$m(b) => {
+                    super::deser_bulk_async!(b, reader, rows, nulls, rbuffer, $sz);
+                    Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
                 $(
-                    $o => {
-                        let mut k = $ob::with_capacity(non_null_count);
-                        deser_bulk_async!(raw; &mut k, reader, rows, nulls, rbuffer, $sz => $osz);
-                        Ok(Arc::new(DictionaryArray::new(k.finish(), dictionary)))
+                    Lckb::$o(b) => {
+                        super::deser_bulk_async!(raw; b, reader, rows, nulls, rbuffer, $sz => $osz);
+                        Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                     },
                 )*
-                DataType::Int8 => {
-                    let mut keys = Int8Builder::with_capacity(non_null_count);
-                    deser_bulk_async!(raw; &mut keys, reader, rows, nulls, rbuffer, $sz => i8);
-                    Ok(Arc::new(DictionaryArray::new(keys.finish(), dictionary)))
+                Lckb::Int8(b) => {
+                    super::deser_bulk_async!(raw; b, reader, rows, nulls, rbuffer, $sz => i8);
+                    Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
-                DataType::Int16 => {
-                    let mut keys = Int16Builder::with_capacity(non_null_count);
-                    deser_bulk_async!(raw; &mut keys, reader, rows, nulls, rbuffer, $sz => i16);
-                    Ok(Arc::new(DictionaryArray::new(keys.finish(), dictionary)))
+                Lckb::Int16(b) => {
+                    super::deser_bulk_async!(raw; b, reader, rows, nulls, rbuffer, $sz => i16);
+                    Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
-                DataType::Int32 => {
-                    let mut keys = Int32Builder::with_capacity(non_null_count);
-                    deser_bulk_async!(raw; &mut keys, reader, rows, nulls, rbuffer, $sz => i32);
-                    Ok(Arc::new(DictionaryArray::new(keys.finish(), dictionary)))
+                Lckb::Int32(b) => {
+                    super::deser_bulk_async!(raw; b, reader, rows, nulls, rbuffer, $sz => i32);
+                    Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
-                DataType::Int64 => {
-                    let mut keys = Int64Builder::with_capacity(non_null_count);
-                    deser_bulk_async!(raw; &mut keys, reader, rows, nulls, rbuffer, $sz => i64);
-                    Ok(Arc::new(DictionaryArray::new(keys.finish(), dictionary)))
+                Lckb::Int64(b) => {
+                    super::deser_bulk_async!(raw; b, reader, rows, nulls, rbuffer, $sz => i64);
+                    Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
-                _ => return Err(Error::DeserializeError(format!(
-                    "LowCardinality: invalid index data type {indexed_type:?}"
-                )))
             }
         }
     }
+
     match indexed_type {
-        Type::UInt8 => deser_key!((u8, DataType::UInt8, UInt8Builder) => [
-            (u16, DataType::UInt16, UInt16Builder),
-            (u32, DataType::UInt32, UInt32Builder),
-            (u64, DataType::UInt64, UInt64Builder),
-        ]),
-        Type::UInt16 => deser_key!((u16, DataType::UInt16, UInt16Builder) => [
-            (u8, DataType::UInt8, UInt8Builder),
-            (u32, DataType::UInt32, UInt32Builder),
-            (u64, DataType::UInt64, UInt64Builder),
-        ]),
-        Type::UInt32 => deser_key!((u32, DataType::UInt32, UInt32Builder) => [
-            (u8, DataType::UInt8, UInt8Builder),
-            (u16, DataType::UInt16, UInt16Builder),
-            (u64, DataType::UInt64, UInt64Builder),
-        ]),
-        Type::UInt64 => deser_key!((u64, DataType::UInt64, UInt64Builder) => [
-            (u8, DataType::UInt8, UInt8Builder),
-            (u16, DataType::UInt16, UInt16Builder),
-            (u32, DataType::UInt32, UInt32Builder),
-        ]),
-        _ => Err(Error::DeserializeError(format!(
-            "LowCardinality: invalid index type {indexed_type:?}"
-        ))),
+        Type::UInt8 => deser_key!((u8, UInt8) => [(u16, UInt16), (u32, UInt32), (u64, UInt64)]),
+        Type::UInt16 => deser_key!((u16, UInt16) => [(u8, UInt8), (u32, UInt32), (u64, UInt64)]),
+        Type::UInt32 => deser_key!((u32, UInt32) => [(u8, UInt8), (u16, UInt16), (u64, UInt64)]),
+        Type::UInt64 => deser_key!((u64, UInt64) => [(u8, UInt8), (u16, UInt16), (u32, UInt32)]),
+        _ => Err(Error::DeserializeError(format!("LowCardinality: index type {indexed_type:?}"))),
     }
 }
 
 pub(crate) fn deserialize<R: ClickHouseBytesRead>(
     builder: &mut LowCardinalityBuilder,
     reader: &mut R,
-    type_hint: &Type,
+    inner_type: &Type,
     data_type: &DataType,
     rows: usize,
     nulls: &[u8],
@@ -254,7 +243,7 @@ pub(crate) fn deserialize<R: ClickHouseBytesRead>(
     let dictionary = if needs_global_dictionary || needs_update_dictionary || has_additional_keys {
         // If the inner type is nullable, then the first value deserialized will be a "default"
         // value. Use the null mask to enforce this. The serializer does not write a null
-        let null_mask = if type_hint.is_nullable() {
+        let null_mask = if inner_type.is_nullable() {
             let mut mask = vec![0_u8; dict_size];
             mask[0] = 1;
             mask
@@ -262,10 +251,7 @@ pub(crate) fn deserialize<R: ClickHouseBytesRead>(
             vec![]
         };
 
-        // mask, the deserializer does not read one.
-
-        let inner = type_hint.strip_null();
-        inner.deserialize_arrow(
+        inner_type.strip_null().deserialize_arrow(
             value_builder,
             reader,
             value_type,
@@ -355,9 +341,19 @@ mod tests {
         let key_type = DataType::Int32;
         let value_type = ch_to_arrow_type(&inner_type, opts)?.0;
         let data_type = DataType::Dictionary(Box::new(key_type), Box::new(value_type));
-        let result =
-            deserialize_async(&inner_type, &data_type, &mut reader, rows, nulls, &mut vec![])
-                .await?;
+        let mut builder =
+            TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
+                .unwrap();
+        let result = deserialize_async(
+            &inner_type,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            nulls,
+            &mut vec![],
+        )
+        .await?;
 
         let dict_array = result.as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
         let indices = dict_array.keys();
@@ -585,8 +581,19 @@ mod tests {
         let key_type = DataType::Int32;
         let value_type = ch_to_arrow_type(&inner_type, None).unwrap().0;
         let data_type = DataType::Dictionary(Box::new(key_type), Box::new(value_type));
-        let result =
-            deserialize_async(&inner_type, &data_type, &mut reader, rows, &[], &mut vec![]).await;
+        let mut builder =
+            TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
+                .unwrap();
+        let result = deserialize_async(
+            &inner_type,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &[],
+            &mut vec![],
+        )
+        .await;
         assert!(matches!(
             result,
             Err(Error::DeserializeError(msg))
@@ -607,8 +614,19 @@ mod tests {
         let key_type = DataType::Int32;
         let value_type = ch_to_arrow_type(&inner_type, None).unwrap().0;
         let data_type = DataType::Dictionary(Box::new(key_type), Box::new(value_type));
-        let result =
-            deserialize_async(&inner_type, &data_type, &mut reader, rows, &[], &mut vec![]).await;
+        let mut builder =
+            TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
+                .unwrap();
+        let result = deserialize_async(
+            &inner_type,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &[],
+            &mut vec![],
+        )
+        .await;
         assert!(matches!(
             result,
             Err(Error::DeserializeError(msg)) if msg.contains("no dictionary provided")

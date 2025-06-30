@@ -109,8 +109,18 @@ impl ClickHouseNativeSerializer for Type {
                 }
                 return;
             }
+            Type::Point => {
+                for _ in 0..2 {
+                    Type::Float64.serialize_prefix(writer, state);
+                }
+                return;
+            }
             Type::LowCardinality(_) => {
                 writer.put_u64_le(LOW_CARDINALITY_VERSION);
+                return;
+            }
+            Type::Object => {
+                writer.put_i8(1);
                 return;
             }
             _ => return,

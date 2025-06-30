@@ -18,7 +18,7 @@ use super::ClickHouseArrowDeserializer;
 use crate::arrow::builder::TypedBuilder;
 use crate::arrow::types::MAP_FIELD_NAME;
 use crate::io::{ClickHouseBytesRead, ClickHouseRead};
-use crate::{Result, Type};
+use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Map` type into an Arrow `MapArray`.
 ///
@@ -43,8 +43,8 @@ use crate::{Result, Type};
 /// - Returns `Io` if reading from the reader fails.
 #[expect(clippy::cast_possible_truncation)]
 pub(super) async fn deserialize_async<R: ClickHouseRead>(
-    key_type: &Type,
-    value_type: &Type,
+    types: (&Type, &Type),
+    builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
@@ -52,7 +52,15 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
     rbuffer: &mut Vec<u8>,
 ) -> Result<ArrayRef> {
     // First get inner map fields
+    let (key_type, value_type) = types;
     let (key_field, value_field) = crate::arrow::builder::map::get_map_fields(data_type)?;
+
+    let TypedBuilder::Map((key_builder, value_builder)) = builder else {
+        return Err(Error::ArrowDeserialize(format!(
+            "Unexpected builder for map: {}",
+            builder.as_ref()
+        )));
+    };
 
     let offset_bytes = super::list::bulk_offsets!(tokio; reader, rbuffer, rows);
     let offsets: &[u64] = bytemuck::cast_slice::<u8, u64>(&rbuffer[..offset_bytes]);
@@ -60,12 +68,25 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
         OffsetBuffer::new(offsets.iter().map(|&o| o as i32).collect::<ScalarBuffer<_>>());
     let total_pairs = *offsets.last().unwrap_or(&0) as usize;
 
-    // Read keys and values
     let key_array = key_type
-        .deserialize_arrow_async(reader, key_field.data_type(), total_pairs, &[], rbuffer)
+        .deserialize_arrow_async(
+            key_builder,
+            reader,
+            key_field.data_type(),
+            total_pairs,
+            &[],
+            rbuffer,
+        )
         .await?;
     let value_array = value_type
-        .deserialize_arrow_async(reader, value_field.data_type(), total_pairs, &[], rbuffer)
+        .deserialize_arrow_async(
+            value_builder,
+            reader,
+            value_field.data_type(),
+            total_pairs,
+            &[],
+            rbuffer,
+        )
         .await?;
 
     // Construct StructArray for entries
@@ -191,9 +212,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let data_type = create_map_type(&key_type, &value_type, false);
+        let mut builder = TypedBuilder::try_new(
+            &Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone())),
+            &data_type,
+        )
+        .unwrap();
         let result = deserialize_async(
-            &key_type,
-            &value_type,
+            (&key_type, &value_type),
+            &mut builder,
             &data_type,
             &mut reader,
             rows,
@@ -241,9 +267,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let data_type = create_map_type(&key_type, &value_type, true);
+        let mut builder = TypedBuilder::try_new(
+            &Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone())),
+            &data_type,
+        )
+        .unwrap();
         let result = deserialize_async(
-            &key_type,
-            &value_type,
+            (&key_type, &value_type),
+            &mut builder,
             &data_type,
             &mut reader,
             rows,
@@ -296,9 +327,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let data_type = create_map_type(&key_type, &value_type, false);
+        let mut builder = TypedBuilder::try_new(
+            &Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone())),
+            &data_type,
+        )
+        .unwrap();
         let result = deserialize_async(
-            &key_type,
-            &value_type,
+            (&key_type, &value_type),
+            &mut builder,
             &data_type,
             &mut reader,
             rows,
@@ -343,9 +379,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let data_type = create_map_type(&key_type, &value_type, false);
+        let mut builder = TypedBuilder::try_new(
+            &Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone())),
+            &data_type,
+        )
+        .unwrap();
         let result = deserialize_async(
-            &key_type,
-            &value_type,
+            (&key_type, &value_type),
+            &mut builder,
             &data_type,
             &mut reader,
             rows,
@@ -379,9 +420,14 @@ mod tests {
         let input = vec![]; // No data for zero rows
         let mut reader = Cursor::new(input);
         let data_type = create_map_type(&key_type, &value_type, false);
+        let mut builder = TypedBuilder::try_new(
+            &Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone())),
+            &data_type,
+        )
+        .unwrap();
         let result = deserialize_async(
-            &key_type,
-            &value_type,
+            (&key_type, &value_type),
+            &mut builder,
             &data_type,
             &mut reader,
             rows,
@@ -417,9 +463,14 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let data_type = create_map_type(&key_type, &value_type, false);
+        let mut builder = TypedBuilder::try_new(
+            &Type::Map(Box::new(key_type.clone()), Box::new(value_type.clone())),
+            &data_type,
+        )
+        .unwrap();
         let result = deserialize_async(
-            &key_type,
-            &value_type,
+            (&key_type, &value_type),
+            &mut builder,
             &data_type,
             &mut reader,
             rows,
@@ -463,10 +514,10 @@ mod tests_sync {
     ) -> Result<(DataType, TypedBuilder, TypedBuilder)> {
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
         let (key_type, nil) = ch_to_arrow_type(key, opts).unwrap();
-        let key_builder = TypedBuilder::try_new(key, &key_type, "key")?;
+        let key_builder = TypedBuilder::try_new(key, &key_type)?;
         let key_field = Field::new(STRUCT_KEY_FIELD_NAME, key_type, nil);
         let (value_type, nil) = ch_to_arrow_type(value, opts).unwrap();
-        let value_builder = TypedBuilder::try_new(value, &value_type, "value")?;
+        let value_builder = TypedBuilder::try_new(value, &value_type)?;
         let value_field = Field::new(STRUCT_VALUE_FIELD_NAME, value_type, nil);
         let inner = DataType::Struct(Fields::from(vec![key_field, value_field]));
         let field = Arc::new(Field::new(MAP_FIELD_NAME, inner, nullable));

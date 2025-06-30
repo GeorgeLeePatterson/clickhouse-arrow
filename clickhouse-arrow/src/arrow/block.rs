@@ -5,8 +5,6 @@ use arrow::array::{Array, new_empty_array};
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(feature = "profile")]
-use tracy_client::span as tracy_span;
 
 use super::builder::TypedBuilder;
 use super::deserialize::{ArrowDeserializerState, ClickHouseArrowDeserializer};
@@ -218,7 +216,10 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
         }
 
         let mut prefix_state = DeserializerState::default();
-        let _ = state.deserializer().with_capacity(columns, rows);
+
+        let deser = state.deserializer();
+        let _ = deser.with_capacity(columns, rows);
+
         for i in 0..columns {
             let name = reader.read_utf8_string().await?;
             let type_name = reader.read_utf8_string().await?;
@@ -241,17 +242,26 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             };
 
             let array = if rows > 0 {
-                let row_buffer = &mut state.deserializer().buffer;
+                let dt = field.data_type();
+                let builders = &mut deser.builders;
+                let builder = if let Some(b) = builders.get_mut(i) {
+                    b
+                } else {
+                    builders.push(TypedBuilder::try_new(&type_hint, dt)?);
+                    builders.last_mut().unwrap()
+                };
+
+                let row_buffer = &mut deser.buffer;
                 type_hint.deserialize_prefix_async(reader, &mut prefix_state).await?;
                 type_hint
-                    .deserialize_arrow_async(reader, field.data_type(), rows, &[], row_buffer)
+                    .deserialize_arrow_async(builder, reader, dt, rows, &[], row_buffer)
                     .await
                     .inspect_err(|error| error!(?error, ?field, "col {i} deserialize"))?
             } else {
                 new_empty_array(field.data_type())
             };
 
-            let _ = state.deserializer().push_array(array).push_field(Arc::new(field));
+            let _ = deser.push_array(array).push_field(Arc::new(field));
         }
 
         let (fields, arrays) = state.deserializer().take();
@@ -283,9 +293,6 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
         let _ = deser.with_capacity(columns, rows);
 
         for i in 0..columns {
-            #[cfg(feature = "profile")]
-            let _span = tracy_span!("reading_column");
-
             let name = reader.try_get_string()?;
             let name = String::from_utf8_lossy(&name);
             let type_name = reader.try_get_string()?;
@@ -311,28 +318,17 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             let array = if rows > 0 {
                 let dt = field.data_type();
 
-                #[cfg(feature = "profile")]
-                let bspan = tracy_span!("building_column");
                 let builders = &mut deser.builders;
                 let builder = if let Some(b) = builders.get_mut(i) {
                     b
                 } else {
-                    builders.push(TypedBuilder::try_new(&type_hint, dt, name.as_ref())?);
+                    builders.push(TypedBuilder::try_new(&type_hint, dt)?);
                     builders.last_mut().unwrap()
                 };
 
-                // Pull out row buffer
-                let rbuffer = &mut deser.buffer;
-
-                #[cfg(feature = "profile")]
-                drop(bspan);
-
-                #[cfg(feature = "profile")]
-                let _dspan = tracy_span!("deserializing_column");
-
                 type_hint.deserialize_prefix(reader)?;
                 type_hint
-                    .deserialize_arrow(builder, reader, dt, rows, &[], rbuffer)
+                    .deserialize_arrow(builder, reader, dt, rows, &[], &mut deser.buffer)
                     .inspect_err(|error| error!(?error, ?type_hint, ?field, "deserialize {i}"))?
             } else {
                 new_empty_array(field.data_type())
@@ -1542,6 +1538,7 @@ mod tests {
             .as_ref()
         );
     }
+
 }
 
 #[cfg(test)]
@@ -2543,4 +2540,5 @@ mod tests_sync {
             .as_ref()
         );
     }
+
 }

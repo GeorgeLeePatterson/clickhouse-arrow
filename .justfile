@@ -2,8 +2,8 @@ LOG := env('RUST_LOG', '')
 ARROW_DEBUG := env('CLICKHOUSE_NATIVE_DEBUG_ARROW', '')
 
 # List of features
-# features := ["fast_mode", "pool", "serde", "derive", "cloud", "rust_decimal"]
-features := 'fast_mode pool serde derive cloud rust_decimal'
+# features := ["inner_pool", "pool", "serde", "derive", "cloud", "rust_decimal"]
+features := 'inner_pool pool serde derive cloud rust_decimal'
 
 # List of Examples
 
@@ -11,6 +11,12 @@ examples := "insert pool select"
 
 default:
     @just --list
+
+# --- CARGO RELEASE ---
+patch:
+    cargo release patch
+minor:
+    cargo release minor
 
 # --- TESTS ---
 test:
@@ -148,3 +154,38 @@ fmt:
     @echo "Running rustfmt..."
     # cd clickhouse-arrow && cargo +nightly fmt --all --check
     cargo +nightly fmt --check -- --config-path ./rustfmt.toml
+
+# --- MAINTENANCE ---
+
+# Initialize development environment for maintainers
+init-dev:
+    @echo "Installing development tools..."
+    cargo install cargo-release || true
+    cargo install git-cliff || true
+    cargo install cargo-edit || true
+    cargo install cargo-outdated || true
+    cargo install cargo-audit || true
+    @echo ""
+    @echo "✅ Development tools installed!"
+    @echo ""
+    @echo "Next steps:"
+    @echo "1. Get your crates.io API token from https://crates.io/settings/tokens"
+    @echo "2. Add it as CARGO_REGISTRY_TOKEN in GitHub repo settings → Secrets"
+    @echo "3. Use 'cargo release patch/minor/major' to create releases"
+    @echo ""
+    @echo "Useful commands:"
+    @echo "  just release-dry patch  # Preview what would happen"
+    @echo "  just check-outdated     # Check for outdated dependencies"
+    @echo "  just audit              # Security audit"
+
+# Preview a release without actually doing it
+release-dry version:
+    cargo release {{version}} --dry-run --verbose
+
+# Check for outdated dependencies
+check-outdated:
+    cargo outdated
+
+# Run security audit
+audit:
+    cargo audit

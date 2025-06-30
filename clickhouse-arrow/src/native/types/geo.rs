@@ -38,3 +38,67 @@ pub fn normalize_geo_type(type_: &Type) -> Result<Type> {
 }
 
 // TODO: Remove - unit tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_point() {
+        let result = normalize_geo_type(&Type::Point).unwrap();
+        assert_eq!(result, Type::Tuple(vec![Type::Float64, Type::Float64]));
+    }
+
+    #[test]
+    fn test_normalize_ring() {
+        let result = normalize_geo_type(&Type::Ring).unwrap();
+        assert_eq!(
+            result,
+            Type::Array(Box::new(Type::Tuple(vec![Type::Float64, Type::Float64])))
+        );
+    }
+
+    #[test]
+    fn test_normalize_polygon() {
+        let result = normalize_geo_type(&Type::Polygon).unwrap();
+        assert_eq!(
+            result,
+            Type::Array(Box::new(Type::Array(Box::new(Type::Tuple(vec![
+                Type::Float64,
+                Type::Float64
+            ])))))
+        );
+    }
+
+    #[test]
+    fn test_normalize_multipolygon() {
+        let result = normalize_geo_type(&Type::MultiPolygon).unwrap();
+        assert_eq!(
+            result,
+            Type::Array(Box::new(Type::Array(Box::new(Type::Array(Box::new(
+                Type::Tuple(vec![Type::Float64, Type::Float64])
+            ))))))
+        );
+    }
+
+    #[test]
+    fn test_normalize_non_geo_type_fails() {
+        let result = normalize_geo_type(&Type::Int32);
+        assert!(result.is_err());
+        if let Err(Error::TypeConversion(msg)) = result {
+            assert!(msg.contains("Expected Geo type"));
+        } else {
+            panic!("Expected TypeConversion error");
+        }
+    }
+
+    #[test]
+    fn test_normalize_nullable_geo_type_fails() {
+        let result = normalize_geo_type(&Type::Nullable(Box::new(Type::Point)));
+        assert!(result.is_err());
+        if let Err(Error::TypeConversion(msg)) = result {
+            assert!(msg.contains("Expected Geo type"));
+        } else {
+            panic!("Expected TypeConversion error");
+        }
+    }
+}

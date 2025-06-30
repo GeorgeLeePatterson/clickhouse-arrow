@@ -70,32 +70,6 @@ where
     result
 }
 
-pub(crate) async fn run_example_with_tracy<F, Fut>(
-    example: F,
-    directives: Option<&[(&str, &str)]>,
-) -> Result<(), Box<dyn std::any::Any + Send>>
-where
-    F: FnOnce(&'static ClickHouseContainer, usize, tracy_client::Client) -> Fut + Send + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-{
-    // Initialize container and tracing
-    let (ch, num_runs) = setup(directives).await;
-
-    // Initialize Tracy client
-    let client = tracy_client::Client::start();
-    client.set_thread_name("main");
-
-    let result = AssertUnwindSafe(example(ch, num_runs, client)).catch_unwind().await;
-
-    if std::env::var(DISABLE_CLEANUP_ENV).is_ok_and(|e| e.eq_ignore_ascii_case("true")) {
-        return result;
-    }
-
-    ch.shutdown().await.expect("Shutting down container");
-
-    result
-}
-
 /// Test harness for ad-hoc examples
 ///
 /// # Errors

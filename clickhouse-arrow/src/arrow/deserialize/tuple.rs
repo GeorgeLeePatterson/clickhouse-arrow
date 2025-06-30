@@ -34,6 +34,7 @@ use crate::{Error, Result, Type};
 /// - Returns `Io` if reading from the reader fails.
 pub(super) async fn deserialize_async<R: ClickHouseRead>(
     inner_types: &[Type],
+    builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
@@ -45,6 +46,13 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
         return Err(Error::ArrowDeserialize(format!("Unsupported tuple datatype: {data_type:?}")));
     };
 
+    let TypedBuilder::Tuple(builders) = builder else {
+        return Err(Error::ArrowDeserialize(format!(
+            "Unexpected tuple builder: {}",
+            builder.as_ref()
+        )));
+    };
+
     if rows == 0 {
         let arrays = vec![
             Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef,
@@ -54,19 +62,19 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
     }
 
     let mut arrays = Vec::with_capacity(inner_types.len());
-    for (inner_type, data_type) in inner_types.iter().zip(fields.iter().map(|f| f.data_type())) {
-        arrays
-            .push(inner_type.deserialize_arrow_async(reader, data_type, rows, &[], rbuffer).await?);
+    let field_types = inner_types.iter().zip(fields.iter());
+    for (b, (inner_type, field)) in builders.iter_mut().zip(field_types) {
+        let data_type = field.data_type();
+        arrays.push(
+            inner_type.deserialize_arrow_async(b, reader, data_type, rows, &[], rbuffer).await?,
+        );
     }
-
-    // Construct StructArray
     let null_buffer = if nulls.is_empty() {
         None
     } else {
         Some(NullBuffer::from(nulls.iter().map(|&n| n == 0).collect::<Vec<bool>>()))
     };
-
-    Ok(Arc::new(StructArray::new(fields.clone(), arrays, null_buffer)) as ArrayRef)
+    Ok(Arc::new(StructArray::new(fields.clone(), arrays, null_buffer)))
 }
 
 pub(super) fn deserialize<R: ClickHouseBytesRead>(
@@ -143,10 +151,19 @@ mod tests {
         let inner_fields = create_inner_fields(&inner_types);
         let data_type = DataType::Struct(inner_fields.clone());
 
-        let result =
-            deserialize_async(&inner_types, &data_type, &mut reader, rows, &nulls, &mut vec![])
-                .await
-                .expect("Failed to deserialize Tuple(Int32, String)");
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let result = deserialize_async(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut vec![],
+        )
+        .await
+        .expect("Failed to deserialize Tuple(Int32, String)");
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
         let arrays = struct_array.columns();
@@ -181,14 +198,23 @@ mod tests {
         let inner_fields = create_inner_fields(&inner_types);
         let data_type = DataType::Struct(inner_fields.clone());
 
-        let result =
-            deserialize_async(&inner_types, &data_type, &mut reader, rows, &nulls, &mut vec![])
-                .await
-                .inspect_err(|error| {
-                    eprintln!("Error reading data: {error:?}");
-                    eprintln!("Currently read: {reader:?}");
-                })
-                .expect("Failed to deserialize Tuple(Nullable(Int32), String)");
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let result = deserialize_async(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut vec![],
+        )
+        .await
+        .inspect_err(|error| {
+            eprintln!("Error reading data: {error:?}");
+            eprintln!("Currently read: {reader:?}");
+        })
+        .expect("Failed to deserialize Tuple(Nullable(Int32), String)");
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
         let arrays = struct_array.columns();
@@ -220,10 +246,19 @@ mod tests {
         let inner_fields = create_inner_fields(&inner_types);
         let data_type = DataType::Struct(inner_fields.clone());
 
-        let result =
-            deserialize_async(&inner_types, &data_type, &mut reader, rows, &nulls, &mut vec![])
-                .await
-                .expect("Failed to deserialize nullable Tuple(Int32, String)");
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let result = deserialize_async(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut vec![],
+        )
+        .await
+        .expect("Failed to deserialize nullable Tuple(Int32, String)");
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
         let arrays = struct_array.columns();
@@ -266,10 +301,19 @@ mod tests {
         let inner_fields = create_inner_fields(&inner_types);
         let data_type = DataType::Struct(inner_fields.clone());
 
-        let result =
-            deserialize_async(&inner_types, &data_type, &mut reader, rows, &nulls, &mut vec![])
-                .await
-                .expect("Failed to deserialize Tuple(Int32, Tuple(String, Int32))");
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let result = deserialize_async(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut vec![],
+        )
+        .await
+        .expect("Failed to deserialize Tuple(Int32, Tuple(String, Int32))");
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
         let arrays = struct_array.columns();
@@ -302,10 +346,19 @@ mod tests {
         let inner_fields = create_inner_fields(&inner_types);
         let data_type = DataType::Struct(inner_fields.clone());
 
-        let result =
-            deserialize_async(&inner_types, &data_type, &mut reader, rows, &nulls, &mut vec![])
-                .await
-                .expect("Failed to deserialize Tuple(Int32, String) with zero rows");
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let result = deserialize_async(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut vec![],
+        )
+        .await
+        .expect("Failed to deserialize Tuple(Int32, String) with zero rows");
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
         let arrays = struct_array.columns();
@@ -344,9 +397,18 @@ mod tests {
         let inner_fields = create_inner_fields(&inner_types);
         let data_type = DataType::Struct(inner_fields.clone());
 
-        let result =
-            deserialize_async(&inner_types, &data_type, &mut reader, rows, &nulls, &mut vec![])
-                .await;
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let result = deserialize_async(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut vec![],
+        )
+        .await;
         assert!(matches!(result, Err(Error::ArrowDeserialize(_))));
     }
 }
@@ -391,7 +453,7 @@ mod tests_sync {
         let mut builders = inner_types
             .iter()
             .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "").unwrap())
+            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
             .collect::<Vec<_>>();
         let result = deserialize(
             &mut builders,
@@ -440,7 +502,7 @@ mod tests_sync {
         let mut builders = inner_types
             .iter()
             .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "").unwrap())
+            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
             .collect::<Vec<_>>();
         let result = deserialize(
             &mut builders,
@@ -490,7 +552,7 @@ mod tests_sync {
         let mut builders = inner_types
             .iter()
             .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "").unwrap())
+            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
             .collect::<Vec<_>>();
         let result = deserialize(
             &mut builders,
@@ -547,7 +609,7 @@ mod tests_sync {
         let mut builders = inner_types
             .iter()
             .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "").unwrap())
+            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
             .collect::<Vec<_>>();
         let result = deserialize(
             &mut builders,
@@ -608,7 +670,7 @@ mod tests_sync {
         let mut builders = inner_types
             .iter()
             .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "").unwrap())
+            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
             .collect::<Vec<_>>();
         let result = deserialize(
             &mut builders,
@@ -654,7 +716,7 @@ mod tests_sync {
         let mut builders = inner_types
             .iter()
             .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "").unwrap())
+            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
             .collect::<Vec<_>>();
         let result = deserialize(
             &mut builders,

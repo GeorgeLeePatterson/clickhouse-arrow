@@ -9,7 +9,6 @@ use arrow::datatypes::*;
 use strum::AsRefStr;
 
 use crate::constants::CLICKHOUSE_DEFAULT_CHUNK_ROWS;
-use crate::flags::debug_arrow;
 use crate::prelude::*;
 
 // Typed builder map
@@ -23,7 +22,7 @@ pub(crate) fn create_typed_builder_map(
     let mut builders = Vec::with_capacity(definitions.len());
     for (name, type_) in definitions {
         let field = get_field(name)?;
-        let builder = TypedBuilder::try_new(type_, field.data_type(), name)?;
+        let builder = TypedBuilder::try_new(type_, field.data_type())?;
         builders.push((name.as_str(), (type_, builder)));
     }
 
@@ -46,19 +45,6 @@ pub(super) use typed_arrow_build;
 
 use self::dictionary::LowCardinalityBuilder;
 use self::list::TypedListBuilder;
-
-#[inline]
-pub(super) fn traceb<A: ArrayBuilder>(
-    b: A,
-    type_: &Type,
-    builder: &str,
-    name: &str,
-) -> Box<dyn ArrayBuilder> {
-    if debug_arrow() {
-        trace!(?type_, builder, "creating builder for {name}");
-    }
-    Box::new(b)
-}
 
 macro_rules! typed_build {
     ($type_hint:expr, { $(
@@ -142,7 +128,7 @@ impl TypedBuilder {
     #[expect(clippy::too_many_lines)]
     #[expect(clippy::cast_possible_wrap)]
     #[expect(clippy::cast_possible_truncation)]
-    pub(crate) fn try_new(type_: &Type, data_type: &DataType, name: &str) -> Result<Self> {
+    pub(crate) fn try_new(type_: &Type, data_type: &DataType) -> Result<Self> {
         const ROWS: usize = CLICKHOUSE_DEFAULT_CHUNK_ROWS;
 
         let tz_some = matches!(data_type, DataType::Timestamp(_, tz) if tz.is_some());
@@ -152,7 +138,7 @@ impl TypedBuilder {
 
         // Handle complex nested types
         if let Type::Array(inner) = type_ {
-            return Ok(Self::List(TypedListBuilder::try_new(inner, data_type, name)?));
+            return Ok(Self::List(TypedListBuilder::try_new(inner, data_type)?));
         }
 
         if let Type::LowCardinality(inner) = type_ {
@@ -174,15 +160,15 @@ impl TypedBuilder {
                 inner
                     .iter()
                     .zip(fields.iter())
-                    .map(|(t, f)| TypedBuilder::try_new(t, f.data_type(), "tuple"))
+                    .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()))
                     .collect::<Result<Vec<_>, _>>()?,
             ));
         }
 
         if let Type::Map(key, value) = type_ {
             let (kfield, vfield) = map::get_map_fields(data_type)?;
-            let kbuilder = Box::new(TypedBuilder::try_new(key, kfield.data_type(), "map_key")?);
-            let vbuilder = Box::new(TypedBuilder::try_new(value, vfield.data_type(), "map_value")?);
+            let kbuilder = Box::new(TypedBuilder::try_new(key, kfield.data_type())?);
+            let vbuilder = Box::new(TypedBuilder::try_new(value, vfield.data_type())?);
             return Ok(Self::Map((kbuilder, vbuilder)));
         }
 

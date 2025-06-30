@@ -1,8 +1,10 @@
+use bytes::BytesMut;
+
 use super::DeserializerState;
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
 use crate::client::connection::ClientMetadata;
-use crate::compression::compress_data;
+use crate::compression::{compress_data_sync, decompress_data_async};
 use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::native::block::Block;
 use crate::native::protocol::CompressionMethod;
@@ -24,6 +26,7 @@ impl ClientFormat for NativeFormat {
 impl super::sealed::ClientFormatImpl<Block> for NativeFormat {
     type Deser = ();
     type Schema = Vec<(String, Type)>;
+    type Ser = ();
 
     async fn read<R: ClickHouseRead + 'static>(
         reader: &mut R,
@@ -34,9 +37,9 @@ impl super::sealed::ClientFormatImpl<Block> for NativeFormat {
         Ok(if let CompressionMethod::None = metadata.compression {
             Block::read_async(reader, revision, (), state).await?.into_option()
         } else {
-            let mut reader =
-                crate::compression::DecompressionReader::new(metadata.compression, reader).await?;
-            Block::read_async(&mut reader, revision, (), state).await?.into_option()
+            let mut buffer =
+                BytesMut::from_iter(decompress_data_async(reader, metadata.compression).await?);
+            Block::read(&mut buffer, revision, (), state)?.into_option()
         })
     }
 
@@ -54,12 +57,14 @@ impl super::sealed::ClientFormatImpl<Block> for NativeFormat {
                 .await
                 .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "(block:uncompressed)"))
         } else {
-            let mut raw = vec![];
-            data.write_async(&mut raw, revision, header, ())
-                .instrument(trace_span!("serialize_block"))
-                .await
+            // Hybrid approach: sync serialization + async compression
+            let estimated_size = data.estimate_size();
+            let mut buffer = BytesMut::with_capacity(estimated_size);
+
+            data.write(&mut buffer, revision, header, ())
                 .inspect_err(|error| error!(?error, {ATT_QID} = %qid, "(block:compressed)"))?;
-            compress_data(writer, raw, metadata.compression)
+
+            compress_data_sync(writer, buffer.freeze(), metadata.compression)
                 .instrument(trace_span!("compress_block"))
                 .await
                 .inspect_err(|error| error!(?error, {ATT_QID} = %qid, "compressing"))

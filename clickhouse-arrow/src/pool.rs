@@ -113,9 +113,20 @@ pub struct ConnectionManager<T: ClientFormat> {
 }
 
 impl<T: ClientFormat> ConnectionManager<T> {
-    /// TODO: Remove - docs
+    /// Creates a new connection manager for the pool.
+    ///
+    /// This method builds a `ConnectionManager` that the pool will use to create
+    /// and manage connections to ClickHouse. Each connection will be built using
+    /// the provided destination, options, and settings.
+    ///
+    /// # Arguments
+    /// * `destination` - The ClickHouse server address (host:port or socket address)
+    /// * `options` - Client configuration options
+    /// * `settings` - Optional ClickHouse settings to apply to all connections
+    /// * `span` - Optional tracing span ID for distributed tracing
     ///
     /// # Errors
+    /// Returns an error if the destination cannot be resolved or is invalid
     #[instrument(
         level = "trace",
         name = "clickhouse.pool.try_new",
@@ -136,12 +147,17 @@ impl<T: ClientFormat> ConnectionManager<T> {
         Self::try_new_with_builder(builder).await
     }
 
-    /// [`Self::try_new`] creates a [`ClientBuilder`] under the hood. This method allows passing one
-    /// as a constructor.
+    /// Creates a new connection manager from an existing `ClientBuilder`.
+    /// 
+    /// This is an alternative constructor that allows you to pre-configure a
+    /// `ClientBuilder` with custom settings before creating the connection manager.
+    /// This is useful when you need fine-grained control over the client configuration.
     ///
-    /// TODO: Remove - docs
+    /// Unlike [`Self::try_new`], which creates a `ClientBuilder` internally,
+    /// this method accepts a pre-configured builder directly.
     ///
     /// # Errors
+    /// Returns an error if the builder's destination cannot be verified
     #[instrument(
          level = "trace",
          name = "clickhouse.pool.try_new_with_builder",

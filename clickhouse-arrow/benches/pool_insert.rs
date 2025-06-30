@@ -1,8 +1,6 @@
 #![expect(unused_crate_dependencies)]
 mod common;
 
-use std::sync::Arc;
-
 use arrow::record_batch::RecordBatch;
 use clickhouse_arrow::prelude::*;
 use clickhouse_arrow::test_utils::{arrow_tests, get_or_create_container};
@@ -14,6 +12,7 @@ use tokio::runtime::Runtime;
 use self::common::{init, print_msg};
 
 fn insert_arrow(
+    compression: &str,
     table: &str,
     rows: usize,
     pool: &ConnectionPool<ArrowFormat>,
@@ -27,7 +26,7 @@ fn insert_arrow(
         // Reduce sample size for slower operations
         .sample_size(50)
         .bench_with_input(
-            BenchmarkId::new("clickhouse_arrow", rows),
+            BenchmarkId::new(format!("clickhouse_arrow_{compression}"), rows),
             &(&query, pool),
             |b, &(query, pool)| {
                 b.to_async(rt).iter_batched(
@@ -66,7 +65,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Create arrow pool outside of loop
     let arrow_client_builder =
         arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-            .with_compression(CompressionMethod::None);
+            .with_compression(CompressionMethod::LZ4);
 
     // Pool
     #[expect(clippy::cast_possible_truncation)]
@@ -87,7 +86,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         let schema = batch.schema();
 
         // Setup clients
-        let rs_client = common::setup_clickhouse_rs(ch);
+        let rs_client =
+            common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::Lz4);
 
         // Setup database
         rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_manage))
@@ -101,17 +101,15 @@ fn criterion_benchmark(c: &mut Criterion) {
             .block_on(arrow_tests::setup_table(&arrow_manage, common::TEST_DB_NAME, &schema))
             .expect("clickhouse rs table");
 
-        // Wrap clients in Arc for sharing across iterations
-        let rs_client = Arc::new(rs_client);
-
         // Benchmark native arrow insert
-        insert_arrow(&arrow_table_ref, rows, &arrow_pool, &batch, &mut insert_group, &rt);
+        insert_arrow("lz4", &arrow_table_ref, rows, &arrow_pool, &batch, &mut insert_group, &rt);
 
         // Benchmark clickhouse-rs insert
         common::insert_rs(
+            "lz4",
             &rs_table_ref,
             rows,
-            rs_client.as_ref(),
+            &rs_client,
             &test_rows,
             &mut insert_group,
             &rt,

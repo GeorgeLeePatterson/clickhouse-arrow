@@ -1,11 +1,7 @@
-// TODO: Remove
-#![expect(unused)]
-
 use arrow::array::*;
 use arrow::datatypes::*;
-use strum::AsRefStr;
 
-use super::{TypedBuilder, traceb};
+use super::TypedBuilder;
 use crate::constants::CLICKHOUSE_DEFAULT_CHUNK_ROWS;
 use crate::{Error, Result, Type};
 
@@ -59,7 +55,7 @@ impl LowCardinalityBuilder {
         };
 
         let key_builder = LowCardinalityKeyBuilder::try_new(key_type)?;
-        let value_builder = Box::new(TypedBuilder::try_new(type_, value_type, "lowcard")?);
+        let value_builder = Box::new(TypedBuilder::try_new(type_, value_type)?);
         Ok(LowCardinalityBuilder { key_builder, value_builder })
     }
 }
@@ -72,112 +68,4 @@ impl std::fmt::Debug for LowCardinalityBuilder {
             self.key_builder, self.value_builder
         )
     }
-}
-
-macro_rules! create_dictionary_builder {
-    ($key_type:ty, $data_type:expr, $type_hint:expr) => {{
-        use arrow::array::*;
-        use arrow::datatypes::*;
-
-        use crate::Type;
-
-        match ($type_hint, $data_type) {
-            // Strings/binary
-            (Type::String | Type::Binary | Type::Object, DataType::Utf8) => {
-                Ok(Box::new(StringDictionaryBuilder::<$key_type>::new()) as Box<dyn ArrayBuilder>)
-            }
-            (Type::String | Type::Binary | Type::Object, DataType::LargeUtf8) => {
-                Ok(Box::new(LargeStringDictionaryBuilder::<$key_type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (Type::String | Type::Binary | Type::Object, DataType::Binary) => {
-                Ok(Box::new(BinaryDictionaryBuilder::<$key_type>::new()) as Box<dyn ArrayBuilder>)
-            }
-            (Type::String | Type::Binary | Type::Object, DataType::LargeBinary) => {
-                Ok(Box::new(LargeBinaryDictionaryBuilder::<$key_type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            // Primitive types
-            (_, DataType::UInt8) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, UInt8Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::UInt16) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, UInt16Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::UInt32) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, UInt32Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::UInt64) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, UInt64Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Int8) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Int8Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Int16) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Int16Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Int32) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Int32Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Int64) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Int64Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Float16) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Float16Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Float32) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Float32Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            (_, DataType::Float64) => {
-                Ok(Box::new(PrimitiveDictionaryBuilder::<$key_type, Float64Type>::new())
-                    as Box<dyn ArrayBuilder>)
-            }
-            _ => Err($crate::Error::ArrowDeserialize(format!(
-                "Unexpected types for dictionary: value = {}, type_hint = {}",
-                $data_type, $type_hint
-            ))),
-        }
-    }};
-}
-
-#[inline]
-pub(crate) fn create_dyn_dict_builder(
-    data_type: &DataType,
-    type_hint: &Type,
-    name: &str,
-) -> Result<Box<dyn ArrayBuilder>> {
-    let base_type = type_hint.strip_null();
-
-    let DataType::Dictionary(idx_type, value_type) = data_type else {
-        return Err(Error::ArrowDeserialize(format!(
-            "Unexpected type for dictionary: datatype = {data_type}, type_hint = {type_hint}",
-        )));
-    };
-
-    Ok(traceb(
-        match &**idx_type {
-            DataType::Int8 => create_dictionary_builder!(Int8Type, &**value_type, base_type)?,
-            DataType::Int16 => create_dictionary_builder!(Int16Type, &**value_type, base_type)?,
-            DataType::Int32 => create_dictionary_builder!(Int32Type, &**value_type, base_type)?,
-            DataType::Int64 => create_dictionary_builder!(Int64Type, &**value_type, base_type)?,
-            DataType::UInt8 => create_dictionary_builder!(UInt8Type, &**value_type, base_type)?,
-            DataType::UInt16 => create_dictionary_builder!(UInt16Type, &**value_type, base_type)?,
-            DataType::UInt64 => create_dictionary_builder!(UInt64Type, &**value_type, base_type)?,
-            // Default
-            _ => create_dictionary_builder!(UInt32Type, &**value_type, base_type)?,
-        },
-        type_hint,
-        "Dictionary",
-        name,
-    ))
 }

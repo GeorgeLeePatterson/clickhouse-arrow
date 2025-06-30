@@ -11,8 +11,6 @@ mod chunk;
 #[cfg(feature = "cloud")]
 mod cloud;
 pub(crate) mod connection;
-#[cfg(feature = "row_binary")]
-pub(crate) mod http;
 mod internal;
 mod options;
 mod reader;
@@ -34,8 +32,6 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 pub use self::builder::*;
 pub use self::connection::ConnectionStatus;
 pub(crate) use self::internal::{Message, Operation};
-#[cfg(feature = "row_binary")]
-pub use self::options::http::HttpOptions;
 pub use self::options::*;
 pub use self::response::*;
 pub use self::tcp::Destination;
@@ -51,9 +47,18 @@ use crate::{Error, Progress, Result, Row};
 
 static CLIENT_ID: AtomicU16 = AtomicU16::new(0);
 
-/// Internal implementation of [`Client`].
+/// A `ClickHouse` client configured for the native format.
+///
+/// This type alias provides a client that works with `ClickHouse`'s internal
+/// data representation, useful when you need direct control over types
+/// and don't require Arrow integration.
 pub type NativeClient = Client<NativeFormat>;
-/// Implementation of [`Client`] with arrow compatibility.
+
+/// A `ClickHouse` client configured for Apache Arrow format.
+///
+/// This type alias provides a client that works with Arrow `RecordBatch`es,
+/// enabling seamless integration with the Arrow ecosystem for data processing
+/// and analytics workflows.
 pub type ArrowClient = Client<ArrowFormat>;
 
 /// Configuration for a `ClickHouse` connection, including tracing and cloud-specific settings.
@@ -132,9 +137,6 @@ pub struct Client<T: ClientFormat> {
     connection:    Arc<connection::Connection<T>>,
     events:        Arc<broadcast::Sender<Event>>,
     settings:      Option<Arc<Settings>>,
-    /// A `RowBinary` client used to reduce latency for queries
-    #[cfg(feature = "row_binary")]
-    http:          Arc<http::HttpClient>,
 }
 
 impl<T: ClientFormat> Client<T> {
@@ -240,15 +242,6 @@ impl<T: ClientFormat> Client<T> {
             debug!(server.address = %addr.ip(), server.port = addr.port(), "Initiating connection");
         }
 
-        // If row_binary is enabled, create the http client
-        #[cfg(feature = "row_binary")]
-        let http_client = http::HttpClient::try_new(
-            destination.domain(),
-            &options,
-            settings.as_deref(),
-            client_id,
-        )?;
-
         let (event_tx, _) = broadcast::channel(EVENTS_CAPACITY);
         let events = Arc::new(event_tx);
         let conn_ev = Arc::clone(&events);
@@ -259,14 +252,7 @@ impl<T: ClientFormat> Client<T> {
 
         debug!("created connection successfully");
 
-        Ok(Client {
-            client_id,
-            connection,
-            events,
-            settings,
-            #[cfg(feature = "row_binary")]
-            http: Arc::new(http_client),
-        })
+        Ok(Client { client_id, connection, events, settings })
     }
 
     /// Retrieves the status of the underlying `ClickHouse` connection.
@@ -460,7 +446,7 @@ impl<T: ClientFormat> Client<T> {
         let connection = self.conn().await?;
 
         // Send query
-        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
         let conn_idx = connection
             .send_operation(
                 Operation::Query {
@@ -491,7 +477,7 @@ impl<T: ClientFormat> Client<T> {
         })??;
 
         // Decrement load balancer
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         connection.finish(conn_idx, Operation::<T::Data>::weight_insert());
 
         Ok(self.insert_response(responses, qid))
@@ -565,7 +551,7 @@ impl<T: ClientFormat> Client<T> {
         let (tx, rx) = oneshot::channel();
         let connection = self.conn().await?;
 
-        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
         let conn_idx = connection
             .send_operation(
                 Operation::Query {
@@ -596,7 +582,7 @@ impl<T: ClientFormat> Client<T> {
         })??;
 
         // Decrement load balancer
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         connection.finish(conn_idx, Operation::<T::Data>::weight_insert_many());
 
         Ok(self.insert_response(responses, qid))
@@ -664,7 +650,7 @@ impl<T: ClientFormat> Client<T> {
         let (tx, rx) = oneshot::channel();
         let connection = self.conn().await?;
 
-        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
         let conn_idx = connection
             .send_operation(
                 Operation::Query {
@@ -688,7 +674,7 @@ impl<T: ClientFormat> Client<T> {
         trace!({ ATT_CID } = self.client_id, { ATT_QID } = %qid, "sent query, awaiting response");
 
         // Decrement load balancer
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         connection.finish(conn_idx, Operation::<T::Data>::weight_query());
 
         Ok(create_response_stream::<T>(responses, qid, self.client_id))
@@ -1119,7 +1105,7 @@ impl Client<NativeFormat> {
 
         let connection = self.conn().await?;
 
-        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
         let conn_idx = connection
             .send_operation(
                 Operation::Query {
@@ -1153,7 +1139,7 @@ impl Client<NativeFormat> {
         })??;
 
         // Decrement load balancer
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         connection.finish(conn_idx, Operation::<Block>::weight_query());
 
         Ok(self.insert_response(responses, qid))
@@ -1399,12 +1385,41 @@ impl Client<NativeFormat> {
         stream.next().await.transpose()
     }
 
-    /// Issue a create DDL statement for a table
+    /// Creates a ClickHouse table from a Rust struct that implements the `Row` trait.
     ///
-    /// TODO: Remove - docs
+    /// This method generates and executes a `CREATE TABLE` DDL statement based on the
+    /// structure of the provided `Row` type. The table schema is automatically derived
+    /// from the struct fields and their types.
+    ///
+    /// # Arguments
+    /// * `database` - Optional database name. If None, uses the client's default database
+    /// * `table` - The name of the table to create
+    /// * `options` - Table creation options including engine type, order by, and partition by
+    /// * `query_id` - Optional query ID for tracking and debugging
+    ///
+    /// # Type Parameters
+    /// * `T` - A type that implements the `Row` trait, typically a struct with the `#[derive(Row)]`
+    ///   macro
+    ///
+    /// # Example
+    /// ```ignore
+    /// #[derive(Row)]
+    /// struct User {
+    ///     id: u32,
+    ///     name: String,
+    ///     created_at: DateTime,
+    /// }
+    ///
+    /// let options = CreateOptions::new("MergeTree")
+    ///     .with_order_by(&["id"]);
+    ///
+    /// client.create_table::<User>(Some("analytics"), "users", &options, None).await?;
+    /// ```
     ///
     /// # Errors
-    /// - Returns an error if the query fails
+    /// - Returns an error if the table creation fails
+    /// - Returns an error if the database/table names are invalid
+    /// - Returns an error if the connection is lost
     #[instrument(
         name = "clickhouse.create_table",
         skip_all
@@ -1590,7 +1605,7 @@ impl Client<ArrowFormat> {
         let (tx, rx) = oneshot::channel();
         let (header_tx, header_rx) = oneshot::channel();
 
-        #[cfg_attr(not(feature = "fast_mode"), expect(unused_variables))]
+        #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
         let conn_idx = connection
             .send_operation(
                 Operation::Query {
@@ -1626,7 +1641,7 @@ impl Client<ArrowFormat> {
             .try_flatten();
 
         // Decrement load balancer
-        #[cfg(feature = "fast_mode")]
+        #[cfg(feature = "inner_pool")]
         connection.finish(conn_idx, Operation::<RecordBatch>::weight_insert_many());
 
         Ok(ClickHouseResponse::from_stream(response))
@@ -2231,37 +2246,6 @@ impl Client<ArrowFormat> {
         )?;
         self.execute(stmt, qid).await?;
         Ok(())
-    }
-}
-
-// RowBinary impls
-#[cfg(feature = "row_binary")]
-impl Client<ArrowFormat> {
-    /// TODO: Remove - docs
-    ///
-    /// # Errors
-    /// - Returns an error if the query fails
-    #[instrument(
-        name = "clickhouse.query_http",
-        skip_all
-        fields(
-            db.system = "clickhouse",
-            db.operation = "query",
-            db.format = ArrowFormat::FORMAT,
-            clickhouse.client.id = self.client_id,
-            clickhouse.query.id
-        )
-    )]
-    pub async fn query_http(
-        &self,
-        query: impl Into<ParsedQuery>,
-        params: Option<QueryParams>,
-        schema: SchemaRef,
-        overrides: Option<SchemaConversions>,
-        qid: Option<Qid>,
-    ) -> Result<Vec<RecordBatch>> {
-        let (query, qid) = record_query(qid, query.into(), self.client_id);
-        self.http.query::<ArrowFormat, _>(&query, params, schema, overrides, qid).await
     }
 }
 
