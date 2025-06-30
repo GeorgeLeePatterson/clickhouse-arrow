@@ -18,7 +18,6 @@ jobs:
       matrix:
         rust:
           - stable
-          - beta
           - nightly
     steps:
     - uses: actions/checkout@v4
@@ -47,8 +46,14 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
     
+    - name: Install nightly for formatting
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rustfmt
+      if: matrix.rust == 'stable'
+      
     - name: Check formatting
-      run: cargo fmt -- --check
+      run: cargo +nightly fmt -- --check
       
     - name: Run clippy
       run: cargo clippy --all-features --all-targets -- -D warnings

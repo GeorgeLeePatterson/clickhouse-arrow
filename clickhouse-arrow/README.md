@@ -163,7 +163,7 @@ Peak memory for 10M row insert: X MB
 
 ### Key Performance Features
 
-- **Compression Benefits**: LZ4/ZSTD compression often improves performance due to reduced network I/O and deterministic deserialization patterns
+- **Compression Benefits**: LZ4/ZSTD compression often improves performance  over remote networks due to reduced network I/O and can sometimes speed up even on localhost due to deterministic deserialization patterns
 - **Zero-Copy**: Arrow integration enables zero-copy data transfer where possible
 - **Streaming**: Large datasets are processed in chunks to maintain low memory footprint
 - **Connection Pooling**: The `pool` feature enables connection reuse for better throughput
