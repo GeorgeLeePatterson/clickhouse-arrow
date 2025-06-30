@@ -23,7 +23,11 @@ async fn emit_bytes<W: ClickHouseWrite>(type_: &Type, bytes: &[u8], writer: &mut
     Ok(())
 }
 
-fn emit_bytes_sync(type_: &Type, bytes: &[u8], writer: &mut impl ClickHouseBytesWrite) -> Result<()> {
+fn emit_bytes_sync(
+    type_: &Type,
+    bytes: &[u8],
+    writer: &mut impl ClickHouseBytesWrite,
+) -> Result<()> {
     if let Type::FixedSizedString(s) = type_ {
         if bytes.len() >= *s {
             writer.put_slice(&bytes[..*s]);

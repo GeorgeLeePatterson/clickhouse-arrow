@@ -148,7 +148,7 @@ impl<T: ClientFormat> ConnectionManager<T> {
     }
 
     /// Creates a new connection manager from an existing `ClientBuilder`.
-    /// 
+    ///
     /// This is an alternative constructor that allows you to pre-configure a
     /// `ClientBuilder` with custom settings before creating the connection manager.
     /// This is useful when you need fine-grained control over the client configuration.

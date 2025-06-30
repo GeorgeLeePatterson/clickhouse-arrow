@@ -334,10 +334,10 @@ pub(crate) fn arrow_to_ch_type(
     };
 
     // ClickHouse doesn't support Nullable(Array) or Nullable(Map)
-    Ok(if is_nullable && !matches!(inner_type, Type::Array(_) | Type::Map(_, _)) { 
-        Type::Nullable(Box::new(inner_type)) 
-    } else { 
-        inner_type 
+    Ok(if is_nullable && !matches!(inner_type, Type::Array(_) | Type::Map(_, _)) {
+        Type::Nullable(Box::new(inner_type))
+    } else {
+        inner_type
     })
 }
 

@@ -236,7 +236,7 @@ mod tests_sync {
     #[test]
     fn test_write_nullability_array_type_variations() {
         let mut state = SerializerState::default();
-        
+
         // Test 1: Array(Nullable(Int64)) - should not write null mask
         let data = vec![
             Some(vec![Some(1i64), None, Some(3)]),
@@ -246,7 +246,7 @@ mod tests_sync {
         let list_array = ListArray::from_iter_primitive::<arrow::datatypes::Int64Type, _, _>(data);
         let array = Arc::new(list_array) as ArrayRef;
         let mut writer = MockWriter::new();
-        
+
         // Type is Array(Nullable(Int64)) - not wrapped in Nullable
         serialize_nulls(
             &Type::Array(Type::Nullable(Type::Int64.into()).into()),
@@ -255,17 +255,18 @@ mod tests_sync {
             &mut state,
         );
         assert!(writer.is_empty(), "Array type should not write null mask");
-        
+
         // Test 2: Nullable(Array(Int64)) - should not write null mask due to special handling
         let data2 = vec![
             Some(vec![Some(1i64), Some(2), Some(3)]),
             None, // This array is null
             Some(vec![Some(10), Some(20)]),
         ];
-        let list_array2 = ListArray::from_iter_primitive::<arrow::datatypes::Int64Type, _, _>(data2);
+        let list_array2 =
+            ListArray::from_iter_primitive::<arrow::datatypes::Int64Type, _, _>(data2);
         let array2 = Arc::new(list_array2) as ArrayRef;
         let mut writer2 = MockWriter::new();
-        
+
         serialize_nulls(
             &Type::Nullable(Type::Array(Type::Int64.into()).into()),
             &mut writer2,
@@ -273,13 +274,13 @@ mod tests_sync {
             &mut state,
         );
         assert!(writer2.is_empty(), "Nullable(Array) should not write null mask");
-        
+
         // Test 3: Map type (similar rules as Array)
         let mut writer3 = MockWriter::new();
         serialize_nulls(
             &Type::Nullable(Type::Map(Type::String.into(), Type::Int32.into()).into()),
             &mut writer3,
-            &array,  // Using dummy array since we're just testing the type check
+            &array, // Using dummy array since we're just testing the type check
             &mut state,
         );
         assert!(writer3.is_empty(), "Nullable(Map) should not write null mask");

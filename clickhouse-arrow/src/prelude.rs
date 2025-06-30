@@ -23,7 +23,7 @@ pub use crate::{ArrowClient, Client, ClientBuilder, CompressionMethod, NativeCli
 /// # Example
 /// ```
 /// use clickhouse_arrow::prelude::Secret;
-/// 
+///
 /// let password = Secret::new("my_password");
 /// println!("{:?}", password); // Prints: Secret(REDACTED)
 /// ```

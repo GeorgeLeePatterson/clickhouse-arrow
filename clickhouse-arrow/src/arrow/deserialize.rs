@@ -900,7 +900,6 @@ mod tests {
         let array = array.unwrap();
         assert!(array.is_empty());
     }
-
 }
 
 #[cfg(test)]
@@ -1168,5 +1167,4 @@ mod tests_sync {
         let array = array.unwrap();
         assert!(array.is_empty());
     }
-
 }

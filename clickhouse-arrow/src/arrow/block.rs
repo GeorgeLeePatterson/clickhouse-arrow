@@ -1538,7 +1538,6 @@ mod tests {
             .as_ref()
         );
     }
-
 }
 
 #[cfg(test)]
@@ -2540,5 +2539,4 @@ mod tests_sync {
             .as_ref()
         );
     }
-
 }

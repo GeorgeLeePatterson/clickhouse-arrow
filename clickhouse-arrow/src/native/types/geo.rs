@@ -51,10 +51,7 @@ mod tests {
     #[test]
     fn test_normalize_ring() {
         let result = normalize_geo_type(&Type::Ring).unwrap();
-        assert_eq!(
-            result,
-            Type::Array(Box::new(Type::Tuple(vec![Type::Float64, Type::Float64])))
-        );
+        assert_eq!(result, Type::Array(Box::new(Type::Tuple(vec![Type::Float64, Type::Float64]))));
     }
 
     #[test]
@@ -74,9 +71,10 @@ mod tests {
         let result = normalize_geo_type(&Type::MultiPolygon).unwrap();
         assert_eq!(
             result,
-            Type::Array(Box::new(Type::Array(Box::new(Type::Array(Box::new(
-                Type::Tuple(vec![Type::Float64, Type::Float64])
-            ))))))
+            Type::Array(Box::new(Type::Array(Box::new(Type::Array(Box::new(Type::Tuple(vec![
+                Type::Float64,
+                Type::Float64
+            ])))))))
         );
     }
 

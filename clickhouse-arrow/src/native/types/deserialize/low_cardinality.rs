@@ -184,6 +184,8 @@ impl Deserializer for LowCardinalityDeserializer {
         _rows: usize,
         _state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError("LowCardinalityDeserializer sync not yet implemented".to_string()))
+        Err(Error::DeserializeError(
+            "LowCardinalityDeserializer sync not yet implemented".to_string(),
+        ))
     }
 }
