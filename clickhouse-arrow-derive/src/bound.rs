@@ -63,21 +63,18 @@ pub fn with_bound(
 
     impl<'ast> FindTyParams<'ast> {
         fn visit_field(&mut self, field: &'ast syn::Field) {
-            if let syn::Type::Path(ty) = ungroup(&field.ty) {
-                if let Some(Pair::Punctuated(t, _)) = ty.path.segments.pairs().next() {
-                    if self.all_type_params.contains(&t.ident) {
-                        self.associated_type_usage.push(ty);
-                    }
-                }
+            if let syn::Type::Path(ty) = ungroup(&field.ty)
+                && let Some(Pair::Punctuated(t, _)) = ty.path.segments.pairs().next()
+                && self.all_type_params.contains(&t.ident) {
+                self.associated_type_usage.push(ty);
             }
             self.visit_type(&field.ty);
         }
 
         fn visit_path(&mut self, path: &'ast syn::Path) {
-            if let Some(seg) = path.segments.last() {
-                if seg.ident == "PhantomData" {
-                    return;
-                }
+            if let Some(seg) = path.segments.last()
+                && seg.ident == "PhantomData" {
+                return;
             }
             if path.leading_colon.is_none() && path.segments.len() == 1 {
                 let id = &path.segments[0].ident;

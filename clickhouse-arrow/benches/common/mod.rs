@@ -33,8 +33,6 @@ pub(crate) struct ClickHouseNativeRow {
 }
 
 pub(crate) fn init() {
-    // TODO: Remove this lint when let chains is stable
-    #[allow(clippy::collapsible_if)]
     if let Ok(l) = std::env::var("RUST_LOG") {
         if !l.is_empty() {
             // Add directives here

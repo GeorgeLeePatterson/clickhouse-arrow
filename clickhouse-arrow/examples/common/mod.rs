@@ -11,8 +11,6 @@ pub(crate) const DEFAULT_RUNS: usize = 10;
 const DISABLE_CLEANUP_ENV: &str = "DISABLE_CLEANUP";
 
 pub(crate) fn init(directives: Option<&[(&str, &str)]>) {
-    // TODO: Remove this lint when let chains is stable
-    #[allow(clippy::collapsible_if)]
     if let Ok(l) = std::env::var("RUST_LOG") {
         if !l.is_empty() {
             // Add directives here

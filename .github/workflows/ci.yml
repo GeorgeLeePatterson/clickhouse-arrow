@@ -61,7 +61,12 @@ jobs:
       run: cargo +nightly fmt -- --check
 
     - name: Run clippy
-      run: cargo +${{ matrix.rust }} clippy --all-features --all-targets -- -D warnings
+      run: |
+        if [[ "${{ matrix.rust }}" == "nightly" ]]; then
+          cargo +nightly clippy --all-features --all-targets
+        else
+          cargo +stable clippy --all-features --all-targets -- -D warnings
+        fi
 
     - name: Build
       run: cargo +${{ matrix.rust }} build --all-features --verbose

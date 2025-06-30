@@ -263,12 +263,10 @@ impl ExponentialBackoff {
     pub fn next_backoff(&mut self) -> Option<Duration> {
         self.attempts += 1;
 
-        // TODO: Remove this lint when let chains is stable
-        #[allow(clippy::collapsible_if)]
-        if let Some(max_time) = self.max_elapsed_time {
-            if self.current_interval * self.attempts > max_time {
-                return None;
-            }
+        if let Some(max_time) = self.max_elapsed_time
+            && self.current_interval * self.attempts > max_time
+        {
+            return None;
         }
 
         #[expect(clippy::cast_possible_wrap)]

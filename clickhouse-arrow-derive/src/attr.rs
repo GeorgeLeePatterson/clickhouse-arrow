@@ -113,19 +113,17 @@ impl Container {
                 let _ = attr.parse_nested_meta(|meta| {
                     match meta.path.get_ident() {
                         Some(ident) if ident == RENAME => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(s) = expr.parse::<syn::LitStr>() {
-                                    rename.set(&meta.path, s.value());
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(s) = expr.parse::<syn::LitStr>() {
+                                rename.set(&meta.path, s.value());
                             }
                         }
                         Some(ident) if ident == RENAME_ALL => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(s) = expr.parse::<syn::LitStr>() {
-                                    match RenameRule::from_str(&s.value()) {
-                                        Ok(rule) => rename_all_rule.set(&meta.path, rule),
-                                        Err(err) => cx.error_spanned_by(s, err),
-                                    }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(s) = expr.parse::<syn::LitStr>() {
+                                match RenameRule::from_str(&s.value()) {
+                                    Ok(rule) => rename_all_rule.set(&meta.path, rule),
+                                    Err(err) => cx.error_spanned_by(s, err),
                                 }
                             }
                         }
@@ -134,9 +132,9 @@ impl Container {
                         }
                         Some(ident) if ident == DEFAULT => {
                             if meta.input.peek(syn::Token![=]) {
-                                if let Ok(expr) = meta.value() {
-                                    if let Ok(path) = expr.parse::<syn::ExprPath>() {
-                                        match &item.data {
+                                if let Ok(expr) = meta.value()
+                                    && let Ok(path) = expr.parse::<syn::ExprPath>() {
+                                    match &item.data {
                                             syn::Data::Struct(syn::DataStruct {
                                                 fields, ..
                                             }) => match fields {
@@ -156,7 +154,6 @@ impl Container {
                                             ),
                                         }
                                     }
-                                }
                             } else {
                                 match &item.data {
                                     syn::Data::Struct(syn::DataStruct { fields, .. }) => {
@@ -190,31 +187,26 @@ impl Container {
                             }
                         }
                         Some(ident) if ident == FROM => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(ty) = expr.parse::<syn::Type>() {
-                                    type_from.set_opt(&meta.path, Some(ty));
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(ty) = expr.parse::<syn::Type>() {
+                                type_from.set_opt(&meta.path, Some(ty));
                             }
                         }
                         Some(ident) if ident == TRY_FROM => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(ty) = expr.parse::<syn::Type>() {
-                                    type_try_from.set_opt(&meta.path, Some(ty));
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(ty) = expr.parse::<syn::Type>() {
+                                type_try_from.set_opt(&meta.path, Some(ty));
                             }
                         }
                         Some(ident) if ident == SCHEMA => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(path) = expr.parse::<syn::ExprPath>() {
+                            if meta.input.peek(syn::Token![=]) {
+                                if let Ok(expr) = meta.value()
+                                    && let Ok(path) = expr.parse::<syn::ExprPath>() {
                                     schema.set(&meta.path, path);
                                 } else {
                                     cx.error_spanned_by(
                                         meta.path,
-                                        format!(
-                                            "expected function path for `schema` attribute, got: \
-                                             {:?}",
-                                            expr
-                                        ),
+                                        "expected function path for `schema` attribute",
                                     );
                                 }
                             } else {
@@ -226,10 +218,9 @@ impl Container {
                             }
                         }
                         Some(ident) if ident == INTO => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(ty) = expr.parse::<syn::Type>() {
-                                    type_into.set_opt(&meta.path, Some(ty));
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(ty) = expr.parse::<syn::Type>() {
+                                type_into.set_opt(&meta.path, Some(ty));
                             }
                         }
                         _ => {
@@ -341,18 +332,16 @@ impl Field {
                 let _ = attr.parse_nested_meta(|meta| {
                     match meta.path.get_ident() {
                         Some(ident) if ident == RENAME => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(s) = expr.parse::<syn::LitStr>() {
-                                    rename.set(&meta.path, s.value());
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(s) = expr.parse::<syn::LitStr>() {
+                                rename.set(&meta.path, s.value());
                             }
                         }
                         Some(ident) if ident == DEFAULT => {
                             if meta.input.peek(syn::Token![=]) {
-                                if let Ok(expr) = meta.value() {
-                                    if let Ok(path) = expr.parse::<syn::ExprPath>() {
-                                        default.set(&meta.path, Default::Path(path));
-                                    }
+                                if let Ok(expr) = meta.value()
+                                    && let Ok(path) = expr.parse::<syn::ExprPath>() {
+                                    default.set(&meta.path, Default::Path(path));
                                 }
                             } else {
                                 default.set(&meta.path, Default::Default);
@@ -375,35 +364,32 @@ impl Field {
                             skip_deserializing.set_true(&meta.path);
                         }
                         Some(ident) if ident == SERIALIZE_WITH => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(path) = expr.parse::<syn::ExprPath>() {
-                                    serialize_with.set(&meta.path, path);
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(path) = expr.parse::<syn::ExprPath>() {
+                                serialize_with.set(&meta.path, path);
                             }
                         }
                         Some(ident) if ident == DESERIALIZE_WITH => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(path) = expr.parse::<syn::ExprPath>() {
-                                    deserialize_with.set(&meta.path, path);
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(path) = expr.parse::<syn::ExprPath>() {
+                                deserialize_with.set(&meta.path, path);
                             }
                         }
                         Some(ident) if ident == WITH => {
-                            if let Ok(expr) = meta.value() {
-                                if let Ok(path) = expr.parse::<syn::ExprPath>() {
-                                    let mut ser_path = path.clone();
-                                    ser_path
-                                        .path
-                                        .segments
-                                        .push(Ident::new("to_sql", Span::call_site()).into());
-                                    serialize_with.set(&meta.path, ser_path);
-                                    let mut de_path = path;
-                                    de_path
-                                        .path
-                                        .segments
-                                        .push(Ident::new("from_sql", Span::call_site()).into());
-                                    deserialize_with.set(&meta.path, de_path);
-                                }
+                            if let Ok(expr) = meta.value()
+                                && let Ok(path) = expr.parse::<syn::ExprPath>() {
+                                let mut ser_path = path.clone();
+                                ser_path
+                                    .path
+                                    .segments
+                                    .push(Ident::new("to_sql", Span::call_site()).into());
+                                serialize_with.set(&meta.path, ser_path);
+                                let mut de_path = path;
+                                de_path
+                                    .path
+                                    .segments
+                                    .push(Ident::new("from_sql", Span::call_site()).into());
+                                deserialize_with.set(&meta.path, de_path);
                             }
                         }
                         Some(ident) if ident == BOUND => {
@@ -430,10 +416,9 @@ impl Field {
             }
         }
 
-        if let Default::None = *container_default {
-            if skip_deserializing.0.value.is_some() {
-                default.set_if_none(Default::Default);
-            }
+        if let Default::None = *container_default
+            && skip_deserializing.0.value.is_some() {
+            default.set_if_none(Default::Default);
         }
 
         Field {

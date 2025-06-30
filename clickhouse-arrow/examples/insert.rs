@@ -42,15 +42,12 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
     arrow_tests::setup_database(db, &client).await?;
 
     let rows = common::ROWS + 30_000;
-
-    // Create RecordBatches
-    // let batches =
-    //     (0..num_runs).map(|_| arrow_tests::create_test_batch(rows, false)).collect::<Vec<_>>();
     let batch = arrow_tests::create_test_batch(rows, false);
 
     // Setup table
     let table = arrow_tests::setup_table(&client, db, &batch.schema()).await?;
 
+    // TODO: Remove
     let mut arrow_runs = Vec::with_capacity(num_runs);
     let mut rs_runs = Vec::with_capacity(num_runs);
 
@@ -73,6 +70,7 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
     //     result?;
     // }
 
+    // TODO: Remove
     for i in 0..num_runs {
         let b = batch.clone();
         let inner_start = Instant::now();
