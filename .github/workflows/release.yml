@@ -38,7 +38,7 @@ jobs:
           git cliff --latest --strip header -o RELEASE_NOTES.md
 
       - name: Commit CHANGELOG.md
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v6
         with:
           commit_message: "chore: update CHANGELOG.md for ${{ github.ref_name }}"
           file_pattern: CHANGELOG.md
