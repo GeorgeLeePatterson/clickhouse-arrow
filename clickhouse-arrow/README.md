@@ -8,7 +8,7 @@ Currently supports revision `54477`, `DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZ
 [![Documentation](https://docs.rs/clickhouse-arrow/badge.svg)](https://docs.rs/clickhouse-arrow)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/GeorgeLeePatterson/clickhouse-arrow/ci.yml?branch=main)](https://github.com/GeorgeLeePatterson/clickhouse-arrow/actions)
-[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/GeorgeLeePatterson/clickhouse-arrow)
+[![Coverage](https://codecov.io/gh/GeorgeLeePatterson/clickhouse-arrow/branch/main/graph/badge.svg)](https://codecov.io/gh/GeorgeLeePatterson/clickhouse-arrow)
 
 A high-performance, async Rust client for `ClickHouse` with native Arrow integration. Designed to be faster and more memory-efficient than existing alternatives.
 
