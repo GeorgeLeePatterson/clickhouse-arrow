@@ -30,6 +30,17 @@ coverage:
      --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-dir coverage -F test_utils --open
 
+# --- COVERAGE ---
+coverage-json:
+    cargo llvm-cov --json \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
+     --output-path coverage/cov.json -F test_utils
+
+coverage-lcov:
+    cargo llvm-cov --lcov \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
+     --output-path coverage/lcov.info -F test_utils
+
 # --- DOCS ---
 docs:
     cd clickhouse-arrow && cargo doc --open
@@ -170,10 +181,6 @@ init-dev:
     @echo "  just release-dry patch  # Preview what would happen"
     @echo "  just check-outdated     # Check for outdated dependencies"
     @echo "  just audit              # Security audit"
-
-# Preview a release without actually doing it
-release-dry version:
-    cargo release {{version}} --dry-run --verbose
 
 # Check for outdated dependencies
 check-outdated:

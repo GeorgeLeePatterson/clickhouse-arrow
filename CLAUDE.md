@@ -35,7 +35,6 @@ cargo test --features test_utils
 # Run specific integration test suites
 cargo test --test e2e_arrow --features test_utils
 cargo test --test e2e_native --features "test_utils,derive"
-cargo test --test row_binary_arrow --features test_utils
 
 # Run with output visible
 cargo test --features test_utils -- --nocapture

@@ -11,6 +11,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  checks: write  # Required for security audit to create check runs
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -110,3 +114,20 @@ jobs:
     - uses: rustsec/audit-check@v2
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Summary job that branch protection can depend on
+  ci-success:
+    name: CI Success
+    needs: [test, coverage, security]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check if all jobs succeeded
+        run: |
+          if [[ "${{ needs.test.result }}" != "success" || 
+                "${{ needs.coverage.result }}" != "success" || 
+                "${{ needs.security.result }}" != "success" ]]; then
+            echo "One or more jobs failed"
+            exit 1
+          fi
+          echo "All CI jobs passed successfully!"
