@@ -65,7 +65,8 @@ pub fn with_bound(
         fn visit_field(&mut self, field: &'ast syn::Field) {
             if let syn::Type::Path(ty) = ungroup(&field.ty)
                 && let Some(Pair::Punctuated(t, _)) = ty.path.segments.pairs().next()
-                && self.all_type_params.contains(&t.ident) {
+                && self.all_type_params.contains(&t.ident)
+            {
                 self.associated_type_usage.push(ty);
             }
             self.visit_type(&field.ty);
@@ -73,7 +74,8 @@ pub fn with_bound(
 
         fn visit_path(&mut self, path: &'ast syn::Path) {
             if let Some(seg) = path.segments.last()
-                && seg.ident == "PhantomData" {
+                && seg.ident == "PhantomData"
+            {
                 return;
             }
             if path.leading_colon.is_none() && path.segments.len() == 1 {

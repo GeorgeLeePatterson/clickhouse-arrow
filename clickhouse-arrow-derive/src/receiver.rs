@@ -59,7 +59,9 @@ impl ReplaceReceiver<'_> {
         let variant = mem::replace(path, self_ty.path);
         for segment in &mut path.segments {
             if let PathArguments::AngleBracketed(bracketed) = &mut segment.arguments
-                && bracketed.colon2_token.is_none() && !bracketed.args.is_empty() {
+                && bracketed.colon2_token.is_none()
+                && !bracketed.args.is_empty()
+            {
                 bracketed.colon2_token = Some(syn::token::PathSep::default());
             }
         }
