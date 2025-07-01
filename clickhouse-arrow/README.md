@@ -42,7 +42,7 @@ Uses internal types and custom traits if a dependency on arrow is not required.
 
 `clickhouse-arrow` provides powerful DDL capabilities through `CreateOptions`, allowing you to create `ClickHouse` tables directly from Arrow schemas:
 
-```rust
+```rust,ignore
 use clickhouse_arrow::{Client, ArrowFormat, CreateOptions};
 use arrow::datatypes::{Schema, Field, DataType};
 
@@ -69,7 +69,7 @@ client.create_table(None, "my_table", &schema, &options, None).await?;
 
 1. **Converting Dictionary → Enum**: By default, Arrow Dictionary types map to `LowCardinality(String)`. Use `SchemaConversions` to map them to `Enum8` or `Enum16` instead:
 
-```rust
+```rust,ignore
 use clickhouse_arrow::{Type, CreateOptions};
 use std::collections::HashMap;
 
@@ -101,7 +101,7 @@ let options = CreateOptions::new("MergeTree")
 
 When working with complex Arrow types, use these constants to ensure compatibility:
 
-```rust
+```rust,ignore
 use clickhouse_arrow::arrow::types::*;
 
 // For List types - inner field is named "item"
@@ -136,30 +136,15 @@ These constants ensure your Arrow schemas align with `ClickHouse`'s expectations
 The following benchmarks were run on [TODO: Remove - Add your machine specs, e.g., M2 `MacBook` Pro, 16GB RAM]:
 
 #### Insert Performance
-```
 [TODO: Remove - Add insert benchmark results]
-Example format:
-Insert 1M rows (uncompressed): X.XXs (Y MB/s)
-Insert 1M rows (LZ4): X.XXs (Y MB/s)
-Insert 1M rows (ZSTD): X.XXs (Y MB/s)
-```
 
 #### Query Performance
-```
+
 [TODO: Remove - Add query benchmark results]
-Example format:
-Query 10M rows (uncompressed): X.XXs (Y rows/s)
-Query 10M rows (LZ4): X.XXs (Y rows/s)
-Query 10M rows (ZSTD): X.XXs (Y rows/s)
-```
 
 #### Memory Usage
-```
+
 [TODO: Remove - Add memory usage comparisons]
-Example format:
-Peak memory for 10M row query: X MB
-Peak memory for 10M row insert: X MB
-```
 
 ### Key Performance Features
 

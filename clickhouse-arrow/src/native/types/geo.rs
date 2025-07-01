@@ -37,7 +37,6 @@ pub fn normalize_geo_type(type_: &Type) -> Result<Type> {
     })
 }
 
-// TODO: Remove - unit tests
 #[cfg(test)]
 mod tests {
     use super::*;

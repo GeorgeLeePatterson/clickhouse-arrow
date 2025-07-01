@@ -265,7 +265,6 @@ impl ClickHouseArrowSerializer for Type {
     }
 }
 
-// TODO: Remove - geo unit tests
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;

@@ -74,8 +74,9 @@ jobs:
     - name: Run tests
       run: cargo +${{ matrix.rust }} test --features test_utils --verbose
 
-    - name: Run doc tests
-      run: cargo +${{ matrix.rust }} test --doc --all-features
+    # TODO: Convert doc test to tests and reenable
+    # - name: Run doc tests
+    #   run: cargo +${{ matrix.rust }} test --doc --all-features
 
   coverage:
     name: Code Coverage

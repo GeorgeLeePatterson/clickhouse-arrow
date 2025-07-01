@@ -25,28 +25,24 @@ fn insert_arrow(
 ) {
     // Benchmark native arrow insert
     let query = format!("INSERT INTO {table} FORMAT NATIVE");
-    let _ = group
-        // Reduce sample size for slower operations
-        .sample_size(50)
-        .measurement_time(Duration::from_secs(10))
-        .bench_with_input(
-            BenchmarkId::new(format!("clickhouse_arrow_{compression}"), rows),
-            &(&query, client),
-            |b, (query, client)| {
-                b.to_async(rt).iter_batched(
-                    || batch.clone(),
-                    |batch| async move {
-                        let stream = client
-                            .insert(query.as_str(), batch, None)
-                            .await
-                            .inspect_err(|e| print_msg(format!("Insert error\n{e:?}")))
-                            .unwrap();
-                        drop(stream);
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+    let _ = group.sample_size(50).measurement_time(Duration::from_secs(10)).bench_with_input(
+        BenchmarkId::new(format!("clickhouse_arrow_{compression}"), rows),
+        &(&query, client),
+        |b, (query, client)| {
+            b.to_async(rt).iter_batched(
+                || batch.clone(),
+                |batch| async move {
+                    let stream = client
+                        .insert(query.as_str(), batch, None)
+                        .await
+                        .inspect_err(|e| print_msg(format!("Insert error\n{e:?}")))
+                        .unwrap();
+                    drop(stream);
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        },
+    );
 }
 
 fn query_arrow(
@@ -76,7 +72,6 @@ fn query_arrow(
     );
 }
 
-#[allow(clippy::too_many_lines)]
 fn criterion_benchmark(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 

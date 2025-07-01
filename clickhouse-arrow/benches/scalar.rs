@@ -67,7 +67,6 @@ fn query_arrow_native(
     );
 }
 
-#[allow(clippy::too_many_lines)]
 fn criterion_benchmark(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 

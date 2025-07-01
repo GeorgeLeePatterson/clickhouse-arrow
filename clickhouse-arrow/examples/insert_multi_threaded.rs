@@ -5,22 +5,16 @@ use clickhouse_arrow::prelude::*;
 use clickhouse_arrow::test_utils::{ClickHouseContainer, arrow_tests};
 use futures_util::StreamExt;
 
-const INSERTS: usize = 5;
+const INSERTS: usize = 3;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::any::Any + Send>> {
-    common::run_example_with_cleanup(
-        |ch, num| async move {
-            run(ch, num).await.unwrap();
-        },
-        None,
-    )
-    .await?;
+    common::run_example_with_cleanup(|ch| async move { run(ch).await.unwrap() }, None).await?;
     Ok(())
 }
 
 #[expect(clippy::disallowed_methods)]
-async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
+async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     let db = common::DB_NAME;
 
     // Setup clients
@@ -59,7 +53,6 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
             let mut stream = arrow_client
                 .insert_many(format!("INSERT INTO {table} FORMAT Native"), batches, Some(qid))
                 .await
-                .inspect_err(|e| eprintln!("Insert error\n{e:?}"))
                 .unwrap();
 
             while let Some(result) = stream.next().await {
@@ -77,7 +70,7 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
 
     // SELECT
     let mut tasks: Vec<_> = Vec::with_capacity(INSERTS);
-    for i in 0..num_runs {
+    for i in 0..3 {
         let table = table.clone();
         let client = arrow_client.clone();
         tasks.push(tokio::spawn(async move {
@@ -86,13 +79,11 @@ async fn run(ch: &'static ClickHouseContainer, num_runs: usize) -> Result<()> {
             let mut stream = client.query(query, None).await.unwrap();
 
             // Stream results
-            let mut iter = 0;
+            let mut total_rows = 0;
             while let Some(maybe_batch) = stream.next().await {
-                iter += 1;
-
-                let rows = maybe_batch.unwrap().num_rows();
-                eprintln!("Batch {iter} (from task {i}) (rows = {rows})");
+                total_rows += maybe_batch.unwrap().num_rows();
             }
+            eprintln!("Task {i}, total rows = {total_rows}");
         }));
     }
 

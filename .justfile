@@ -7,7 +7,7 @@ features := 'inner_pool pool serde derive cloud rust_decimal'
 
 # List of Examples
 
-examples := "insert pool select"
+examples := "insert insert_multi_threaded pool scalar"
 
 default:
     @just --list
@@ -81,22 +81,19 @@ release-lto example:
      --example "{{ example }}"
     codesign -s - -v -f --entitlements assets/mac.entitlements "target/release-lto/examples/{{ example }}"
 
-example example *args='':
-    cargo run --profile=release -F test_utils --example "{{ example }}" -- "{{ args }}"
+example example:
+    cargo run -F test_utils --example "{{ example }}"
 
-example-lto example *args='':
-    cargo run --profile=release-lto -F test_utils --example "{{ example }}" -- "{{ args }}"
+example-lto example:
+    cargo run --profile=release-lto -F test_utils --example "{{ example }}"
 
-example-debug example *args='':
-    cargo run -F test_utils --example "{{ example }}" -- "{{ args }}"
+example-release-debug example:
+    cargo run --profile=release-with-debug -F test_utils --example "{{ example }}"
 
-example-release-debug example *args='':
-    cargo run --profile=release-with-debug -F test_utils --example "{{ example }}" -- "{{ args }}"
-
-examples *args='':
+examples:
     @for ex in {{ examples }}; do \
         echo "Running example: $ex"; \
-        cargo run --profile=release-lto -F test_utils --example "$ex" -- "{{ args }}"
+        cargo run -F test_utils --example "$ex"; \
     done
 
 # --- PROFILING ---

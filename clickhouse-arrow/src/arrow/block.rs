@@ -342,7 +342,6 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
     }
 }
 
-// TODO: Remove - geo unit tests
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;

@@ -133,10 +133,6 @@ name = "insert"
 required-features = ["test_utils"]
 
 [[example]]
-name = "select"
-required-features = ["test_utils"]
-
-[[example]]
 name = "pool"
 required-features = ["test_utils"]
 
