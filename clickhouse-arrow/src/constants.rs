@@ -1,6 +1,6 @@
 pub(super) const VERSION_MAJOR: u64 = 0;
 pub(super) const VERSION_MINOR: u64 = 1;
-pub(super) const VERSION_PATCH: u64 = 0;
+pub(super) const VERSION_PATCH: u64 = 1;
 
 // Connection BufReader & BufWriter for connections
 pub(super) const CONN_READ_BUFFER_DEFAULT: usize = 1024 * 1024;

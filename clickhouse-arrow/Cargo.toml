@@ -1,9 +1,15 @@
 [package]
 name = "clickhouse-arrow"
+description = "ClickHouse Arrow Client for Rust"
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 
 [package.metadata.docs.rs]
 all-features = false

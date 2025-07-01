@@ -4,7 +4,7 @@
 
 Currently supports revision `54477`, `DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZATION`, the latest revision as of June 2025.
 
-[![Crates.io](https://img.shields.io/crates/v/clickhouse-arrow.svg)](https://crates.io/crates/clickhouse-arrow) [Coming Soon]
+[![Crates.io](https://img.shields.io/crates/v/clickhouse-arrow.svg)](https://crates.io/crates/clickhouse-arrow)
 [![Documentation](https://docs.rs/clickhouse-arrow/badge.svg)](https://docs.rs/clickhouse-arrow)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/GeorgeLeePatterson/clickhouse-arrow/ci.yml?branch=main)](https://github.com/GeorgeLeePatterson/clickhouse-arrow/actions)
