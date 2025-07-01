@@ -6,7 +6,7 @@ tag-message = "Release v{{version}}"
 tag-name = "v{{version}}"
 pre-release-replacements = [
     # Update workspace version
-    { file = "Cargo.toml", search = 'version = ".*"', replace = 'version = "{{version}}"', exactly = 1 },
+    { file = "Cargo.toml", search = '\[workspace\.package\]\nversion = ".*"', replace = '[workspace.package]\nversion = "{{version}}"', exactly = 1 },
     # Update README installation instructions
     { file = "README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"', min = 0 },
 ]
