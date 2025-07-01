@@ -6,12 +6,7 @@ This crate provides the `#[derive(Row)]` macro for (de)serializing Rust types wi
 
 ## Usage
 
-This crate is not intended to be used directly. Instead, use it through the main `clickhouse-arrow` crate:
-
-```toml
-[dependencies]
-clickhouse-arrow = "0.1.0"
-```
+This crate is not intended to be used directly. Instead, use it through the main `clickhouse-arrow` crate.
 
 For documentation and examples, please see the [main crate documentation](https://docs.rs/clickhouse-arrow).
 

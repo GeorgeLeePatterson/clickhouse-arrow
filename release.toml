@@ -10,7 +10,6 @@ pre-release-replacements = [
     # Update README installation instructions
     { file = "README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
     { file = "clickhouse-arrow/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
-    { file = "clickhouse-arrow-derive/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
 ]
 
 # Don't publish, let CI handle it
