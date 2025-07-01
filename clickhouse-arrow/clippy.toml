@@ -1,0 +1,32 @@
+disallowed-methods = [
+    { path = "tokio::task::spawn", reason = "To provide cancel-safety, use `SpawnedTask::spawn` instead (https://github.com/apache/datafusion/issues/6513)" },
+    { path = "tokio::task::spawn_blocking", reason = "To provide cancel-safety, use `SpawnedTask::spawn_blocking` instead (https://github.com/apache/datafusion/issues/6513)" },
+
+    # use the faster & simpler non-poisonable primitives in `parking_lot` instead
+    "std::sync::Mutex::new",
+    "std::sync::RwLock::new",
+    "std::sync::Condvar::new",
+
+    # use std instead
+    "once_cell::sync::Lazy::new",
+
+    # use crate's join_unwind instead
+    "tokio::task::JoinSet::join_next",
+    "tokio::task::JoinSet::join_next_with_id",
+]
+
+# Lowering the threshold to help prevent stack overflows (default is 16384)
+# See: https://rust-lang.github.io/rust-clippy/master/index.html#/large_futures
+future-size-threshold = 10000
+
+allowed-wildcard-imports = [
+    "arrow",
+    "types",
+    "errors",
+    "super",
+    "deserialize",
+    "serialize",
+    "datatypes",
+    "constants",
+    "tracing",
+]

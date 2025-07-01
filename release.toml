@@ -1,0 +1,28 @@
+# cargo-release configuration for automated releases
+
+[workspace]
+# Ensure versions are kept in sync across workspace
+consolidate-commits = true
+pre-release-commit-message = "chore: release v{{version}}"
+tag-message = "Release v{{version}}"
+tag-name = "v{{version}}"
+pre-release-replacements = [
+    # Update workspace version
+    { file = "Cargo.toml", search = 'version = ".*"', replace = 'version = "{{version}}"', exactly = 1 },
+    # Update README installation instructions
+    { file = "README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
+    { file = "clickhouse-arrow/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
+]
+
+# Don't publish, let CI handle it
+publish = false
+push = true
+push-remote = "origin"
+
+[[package]]
+name = "clickhouse-arrow-derive"
+
+[[package]]
+name = "clickhouse-arrow"
+# Ensure derive crate is released first
+depends-on = ["clickhouse-arrow-derive"]

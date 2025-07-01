@@ -1,0 +1,172 @@
+[package]
+name = "clickhouse-arrow"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[package.metadata.docs.rs]
+all-features = false
+
+# FEATURES
+
+[features]
+default = ["derive", "serde", "pool", "inner_pool"]
+
+# -- Default --
+# Enable derive macros serializing and deserializing rust structures
+derive = ["clickhouse-arrow-derive"]
+# Enable serde serialization and deserialization for configuration and some types
+serde = [
+    "dep:serde",
+    "dep:serde_json",
+    "uuid/serde",
+    "chrono/serde",
+    "chrono-tz/serde",
+]
+# Enable `bb8` pool for managing connections to ClickHouse
+pool = ["dep:bb8"]
+# Configure the inner connection to pool multiple TCP connections, great for low latency use cases.
+inner_pool = ["dep:arc-swap"]
+
+# -- Optional --
+# Use extended geo types that ClickHouse supports
+geo-types = ["dep:geo-types"]
+# Enable options related to ClickHouse cloud, ie pinging the cloud for wakeup
+cloud = ["dep:ureq"]
+# Enable `rust_decimal` types for serialization and deserialization
+rust_decimal = ["dep:rust_decimal"]
+
+# -- Testing --
+test_utils = [
+    "dep:testcontainers",
+    "dep:tracing-subscriber",
+]
+
+# DEPENDENCIES
+
+[dependencies]
+arrow = { version = "55", features = [
+    "prettyprint",
+    "ipc_compression",
+    "chrono-tz",
+] }
+bytemuck = { version = "1", features = ["derive"] }
+bytes = { version = "1" }
+cityhash-rs = "1.0.1"
+chrono = "0.4"
+chrono-tz = "0.10"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+indexmap = { version = "2" }
+lz4_flex = "0.11"
+opentelemetry-semantic-conventions = { version = "0.30", features = [
+    "default",
+    "semconv_experimental",
+] }
+parking_lot = "0.12"
+paste = "1"
+pin-project = "1"
+rustc-hash = "2"
+socket2 = "0.5"
+strum = { version = "0.27", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = [
+    "io-util",
+    "net",
+    "sync",
+    "rt",
+    "macros",
+    "tracing",
+] }
+tokio-rustls = { version = "0.26", features = ["logging", "tls12"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+webpki-roots = "1"
+zstd = "0.13"
+
+# Optional
+arc-swap = { version = "1", optional = true }
+bb8 = { version = "0.9", optional = true }
+clickhouse-arrow-derive = { version = "0.1.0", optional = true, path = "../clickhouse-arrow-derive" }
+geo-types = { version = "0.7", optional = true }
+rust_decimal = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+testcontainers = { version = "0.24", optional = true }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
+ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.6", features = ["async_tokio", "html_reports"] }
+clickhouse = { version = "0.13" }
+tokio = { version = "1", features = ["full"] }
+
+[build-dependencies]
+rustc_version = "0.4.1"
+
+[lints]
+workspace = true
+
+# INTEGRATION TESTS
+
+[[test]]
+name = "e2e_arrow"
+required-features = ["test_utils"]
+
+[[test]]
+name = "e2e_arrow_chunked"
+required-features = ["test_utils"]
+
+[[test]]
+name = "e2e_native"
+required-features = ["test_utils", "derive"]
+
+[[test]]
+name = "e2e_compat"
+required-features = ["test_utils"]
+
+# EXAMPLES
+
+[[example]]
+name = "insert"
+required-features = ["test_utils"]
+
+[[example]]
+name = "pool"
+required-features = ["test_utils"]
+
+[[example]]
+name = "scalar"
+required-features = ["test_utils"]
+
+[[example]]
+name = "insert_multi_threaded"
+required-features = ["test_utils"]
+
+# BENCHES
+
+[[bench]]
+name = "insert"
+harness = false
+required-features = ["test_utils"]
+
+[[bench]]
+name = "pool_insert"
+harness = false
+required-features = ["test_utils"]
+
+[[bench]]
+name = "query"
+harness = false
+required-features = ["test_utils"]
+
+[[bench]]
+name = "scalar"
+harness = false
+required-features = ["test_utils"]
+
+[[bench]]
+name = "compression"
+harness = false
+required-features = ["test_utils"]

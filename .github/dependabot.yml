@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Keep Rust dependencies up to date
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      # Group all patch updates together
+      patch-updates:
+        update-types:
+          - "patch"
+    # Limit to 5 PRs at a time
+    open-pull-requests-limit: 5
+    
+  # Keep GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
