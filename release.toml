@@ -8,8 +8,8 @@ pre-release-replacements = [
     # Update workspace version
     { file = "Cargo.toml", search = 'version = ".*"', replace = 'version = "{{version}}"', exactly = 1 },
     # Update README installation instructions
-    { file = "README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
-    { file = "clickhouse-arrow/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
+    { file = "README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"', min = 0 },
+    { file = "clickhouse-arrow/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"', min = 0 },
 ]
 
 # Don't publish, let CI handle it
