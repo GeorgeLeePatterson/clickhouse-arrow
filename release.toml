@@ -6,17 +6,32 @@ pre-release-commit-message = "chore: release v{{version}}"
 tag-message = "Release v{{version}}"
 tag-name = "v{{version}}"
 
-pre-release-replacements = [
-    # Update workspace version in root Cargo.toml
-    { file = "Cargo.toml", search = 'version = ".*"', replace = 'version = "{{version}}"', exactly = 1 },
-    # Update README installation instructions
-    { file = "README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
-    { file = "clickhouse-arrow/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
-    # Update derive crate README
-    { file = "clickhouse-arrow-derive/README.md", search = 'clickhouse-arrow = "[^"]*"', replace = 'clickhouse-arrow = "{{version}}"' },
-]
-
 # Don't publish, let CI handle it
 publish = false
 push = true
 push-remote = "origin"
+
+# Workspace-wide replacements
+[[pre-release-replacements]]
+file = "Cargo.toml"
+search = 'version = ".*"'
+replace = 'version = "{{version}}"'
+exactly = 1
+
+[[pre-release-replacements]]
+file = "README.md"
+search = 'clickhouse-arrow = "[^"]*"'
+replace = 'clickhouse-arrow = "{{version}}"'
+
+# Package-specific configurations
+[package.clickhouse-arrow]
+[[package.clickhouse-arrow.pre-release-replacements]]
+file = "README.md"
+search = 'clickhouse-arrow = "[^"]*"'
+replace = 'clickhouse-arrow = "{{version}}"'
+
+[package.clickhouse-arrow-derive]
+[[package.clickhouse-arrow-derive.pre-release-replacements]]
+file = "README.md"
+search = 'clickhouse-arrow = "[^"]*"'
+replace = 'clickhouse-arrow = "{{version}}"'
