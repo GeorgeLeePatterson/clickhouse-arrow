@@ -46,9 +46,11 @@ impl std::fmt::Debug for TypedListBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use arrow::datatypes::{DataType, Field};
     use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field};
+
+    use super::*;
 
     #[test]
     fn test_typed_list_builder_list() {

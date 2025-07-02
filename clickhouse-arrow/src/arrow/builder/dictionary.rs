@@ -72,8 +72,9 @@ impl std::fmt::Debug for LowCardinalityBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use arrow::datatypes::DataType;
+
+    use super::*;
 
     #[test]
     fn test_low_cardinality_key_builder_uint8() {
@@ -127,7 +128,7 @@ mod tests {
     fn test_low_cardinality_key_builder_invalid_type() {
         let result = LowCardinalityKeyBuilder::try_new(&DataType::Float32);
         assert!(result.is_err());
-        
+
         if let Err(Error::ArrowTypeMismatch { expected, provided }) = result {
             assert_eq!(expected, "UInt8/UInt16/UInt32/UInt64");
             assert_eq!(provided, "Float32");
@@ -172,7 +173,7 @@ mod tests {
 
         let result = LowCardinalityBuilder::try_new(&type_, &data_type);
         assert!(result.is_err());
-        
+
         if let Err(Error::ArrowTypeMismatch { expected, provided }) = result {
             assert_eq!(expected, "DataType::Dictionary");
             assert_eq!(provided, "Utf8");

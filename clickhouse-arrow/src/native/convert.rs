@@ -115,7 +115,7 @@ mod tests {
     fn test_unexpected_type() {
         let type_ = Type::Int32;
         let error = unexpected_type(&type_);
-        
+
         match error {
             Error::DeserializeError(msg) => {
                 assert!(msg.contains("unexpected type"));
@@ -127,13 +127,9 @@ mod tests {
 
     #[test]
     fn test_unexpected_type_different_types() {
-        let types = vec![
-            Type::String,
-            Type::Int64,
-            Type::Float32,
-            Type::Array(Box::new(Type::Int32)),
-        ];
-        
+        let types =
+            vec![Type::String, Type::Int64, Type::Float32, Type::Array(Box::new(Type::Int32))];
+
         for type_ in types {
             let error = unexpected_type(&type_);
             assert!(matches!(error, Error::DeserializeError(_)));
@@ -145,7 +141,7 @@ mod tests {
     fn test_module_exports() {
         // Test that we can use exported types
         let _raw_row = RawRow::default();
-        
+
         // Test that we can use the type alias
         let _col_def: ColumnDefinition = ("test".to_string(), Type::Int32, None);
     }

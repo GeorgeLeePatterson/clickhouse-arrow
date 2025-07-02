@@ -87,7 +87,6 @@ cargo bench --bench query --features test_utils
 3. **Data Formats**
    - **Arrow Format** (`src/arrow/`): Arrow RecordBatch integration
    - **Native Format** (`src/formats/`): Internal type system
-   - **Row Binary** (`src/row/`): HTTP row binary format support
 
 4. **Type System** (`src/types/`)
    - Comprehensive ClickHouse type support
