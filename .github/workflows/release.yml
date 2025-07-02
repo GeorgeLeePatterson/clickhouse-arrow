@@ -29,7 +29,7 @@ jobs:
           # Extract version from tag
           VERSION=${GITHUB_REF#refs/tags/v}
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          
+
           # Check that Cargo.toml has the correct version
           CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           if [ "$CARGO_VERSION" != "$VERSION" ]; then
@@ -37,7 +37,7 @@ jobs:
             echo "Please ensure the release PR was merged before tagging"
             exit 1
           fi
-          
+
           # Verify constants.rs matches
           echo "Verifying version constants..."
           cargo test test_version_matches_cargo --features test_utils
