@@ -35,7 +35,6 @@ cargo test --features test_utils
 # Run specific integration test suites
 cargo test --test e2e_arrow --features test_utils
 cargo test --test e2e_native --features "test_utils,derive"
-cargo test --test row_binary_arrow --features test_utils
 
 # Run with output visible
 cargo test --features test_utils -- --nocapture
@@ -88,7 +87,6 @@ cargo bench --bench query --features test_utils
 3. **Data Formats**
    - **Arrow Format** (`src/arrow/`): Arrow RecordBatch integration
    - **Native Format** (`src/formats/`): Internal type system
-   - **Row Binary** (`src/row/`): HTTP row binary format support
 
 4. **Type System** (`src/types/`)
    - Comprehensive ClickHouse type support

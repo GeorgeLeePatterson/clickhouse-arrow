@@ -24,24 +24,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install git-cliff
-        uses: taiki-e/install-action@v2
-        with:
-          tool: git-cliff
-
-      - name: Generate changelog
+      - name: Verify version consistency
         run: |
-          # Generate the full CHANGELOG.md
-          git cliff -o CHANGELOG.md
-
-          # Generate release notes for this version only
-          git cliff --latest --strip header -o RELEASE_NOTES.md
-
-      - name: Commit CHANGELOG.md
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update CHANGELOG.md for ${{ github.ref_name }}"
-          file_pattern: CHANGELOG.md
+          # Extract version from tag
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
+          # Check that Cargo.toml has the correct version
+          CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($VERSION)"
+            echo "Please ensure the release PR was merged before tagging"
+            exit 1
+          fi
+          
+          # Verify constants.rs matches
+          echo "Verifying version constants..."
+          cargo test test_version_matches_cargo --features test_utils
 
       - name: Publish to crates.io
         run: |
@@ -51,9 +50,21 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+      - name: Extract release notes
+        run: |
+          # Check if RELEASE_NOTES.md exists (from the PR)
+          if [ -f "RELEASE_NOTES.md" ]; then
+            cp RELEASE_NOTES.md release_notes_for_tag.md
+          else
+            # Generate release notes for this tag if not present
+            echo "# Release v$VERSION" > release_notes_for_tag.md
+            echo "" >> release_notes_for_tag.md
+            echo "This release was published from tag v$VERSION" >> release_notes_for_tag.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          body_path: RELEASE_NOTES.md
+          body_path: release_notes_for_tag.md
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}

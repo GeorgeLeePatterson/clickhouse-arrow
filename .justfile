@@ -30,6 +30,17 @@ coverage:
      --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-dir coverage -F test_utils --open
 
+# --- COVERAGE ---
+coverage-json:
+    cargo llvm-cov --json \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
+     --output-path coverage/cov.json -F test_utils
+
+coverage-lcov:
+    cargo llvm-cov --lcov \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
+     --output-path coverage/lcov.info -F test_utils
+
 # --- DOCS ---
 docs:
     cd clickhouse-arrow && cargo doc --open
@@ -171,10 +182,6 @@ init-dev:
     @echo "  just check-outdated     # Check for outdated dependencies"
     @echo "  just audit              # Security audit"
 
-# Preview a release without actually doing it
-release-dry version:
-    cargo release {{version}} --dry-run --verbose
-
 # Check for outdated dependencies
 check-outdated:
     cargo outdated
@@ -183,10 +190,124 @@ check-outdated:
 audit:
     cargo audit
 
-# Release patch version
-patch:
-    cargo release patch
+# Prepare a release (creates PR with version bumps and changelog)
+prepare-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
 
-# Release minor version
-minor:
-    cargo release minor
+    # Validate version format
+    if ! [[ "{{version}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: Version must be in format X.Y.Z (e.g., 0.2.0)"
+        exit 1
+    fi
+
+    # Parse version components
+    IFS='.' read -r MAJOR MINOR PATCH <<< "{{version}}"
+
+    # Get current version for release notes
+    CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+    # Create release branch
+    git checkout -b "release-v{{version}}"
+
+    # Update workspace version in root Cargo.toml (only in [workspace.package] section)
+    # This uses a more specific pattern to only match the version under [workspace.package]
+    awk '/^\[workspace\.package\]/ {in_workspace=1} in_workspace && /^version = / {gsub(/"[^"]*"/, "\"{{version}}\""); in_workspace=0} {print}' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+
+    # Update version constants in constants.rs
+    sed -i '' "s/pub(super) const VERSION_MAJOR: u64 = [0-9]*;/pub(super) const VERSION_MAJOR: u64 = $MAJOR;/" clickhouse-arrow/src/constants.rs
+    sed -i '' "s/pub(super) const VERSION_MINOR: u64 = [0-9]*;/pub(super) const VERSION_MINOR: u64 = $MINOR;/" clickhouse-arrow/src/constants.rs
+    sed -i '' "s/pub(super) const VERSION_PATCH: u64 = [0-9]*;/pub(super) const VERSION_PATCH: u64 = $PATCH;/" clickhouse-arrow/src/constants.rs
+
+    # Update clickhouse-arrow version references in README files (if they exist)
+    # Look for patterns like: clickhouse-arrow = "0.1.1" or clickhouse-arrow = { version = "0.1.1"
+    for readme in README.md clickhouse-arrow/README.md; do
+        if [ -f "$readme" ]; then
+            # Update simple dependency format
+            sed -i '' "s/clickhouse-arrow = \"[0-9]*\.[0-9]*\.[0-9]*\"/clickhouse-arrow = \"{{version}}\"/" "$readme" || true
+            # Update version field in dependency table format
+            sed -i '' "s/clickhouse-arrow = { version = \"[0-9]*\.[0-9]*\.[0-9]*\"/clickhouse-arrow = { version = \"{{version}}\"/" "$readme" || true
+        fi
+    done
+
+    # Update Cargo.lock
+    cargo update --workspace
+
+    # Run version test to verify
+    echo "Verifying version consistency..."
+    cargo test test_version_matches_cargo --features test_utils
+
+    # Generate full changelog
+    echo "Generating changelog..."
+    git cliff -o CHANGELOG.md
+
+    # Generate release notes for this version
+    echo "Generating release notes..."
+    git cliff --unreleased --tag v{{version}} --strip header -o RELEASE_NOTES.md
+
+    # Stage all changes
+    git add Cargo.toml clickhouse-arrow/src/constants.rs Cargo.lock CHANGELOG.md RELEASE_NOTES.md
+    # Also add README files if they were modified
+    git add README.md clickhouse-arrow/README.md 2>/dev/null || true
+
+    # Commit
+    git commit -m "chore: prepare release v{{version}}"
+
+    # Push branch
+    git push origin "release-v{{version}}"
+
+    echo ""
+    echo "✅ Release preparation complete!"
+    echo ""
+    echo "Release notes preview:"
+    echo "----------------------"
+    head -20 RELEASE_NOTES.md
+    echo ""
+    echo "Next steps:"
+    echo "1. Create a PR from the 'release-v{{version}}' branch"
+    echo "2. Review and merge the PR"
+    echo "3. After merge, run: just tag-release {{version}}"
+    echo ""
+
+# Tag a release after the PR is merged
+tag-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Ensure we're on main and up to date
+    git checkout main
+    git pull origin main
+
+    # Verify the version in Cargo.toml matches
+    CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+    if [ "$CARGO_VERSION" != "{{version}}" ]; then
+        echo "Error: Cargo.toml version ($CARGO_VERSION) does not match requested version ({{version}})"
+        echo "Did the release PR merge successfully?"
+        exit 1
+    fi
+
+    # Create and push tag
+    git tag -a "v{{version}}" -m "Release v{{version}}"
+    git push origin "v{{version}}"
+
+    echo ""
+    echo "✅ Tag v{{version}} created and pushed!"
+    echo "The release workflow will now run automatically."
+    echo ""
+
+# Preview what a release would do (dry run)
+release-dry version:
+    @echo "This would:"
+    @echo "1. Create branch: release-v{{version}}"
+    @echo "2. Update version to {{version}} in:"
+    @echo "   - Cargo.toml (workspace.package section only)"
+    @echo "   - clickhouse-arrow/src/constants.rs"
+    @echo "   - README files (if they contain clickhouse-arrow version references)"
+    @echo "3. Update Cargo.lock"
+    @echo "4. Generate CHANGELOG.md"
+    @echo "5. Generate RELEASE_NOTES.md"
+    @echo "6. Create commit and push branch"
+    @echo ""
+    @echo "After PR merge, 'just tag-release {{version}}' would:"
+    @echo "1. Tag the merged commit as v{{version}}"
+    @echo "2. Push the tag (triggering release workflow)"

@@ -63,7 +63,7 @@ impl FromSql for Date {
         }
         match value {
             Value::Date(x) => Ok(x),
-            _ => unimplemented!(),
+            _ => Err(unexpected_type(type_)),
         }
     }
 }
@@ -132,7 +132,7 @@ impl FromSql for Date32 {
         }
         match value {
             Value::Date32(x) => Ok(x),
-            _ => unimplemented!(),
+            _ => Err(unexpected_type(&Type::Date32)),
         }
     }
 }
@@ -315,7 +315,13 @@ impl TryFrom<chrono::DateTime<FixedOffset>> for DateTime {
     type Error = TryFromIntError;
 
     fn try_from(other: chrono::DateTime<FixedOffset>) -> Result<Self, TryFromIntError> {
-        Tz::UTC.from_utc_datetime(&other.naive_utc()).with_timezone(&other.timezone()).try_into()
+        // Convert directly without recursion
+        let timestamp = u32::try_from(other.timestamp())?;
+
+        // For deserialization from RFC3339, we normalize to UTC
+        // This is the standard approach since RFC3339 represents a specific moment in time
+        // and we store that moment as a UTC timestamp with UTC timezone
+        Ok(Self(Tz::UTC, timestamp))
     }
 }
 
@@ -688,6 +694,7 @@ mod chrono_tests {
     use chrono_tz::UTC;
 
     use super::*;
+    use crate::deserialize::DAYS_1900_TO_1970;
 
     #[test]
     fn test_naivedate() {
@@ -700,14 +707,161 @@ mod chrono_tests {
     }
 
     #[test]
+    fn test_date_from_millis() {
+        let millis = 86_400_000_i64;
+        let dt = Date::from_millis(millis);
+        assert_eq!(dt.0, 1_u16);
+    }
+
+    #[test]
+    #[should_panic(expected = "Date out of range for u16: -1")]
+    fn test_date_from_millis_invalid() {
+        let millis = -86_400_000_i64;
+        let _dt = Date::from_millis(millis);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_date_roundtrip() {
+        use serde_json;
+
+        let original_date = Date(1);
+        let serialized = serde_json::to_string(&original_date).unwrap();
+        let deserialized: Date = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(original_date, deserialized);
+    }
+
+    #[test]
+    fn test_date_wrong_type() {
+        let type_ = Type::String;
+        let result = Date::from_sql(&type_, Value::Date(Date(1)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_date_wrong_value() {
+        let type_ = Type::Date;
+        let result = Date::from_sql(&type_, Value::Null);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_date32_from_millis() {
+        let days = 0_i32;
+        let ms = i64::from(days + DAYS_1900_TO_1970) * 86_400_000_i64;
+        let date1 = Date32::from_days(days);
+        let date2 = Date32::from_millis(ms);
+        assert_eq!(date1, date2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_date32_roundtrip() {
+        use serde_json;
+
+        let original_date = Date32(1);
+        let serialized = serde_json::to_string(&original_date).unwrap();
+        let deserialized: Date32 = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(original_date, deserialized);
+    }
+
+    #[test]
+    fn test_date32() {
+        let value = Date32(1).to_sql(None);
+        assert!(value.is_ok());
+        let type_ = Date32::from_sql(&Type::Date32, value.unwrap());
+        assert!(type_.is_ok());
+        let invalid = Date32::from_sql(&Type::String, Value::Null);
+        assert!(invalid.is_err());
+        let invalid = Date32::from_sql(&Type::Date32, Value::Null);
+        assert!(invalid.is_err());
+
+        let date = Date32(1);
+        let chrono_date: NaiveDate = date.into();
+        let new_date = Date32::from(chrono_date);
+        assert_eq!(new_date, date);
+    }
+
+    #[test]
     fn test_datetime() {
         for i in (0..30000u32).map(|x| x * 10000) {
             let date = DateTime(UTC, i);
             let chrono_date: chrono::DateTime<Tz> = date.try_into().unwrap();
             let new_date = DateTime::try_from(chrono_date).unwrap();
+            let other_date = DateTime::from_chrono_infallible(chrono_date);
             assert_eq!(new_date, date);
+            assert_eq!(new_date, other_date);
         }
+
+        let expected = DateTime(Tz::UTC, 1);
+        let d1 = DateTime::from_millis(1_000, None);
+        let d2 = DateTime::from_micros(1_000_000, None);
+        let d3 = DateTime::from_micros(1_000_000, Some(Arc::from("UTC")));
+        let d4 = DateTime::from_nanos(1_000_000_000, None);
+        assert_eq!(d1, expected);
+        assert_eq!(d2, expected);
+        assert_eq!(d3, expected);
+        assert_eq!(d4, expected);
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_datetime_roundtrip() {
+        // Use a more realistic timestamp (Unix epoch + some time)
+        let original_date = DateTime(Tz::UTC, 1_640_995_200); // 2022-01-01 00:00:00 UTC
+        let serialized = serde_json::to_string(&original_date).unwrap();
+        let deserialized: DateTime = serde_json::from_str(&serialized).unwrap();
+
+        // The timestamp should be preserved, timezone normalized to UTC
+        assert_eq!(deserialized.1, original_date.1);
+        assert_eq!(deserialized.0, Tz::UTC);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_invalid_rfc3339_string() {
+        // Test deserialization with invalid RFC3339 string
+        let invalid_json = "\"not-a-valid-date\"";
+        let result: Result<DateTime, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_conversion_functions_directly() {
+        // Test the TryFrom implementations directly to ensure coverage
+        let dt = DateTime(Tz::UTC, 1_640_995_200);
+
+        // Test conversion to chrono::DateTime<Tz>
+        let chrono_tz: chrono::DateTime<Tz> = dt.try_into().unwrap();
+        let back_to_dt: DateTime = chrono_tz.try_into().unwrap();
+        assert_eq!(dt, back_to_dt);
+
+        // Test conversion to chrono::DateTime<FixedOffset>
+        let chrono_fixed: chrono::DateTime<FixedOffset> = dt.try_into().unwrap();
+        let back_from_fixed: DateTime = chrono_fixed.try_into().unwrap();
+        // Note: timezone is normalized to UTC from FixedOffset
+        assert_eq!(back_from_fixed.1, dt.1); // timestamp should be same
+        assert_eq!(back_from_fixed.0, Tz::UTC); // timezone normalized
+
+        // Test conversion to chrono::DateTime<Utc>
+        let chrono_utc: chrono::DateTime<Utc> = dt.try_into().unwrap();
+        let back_from_utc: DateTime = chrono_utc.try_into().unwrap();
+        assert_eq!(dt, back_from_utc);
+    }
+
+    #[test]
+    #[should_panic(expected = "DateTime out of range for u32: -1")]
+    fn test_datetime_panic_secs() { let _d = DateTime::from_seconds(-1, None); }
+
+    #[test]
+    #[should_panic(expected = "DateTime out of range for u32: -1")]
+    fn test_datetime_panic_millis() { let _d = DateTime::from_millis(-1_000, None); }
+
+    #[test]
+    #[should_panic(expected = "DateTime out of range for u32: -1")]
+    fn test_datetime_panic_micros() { let _d = DateTime::from_micros(-1_000_000, None); }
 
     #[test]
     fn test_datetime64() {

@@ -34,8 +34,6 @@ Support allowing interoperability with [arrow](https://docs.rs/arrow/latest/arro
 
 Uses internal types and custom traits if a dependency on arrow is not required.
 
-> [!NOTE] I am considering putting arrow behind a feature flag to provide a subset of features without arrow dependencies. If that sounds interesting to you, let me know.
-
 ### `CreateOptions`, `SchemaConversions`, and Schemas
 
 #### Creating Tables from Arrow Schemas
@@ -133,18 +131,16 @@ These constants ensure your Arrow schemas align with `ClickHouse`'s expectations
 
 ### Benchmark Results
 
-The following benchmarks were run on [TODO: Remove - Add your machine specs, e.g., M2 `MacBook` Pro, 16GB RAM]:
+The following benchmarks were run on [TODO: Coming soon]:
 
 #### Insert Performance
-[TODO: Remove - Add insert benchmark results]
+[TODO: Coming soon]
 
 #### Query Performance
-
-[TODO: Remove - Add query benchmark results]
+[TODO: Coming soon]
 
 #### Memory Usage
-
-[TODO: Remove - Add memory usage comparisons]
+[TODO: Coming soon]
 
 ### Key Performance Features
 

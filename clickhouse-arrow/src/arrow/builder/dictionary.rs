@@ -69,3 +69,168 @@ impl std::fmt::Debug for LowCardinalityBuilder {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::DataType;
+
+    use super::*;
+
+    #[test]
+    fn test_low_cardinality_key_builder_uint8() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::UInt8).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::UInt8(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_uint16() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::UInt16).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::UInt16(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_uint32() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::UInt32).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::UInt32(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_uint64() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::UInt64).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::UInt64(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_int8() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::Int8).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::Int8(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_int16() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::Int16).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::Int16(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_int32() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::Int32).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::Int32(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_int64() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::Int64).unwrap();
+        assert!(matches!(builder, LowCardinalityKeyBuilder::Int64(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_invalid_type() {
+        let result = LowCardinalityKeyBuilder::try_new(&DataType::Float32);
+        assert!(result.is_err());
+
+        if let Err(Error::ArrowTypeMismatch { expected, provided }) = result {
+            assert_eq!(expected, "UInt8/UInt16/UInt32/UInt64");
+            assert_eq!(provided, "Float32");
+        } else {
+            panic!("Expected ArrowTypeMismatch error");
+        }
+    }
+
+    #[test]
+    fn test_low_cardinality_key_builder_debug() {
+        let builder = LowCardinalityKeyBuilder::try_new(&DataType::UInt32).unwrap();
+        let debug_str = format!("{builder:?}");
+        assert!(debug_str.contains("UInt32"));
+    }
+
+    #[test]
+    fn test_low_cardinality_builder_string() {
+        let value_type = Box::new(DataType::Utf8);
+        let key_type = Box::new(DataType::UInt32);
+        let data_type = DataType::Dictionary(key_type, value_type);
+        let type_ = Type::String;
+
+        let builder = LowCardinalityBuilder::try_new(&type_, &data_type).unwrap();
+        assert!(matches!(builder.key_builder, LowCardinalityKeyBuilder::UInt32(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_builder_nullable() {
+        let value_type = Box::new(DataType::Utf8);
+        let key_type = Box::new(DataType::UInt8);
+        let data_type = DataType::Dictionary(key_type, value_type);
+        let type_ = Type::Nullable(Box::new(Type::String));
+
+        let builder = LowCardinalityBuilder::try_new(&type_, &data_type).unwrap();
+        assert!(matches!(builder.key_builder, LowCardinalityKeyBuilder::UInt8(_)));
+    }
+
+    #[test]
+    fn test_low_cardinality_builder_invalid_data_type() {
+        let type_ = Type::String;
+        let data_type = DataType::Utf8; // Not a Dictionary type
+
+        let result = LowCardinalityBuilder::try_new(&type_, &data_type);
+        assert!(result.is_err());
+
+        if let Err(Error::ArrowTypeMismatch { expected, provided }) = result {
+            assert_eq!(expected, "DataType::Dictionary");
+            assert_eq!(provided, "Utf8");
+        } else {
+            panic!("Expected ArrowTypeMismatch error");
+        }
+    }
+
+    #[test]
+    fn test_low_cardinality_builder_invalid_key_type() {
+        let value_type = Box::new(DataType::Utf8);
+        let key_type = Box::new(DataType::Float32); // Invalid key type
+        let data_type = DataType::Dictionary(key_type, value_type);
+        let type_ = Type::String;
+
+        let result = LowCardinalityBuilder::try_new(&type_, &data_type);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_low_cardinality_builder_debug() {
+        let value_type = Box::new(DataType::Binary);
+        let key_type = Box::new(DataType::UInt16);
+        let data_type = DataType::Dictionary(key_type, value_type);
+        let type_ = Type::Binary;
+
+        let builder = LowCardinalityBuilder::try_new(&type_, &data_type).unwrap();
+        let debug_str = format!("{builder:?}");
+        assert!(debug_str.contains("LowCardinalityBuilder"));
+        assert!(debug_str.contains("key="));
+        assert!(debug_str.contains("value="));
+    }
+
+    #[test]
+    fn test_low_cardinality_builder_different_key_types() {
+        let test_cases = vec![
+            (DataType::UInt8, Type::String),
+            (DataType::UInt16, Type::String),
+            (DataType::UInt32, Type::String),
+            (DataType::UInt64, Type::String),
+            (DataType::Int8, Type::Binary),
+            (DataType::Int16, Type::Binary),
+            (DataType::Int32, Type::Binary),
+            (DataType::Int64, Type::Binary),
+        ];
+
+        for (key_data_type, value_type) in test_cases {
+            let value_data_type = match &value_type {
+                Type::String => Box::new(DataType::Utf8),
+                Type::Binary => Box::new(DataType::Binary),
+                _ => panic!("Unexpected type"),
+            };
+            let key_type = Box::new(key_data_type.clone());
+            let data_type = DataType::Dictionary(key_type, value_data_type);
+
+            let result = LowCardinalityBuilder::try_new(&value_type, &data_type);
+            assert!(result.is_ok(), "Failed for key type: {key_data_type:?}");
+        }
+    }
+}

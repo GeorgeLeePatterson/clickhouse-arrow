@@ -22,6 +22,16 @@ use crate::common::header;
 pub async fn test_arrow_compat(ch: Arc<ClickHouseContainer>) {
     let (client, options) = bootstrap(ch.as_ref(), None).await;
 
+    // Test profile events
+    let mut rx = client.subscribe_events();
+    #[expect(clippy::disallowed_methods)]
+    drop(tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let disp = format!("{event:?}");
+            println!("New profile event: {}", &disp[0..15]);
+        }
+    }));
+
     let ids = vec![0, 1, 2];
     let names = vec!["John", "Jane", "Mary"];
 

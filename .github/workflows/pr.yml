@@ -23,6 +23,7 @@ jobs:
           repo-token: "${{ secrets.GITHUB_TOKEN }}"
           sync-labels: true
 
+
   # Validate PR title follows conventional commits
   validate-title:
     runs-on: ubuntu-latest
