@@ -168,170 +168,6 @@ pub async fn test_execute_queries(ch: Arc<ClickHouseContainer>) {
     client.shutdown().await.unwrap();
 }
 
-/// Test `ClickHouse`'s actual support for various nullable array combinations
-/// This will definitively tell us what `ClickHouse` supports vs what it rejects
-/// # Panics
-pub async fn test_clickhouse_nullable_array_support(ch: Arc<ClickHouseContainer>) {
-    let (client, _) = bootstrap(ch.as_ref(), None).await;
-
-    let base_table_name = format!("test_nullable_arrays_{}", Qid::new());
-
-    // Test cases: (description, DDL, should_succeed)
-    let test_cases = vec![
-        // Basic array types that should work
-        ("array_int", "Array(Int64)", true),
-        ("array_nullable_int", "Array(Nullable(Int64))", true),
-        ("array_array_int", "Array(Array(Int64))", true),
-        ("array_array_nullable_int", "Array(Array(Nullable(Int64)))", true),
-        // Nested arrays with nullable wrappers - should fail
-        ("nullable_array_int", "Nullable(Array(Int64))", false),
-        ("nullable_array_nullable_int", "Nullable(Array(Nullable(Int64)))", false),
-        ("array_nullable_array_int", "Array(Nullable(Array(Int64)))", false),
-        ("array_nullable_array_nullable_int", "Array(Nullable(Array(Nullable(Int64))))", false),
-        ("nullable_array_array_int", "Nullable(Array(Array(Int64)))", false),
-    ];
-
-    for (field_name, ch_type, should_succeed) in test_cases {
-        let table_name = format!("{base_table_name}_{field_name}");
-
-        let create_query =
-            format!("CREATE TABLE {table_name} (id UInt32, test_field {ch_type}) ENGINE = Memory");
-
-        let query_id = Qid::new();
-        header(query_id, format!("Testing {field_name}: {ch_type}"));
-
-        let result = client.execute(&create_query, Some(query_id)).await;
-        if should_succeed {
-            assert!(result.is_ok());
-        } else {
-            assert!(result.is_err());
-        }
-    }
-
-    client.shutdown().await.unwrap();
-}
-
-/// Test nullable array serialization to ensure no null mask is written for Array types
-/// This reproduces the error: "Nested type Array(Nullable(Int64)) cannot be inside Nullable type"
-///
-/// # Panics
-pub async fn test_nullable_array_serialization(ch: Arc<ClickHouseContainer>) {
-    let (client, _) = bootstrap(ch.as_ref(), None).await;
-
-    // Create a simple schema with nullable array field
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::UInt32, false),
-        Field::new(
-            "nullable_array",
-            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
-            true,
-        ),
-    ]));
-
-    // Create test data with various null patterns
-    let id_array = UInt32Array::from(vec![1, 2, 3, 4, 5]);
-
-    // Create nullable array with nulls at different levels
-    let mut builder = ListBuilder::new(Int64Builder::new());
-
-    // Row 1: Non-null array with some null elements
-    builder.values().append_value(10);
-    builder.values().append_null();
-    builder.values().append_value(30);
-    builder.append(true);
-
-    // Row 2: Null array (the array itself is null)
-    builder.append(false);
-
-    // Row 3: Non-null empty array
-    builder.append(true);
-
-    // Row 4: Non-null array with all null elements
-    builder.values().append_null();
-    builder.values().append_null();
-    builder.append(true);
-
-    // Row 5: Non-null array with non-null elements
-    builder.values().append_value(100);
-    builder.values().append_value(200);
-    builder.append(true);
-
-    let nullable_array = builder.finish();
-
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
-        Arc::new(id_array),
-        Arc::new(nullable_array),
-    ])
-    .expect("Failed to create RecordBatch");
-
-    // Create unique table name
-    let table_qid = Qid::new();
-    let table_name = format!("test_nullable_array_{table_qid}");
-
-    // Create table
-    let query_id = Qid::new();
-    header(query_id, format!("Creating table: {table_name}"));
-
-    // ClickHouse doesn't support Nullable(Array), so we expect the type to be Array(Nullable(T))
-    let create_table_query = format!(
-        "CREATE TABLE {table_name} (
-            id UInt32,
-            nullable_array Array(Nullable(Int64))
-        ) ENGINE = Memory"
-    );
-
-    client.execute(&create_table_query, Some(query_id)).await.expect("Failed to create table");
-
-    // Test insertion - this is where the null mask issue would manifest
-    let query_id = Qid::new();
-    header(query_id, format!("Inserting RecordBatch into {table_name}"));
-    let insert_query = format!("INSERT INTO {table_name} FORMAT Native");
-
-    let result = client
-        .insert(&insert_query, batch.clone(), Some(query_id))
-        .await
-        .expect("Insert query failed")
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<ClickHouseResult<Vec<_>>>()
-        .expect("Failed to insert RecordBatch");
-
-    drop(result);
-
-    // Query back the data to verify
-    let query_id = Qid::new();
-    header(query_id, format!("Querying table: {table_name}"));
-    let select_query = format!("SELECT * FROM {table_name} ORDER BY id");
-
-    let queried_batches = client
-        .query(&select_query, Some(query_id))
-        .await
-        .expect("Query failed")
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<ClickHouseResult<Vec<_>>>()
-        .expect("Failed to query data");
-
-    arrow::util::pretty::print_batches(&queried_batches).unwrap();
-
-    // Verify the data
-    assert_eq!(queried_batches.len(), 1, "Expected one batch");
-    let queried_batch = &queried_batches[0];
-    assert_eq!(queried_batch.num_rows(), 5, "Expected 5 rows");
-
-    // Clean up
-    let query_id = Qid::new();
-    header(query_id, format!("Dropping table: {table_name}"));
-    client
-        .execute(format!("DROP TABLE {table_name}"), Some(query_id))
-        .await
-        .expect("Failed to drop table");
-
-    client.shutdown().await.unwrap();
-}
-
 // Utility functions
 pub(super) async fn bootstrap(
     ch: &ClickHouseContainer,
@@ -521,5 +357,207 @@ pub async fn round_trip(
         );
     }
 
+    // Test insert many
+    // Create test RecordBatch
+    let batches = (0..5).map(|_| test_record_batch()).collect::<Vec<_>>();
+    let query = format!("INSERT INTO {table_ref} FORMAT Native");
+    drop(
+        client
+            .insert_many(&query, batches, Some(query_id))
+            .await
+            .inspect_err(|error| error!(?error, "Insertion failed: {query_id}"))?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<ClickHouseResult<Vec<_>>>()
+            .inspect_err(|error| error!(?error, "Failed to insert RecordBatches: {query_id}"))?,
+    );
+
+    let Some(column) =
+        client.query_column("SELECT number FROM system.numbers_mt LIMIT 10", None).await?
+    else {
+        panic!("Failed to query column");
+    };
+    assert!(column.as_any().downcast_ref::<UInt64Array>().is_some());
+
+    // Test query_one
+    let query_id = Qid::new();
+    header(query_id, "Testing query_one method");
+    let Some(single_batch) =
+        client.query_one("SELECT number FROM system.numbers_mt LIMIT 1", None).await?
+    else {
+        panic!("Failed to query_one");
+    };
+    assert_eq!(single_batch.num_rows(), 1, "query_one should return exactly one row");
+
+    // Test query_one with no results
+    let empty_result =
+        client.query_one("SELECT number FROM system.numbers_mt LIMIT 0", None).await?;
+    assert!(empty_result.is_none(), "query_one should return None for no results");
+
     Ok(())
+}
+
+/// Test `ClickHouse`'s actual support for various nullable array combinations
+/// This will definitively tell us what `ClickHouse` supports vs what it rejects
+/// # Panics
+pub async fn test_clickhouse_nullable_array_support(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap(ch.as_ref(), None).await;
+
+    let base_table_name = format!("test_nullable_arrays_{}", Qid::new());
+
+    // Test cases: (description, DDL, should_succeed)
+    let test_cases = vec![
+        // Basic array types that should work
+        ("array_int", "Array(Int64)", true),
+        ("array_nullable_int", "Array(Nullable(Int64))", true),
+        ("array_array_int", "Array(Array(Int64))", true),
+        ("array_array_nullable_int", "Array(Array(Nullable(Int64)))", true),
+        // Nested arrays with nullable wrappers - should fail
+        ("nullable_array_int", "Nullable(Array(Int64))", false),
+        ("nullable_array_nullable_int", "Nullable(Array(Nullable(Int64)))", false),
+        ("array_nullable_array_int", "Array(Nullable(Array(Int64)))", false),
+        ("array_nullable_array_nullable_int", "Array(Nullable(Array(Nullable(Int64))))", false),
+        ("nullable_array_array_int", "Nullable(Array(Array(Int64)))", false),
+    ];
+
+    for (field_name, ch_type, should_succeed) in test_cases {
+        let table_name = format!("{base_table_name}_{field_name}");
+
+        let create_query =
+            format!("CREATE TABLE {table_name} (id UInt32, test_field {ch_type}) ENGINE = Memory");
+
+        let query_id = Qid::new();
+        header(query_id, format!("Testing {field_name}: {ch_type}"));
+
+        let result = client.execute(&create_query, Some(query_id)).await;
+        if should_succeed {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
+    }
+
+    client.shutdown().await.unwrap();
+}
+
+/// Test nullable array serialization to ensure no null mask is written for Array types
+/// This reproduces the error: "Nested type Array(Nullable(Int64)) cannot be inside Nullable type"
+///
+/// # Panics
+pub async fn test_nullable_array_serialization(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap(ch.as_ref(), None).await;
+
+    // Create a simple schema with nullable array field
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt32, false),
+        Field::new(
+            "nullable_array",
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            true,
+        ),
+    ]));
+
+    // Create test data with various null patterns
+    let id_array = UInt32Array::from(vec![1, 2, 3, 4, 5]);
+
+    // Create nullable array with nulls at different levels
+    let mut builder = ListBuilder::new(Int64Builder::new());
+
+    // Row 1: Non-null array with some null elements
+    builder.values().append_value(10);
+    builder.values().append_null();
+    builder.values().append_value(30);
+    builder.append(true);
+
+    // Row 2: Null array (the array itself is null)
+    builder.append(false);
+
+    // Row 3: Non-null empty array
+    builder.append(true);
+
+    // Row 4: Non-null array with all null elements
+    builder.values().append_null();
+    builder.values().append_null();
+    builder.append(true);
+
+    // Row 5: Non-null array with non-null elements
+    builder.values().append_value(100);
+    builder.values().append_value(200);
+    builder.append(true);
+
+    let nullable_array = builder.finish();
+
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(id_array),
+        Arc::new(nullable_array),
+    ])
+    .expect("Failed to create RecordBatch");
+
+    // Create unique table name
+    let table_qid = Qid::new();
+    let table_name = format!("test_nullable_array_{table_qid}");
+
+    // Create table
+    let query_id = Qid::new();
+    header(query_id, format!("Creating table: {table_name}"));
+
+    // ClickHouse doesn't support Nullable(Array), so we expect the type to be Array(Nullable(T))
+    let create_table_query = format!(
+        "CREATE TABLE {table_name} (
+            id UInt32,
+            nullable_array Array(Nullable(Int64))
+        ) ENGINE = Memory"
+    );
+
+    client.execute(&create_table_query, Some(query_id)).await.expect("Failed to create table");
+
+    // Test insertion - this is where the null mask issue would manifest
+    let query_id = Qid::new();
+    header(query_id, format!("Inserting RecordBatch into {table_name}"));
+    let insert_query = format!("INSERT INTO {table_name} FORMAT Native");
+
+    let result = client
+        .insert(&insert_query, batch.clone(), Some(query_id))
+        .await
+        .expect("Insert query failed")
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<ClickHouseResult<Vec<_>>>()
+        .expect("Failed to insert RecordBatch");
+
+    drop(result);
+
+    // Query back the data to verify
+    let query_id = Qid::new();
+    header(query_id, format!("Querying table: {table_name}"));
+    let select_query = format!("SELECT * FROM {table_name} ORDER BY id");
+
+    let queried_batches = client
+        .query(&select_query, Some(query_id))
+        .await
+        .expect("Query failed")
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<ClickHouseResult<Vec<_>>>()
+        .expect("Failed to query data");
+
+    arrow::util::pretty::print_batches(&queried_batches).unwrap();
+
+    // Verify the data
+    assert_eq!(queried_batches.len(), 1, "Expected one batch");
+    let queried_batch = &queried_batches[0];
+    assert_eq!(queried_batch.num_rows(), 5, "Expected 5 rows");
+
+    // Clean up
+    let query_id = Qid::new();
+    header(query_id, format!("Dropping table: {table_name}"));
+    client
+        .execute(format!("DROP TABLE {table_name}"), Some(query_id))
+        .await
+        .expect("Failed to drop table");
+
+    client.shutdown().await.unwrap();
 }

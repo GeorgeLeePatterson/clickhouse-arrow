@@ -157,3 +157,191 @@ impl RawRow {
         self.try_set_typed(name, type_, value).expect("failed to convert column");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_raw_row_default() {
+        let row = RawRow::default();
+        assert!(row.is_empty());
+        assert_eq!(row.len(), 0);
+    }
+
+    #[test]
+    fn test_raw_row_basic_operations() {
+        let mut row = RawRow::default();
+
+        // Test empty row
+        assert!(row.is_empty());
+        assert_eq!(row.len(), 0);
+
+        // Test setting values
+        row.set(&"test_col", 42i32);
+        assert!(!row.is_empty());
+        assert_eq!(row.len(), 1);
+
+        // Test try_set
+        row.try_set(&"test_col2", "hello").unwrap();
+        assert_eq!(row.len(), 2);
+    }
+
+    #[test]
+    fn test_raw_row_set_typed() {
+        let mut row = RawRow::default();
+
+        // Test with explicit type
+        row.set_typed(&"int_col", Some(Type::Int32), 123i32);
+        assert_eq!(row.len(), 1);
+
+        // Test try_set_typed
+        row.try_set_typed(&"str_col", Some(Type::String), "test").unwrap();
+        assert_eq!(row.len(), 2);
+
+        // Test updating existing column
+        row.try_set_typed(&"int_col", Some(Type::Int32), 456i32).unwrap();
+        assert_eq!(row.len(), 2); // Should still be 2, not 3
+    }
+
+    #[test]
+    fn test_raw_row_get_by_index() {
+        let mut row = RawRow::default();
+        row.set(&"col1", 42i32);
+        row.set(&"col2", "hello");
+
+        // Test getting by numeric index
+        let val: i32 = row.try_get(0usize).unwrap();
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn test_raw_row_get_by_name() {
+        let mut row = RawRow::default();
+        row.set(&"test_column", 123i64);
+
+        // Test getting by column name
+        let val: i64 = row.try_get("test_column").unwrap();
+        assert_eq!(val, 123);
+    }
+
+    #[test]
+    fn test_raw_row_get_panics() {
+        let mut row = RawRow::default();
+        row.set(&"test", 42i32);
+
+        // This should work
+        let _val: i32 = row.get(0usize);
+
+        // Second get should panic due to double fetch
+        drop(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _val2: i32 = row.get(0usize);
+            }))
+            .unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn test_raw_row_errors() {
+        let mut row = RawRow::default();
+        row.set(&"test", 42i32);
+
+        // Test out of bounds error
+        let result: Result<i32> = row.try_get(10usize);
+        assert!(matches!(result, Err(Error::OutOfBounds)));
+
+        // Test double fetch error
+        let _val: i32 = row.try_get(0usize).unwrap();
+        let result2: Result<i32> = row.try_get(0usize);
+        assert!(matches!(result2, Err(Error::DoubleFetch)));
+    }
+
+    #[test]
+    fn test_raw_row_into_values() {
+        let mut row = RawRow::default();
+        row.set(&"col1", 42i32);
+        row.set(&"col2", "test");
+
+        let values = row.into_values();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].0, Type::Int32);
+        assert_eq!(values[1].0, Type::String);
+    }
+
+    #[test]
+    fn test_row_index_usize() {
+        let columns = ["col1", "col2", "col3"];
+
+        // Valid index
+        assert_eq!(1usize.get(columns.iter().copied()), Some(1));
+
+        // Invalid index
+        assert_eq!(5usize.get(columns.iter().copied()), None);
+    }
+
+    #[test]
+    fn test_row_index_str() {
+        let columns = ["col1", "col2", "col3"];
+
+        // Valid column name
+        assert_eq!(RowIndex::get("col2", columns.iter().copied()), Some(1));
+
+        // Invalid column name
+        assert_eq!(RowIndex::get("nonexistent", columns.iter().copied()), None);
+    }
+
+    #[test]
+    fn test_row_index_ref() {
+        let columns = ["col1", "col2", "col3"];
+        let name = "col2";
+
+        // Test reference implementation
+        assert_eq!((&name).get(columns.iter().copied()), Some(1));
+        assert_eq!((1usize).get(columns.iter().copied()), Some(1));
+    }
+
+    #[test]
+    fn test_raw_row_deserialize() {
+        let map = vec![
+            ("col1", &Type::Int32, Value::Int32(42)),
+            ("col2", &Type::String, Value::String("test".to_string().into_bytes())),
+        ];
+
+        let row = RawRow::deserialize_row(map).unwrap();
+        assert_eq!(row.len(), 2);
+        assert!(!row.is_empty());
+    }
+
+    #[test]
+    fn test_raw_row_serialize() {
+        let mut row = RawRow::default();
+        row.set(&"col1", 42i32);
+        row.set(&"col2", "test");
+
+        let serialized = row.serialize_row(&[]).unwrap();
+        assert_eq!(serialized.len(), 2);
+        assert_eq!(serialized[0].0, "col1");
+        assert_eq!(serialized[1].0, "col2");
+    }
+
+    #[test]
+    fn test_raw_row_serialize_panic() {
+        // Create a row with a None value (which should cause serialize to panic)
+        let raw_row = RawRow(vec![None]);
+
+        // This should panic because we have a None value
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            raw_row.serialize_row(&[]).unwrap()
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_raw_row_static_methods() {
+        // Test Row trait static methods
+        assert_eq!(RawRow::COLUMN_COUNT, None);
+        assert_eq!(RawRow::column_names(), None);
+        assert_eq!(RawRow::to_schema(), None);
+    }
+}

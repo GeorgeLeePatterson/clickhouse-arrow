@@ -1893,86 +1893,6 @@ impl Client<ArrowFormat> {
         }
     }
 
-    /// Inserts a `RecordBatch` into `ClickHouse` by splitting it into smaller batches with a
-    /// maximum number of rows.
-    ///
-    /// This method takes a `RecordBatch`, splits it into multiple `RecordBatch`es with at most
-    /// `max` rows each, and inserts them into `ClickHouse` using the provided query. The last
-    /// batch may have fewer than `max` rows if the total number of rows is not evenly divisible
-    /// by `max`. It is useful for large inserts where row limits are needed to manage memory or
-    /// server load. For unsplit inserts, use [`Client::insert`].
-    ///
-    /// Progress and profile events are dispatched to the client's event channel (see
-    /// [`Client::subscribe_events`]).
-    ///
-    /// # Parameters
-    /// - `query`: The SQL query to execute (e.g., `"INSERT INTO users VALUES"`).
-    /// - `batch`: The `RecordBatch` containing the data to insert.
-    /// - `max`: The maximum number of rows per split `RecordBatch`. Must be non-zero to avoid an
-    ///   empty insert.
-    /// - `qid`: Optional query ID for tracking and debugging.
-    ///
-    /// # Returns
-    /// A [`Result`] containing a [`Stream`] of [`Result<()>`], where each item represents the
-    /// completion of an individual batch insert. The stream yields `Ok(())` for each successful
-    /// batch or an error if an insert fails.
-    ///
-    /// # Errors
-    /// - Fails if the query is malformed or unsupported by `ClickHouse`.
-    /// - Fails if the connection to `ClickHouse` is interrupted.
-    /// - Fails if `ClickHouse` returns an exception (e.g., table not found or schema mismatch).
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// use clickhouse_arrow::prelude::*;
-    /// use arrow::record_batch::RecordBatch;
-    ///
-    /// let client = Client::builder()
-    ///     .with_endpoint("localhost:9000")
-    ///     .build_arrow()
-    ///     .await
-    ///     .unwrap();
-    ///
-    /// // Assume `batch` is a RecordBatch with 10 rows
-    /// let batch: RecordBatch = // ...;
-    /// let stream = client.insert_max_rows("INSERT INTO users VALUES", batch, 3, None)
-    ///     .await
-    ///     .unwrap();
-    ///
-    /// let mut stream = std::pin::pin!(stream);
-    /// while let Some(result) = stream.next().await {
-    ///     result.unwrap(); // Handle each batch insert result
-    /// }
-    /// ```
-    ///
-    /// For a `RecordBatch` with 10 rows and `max = 3`, this inserts:
-    /// * Batch 0: 3 rows
-    /// * Batch 1: 3 rows
-    /// * Batch 2: 3 rows
-    /// * Batch 3: 1 row
-    #[instrument(
-        name = "clickhouse.insert_max_rows",
-        skip_all
-        fields(
-            db.system = "clickhouse",
-            db.operation = "insert",
-            db.format = ArrowFormat::FORMAT,
-            clickhouse.client.id = self.client_id,
-            clickhouse.query.id
-        )
-    )]
-    pub async fn insert_max_rows(
-        &self,
-        query: impl Into<ParsedQuery>,
-        batch: RecordBatch,
-        max: usize,
-        qid: Option<Qid>,
-    ) -> Result<impl Stream<Item = Result<()>> + '_> {
-        let (query, qid) = record_query(qid, query.into(), self.client_id);
-        let batches = crate::arrow::utils::split_record_batch(batch, max);
-        self.insert_many(query, batches, Some(qid)).await
-    }
-
     /// Fetches the list of database names (schemas) in `ClickHouse`.
     ///
     /// This method queries `ClickHouse` to retrieve the names of all databases
@@ -2262,4 +2182,83 @@ fn record_query(qid: Option<Qid>, query: ParsedQuery, cid: u16) -> (String, Qid)
     let query = query.0;
     trace!(query, { ATT_CID } = cid, "Querying clickhouse");
     (query, qid)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::Int32Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
+    use super::*;
+
+    #[test]
+    fn test_record_query_function() {
+        let query = ParsedQuery("SELECT 1".to_string());
+        let cid = 123;
+        let qid = Qid::new();
+
+        let (parsed_query, returned_qid) = record_query(Some(qid), query, cid);
+
+        assert_eq!(parsed_query, "SELECT 1");
+        assert_eq!(returned_qid, qid);
+    }
+
+    #[test]
+    fn test_record_query_function_no_qid() {
+        let query = ParsedQuery("SELECT 2".to_string());
+        let cid = 456;
+
+        let (parsed_query, returned_qid) = record_query(None, query, cid);
+
+        assert_eq!(parsed_query, "SELECT 2");
+        // Should generate a default Qid
+        assert!(!returned_qid.to_string().is_empty());
+    }
+
+    // Helper function to create a simple test RecordBatch
+    fn create_test_record_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let array = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
+        RecordBatch::try_new(schema, vec![array]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_split_record_batch_function() {
+        // Test the split_record_batch function that insert_max_rows uses
+        let batch = create_test_record_batch();
+        let max_rows = 2;
+
+        let batches = crate::arrow::utils::split_record_batch(batch, max_rows);
+
+        // Should split 5 rows into 3 batches: [2, 2, 1]
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].num_rows(), 2);
+        assert_eq!(batches[1].num_rows(), 2);
+        assert_eq!(batches[2].num_rows(), 1);
+    }
+
+    #[test]
+    fn test_split_record_batch_edge_cases() {
+        let batch = create_test_record_batch();
+
+        // Test with max_rows equal to batch size
+        let batches = crate::arrow::utils::split_record_batch(batch.clone(), 5);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 5);
+
+        // Test with max_rows larger than batch size
+        let batches = crate::arrow::utils::split_record_batch(batch.clone(), 10);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 5);
+
+        // Test with max_rows = 1
+        let batches = crate::arrow::utils::split_record_batch(batch, 1);
+        assert_eq!(batches.len(), 5);
+        for batch in batches {
+            assert_eq!(batch.num_rows(), 1);
+        }
+    }
 }
