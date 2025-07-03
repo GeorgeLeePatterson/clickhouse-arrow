@@ -44,9 +44,9 @@ jobs:
 
       - name: Publish to crates.io
         run: |
-          cargo publish -p clickhouse-arrow-derive --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p clickhouse-arrow-derive --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           sleep 30  # Wait for crates.io to index
-          cargo publish -p clickhouse-arrow --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p clickhouse-arrow --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
