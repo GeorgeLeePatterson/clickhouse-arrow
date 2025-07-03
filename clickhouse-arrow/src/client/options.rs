@@ -222,6 +222,7 @@ impl Extension {
     }
 }
 
+// TODO: Remove - make the properties public!
 /// Configuration options for Arrow serialization and deserialization with `ClickHouse`.
 ///
 /// The `ArrowOptions` struct defines settings that control how Apache Arrow data types
@@ -280,11 +281,11 @@ impl Extension {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrowOptions {
-    pub(crate) strings_as_strings:           bool,
-    pub(crate) use_date32_for_date:          bool,
-    pub(crate) strict_schema:                bool,
-    pub(crate) disable_strict_schema_ddl:    bool,
-    pub(crate) nullable_array_default_empty: bool,
+    pub strings_as_strings:           bool,
+    pub use_date32_for_date:          bool,
+    pub strict_schema:                bool,
+    pub disable_strict_schema_ddl:    bool,
+    pub nullable_array_default_empty: bool,
 }
 
 impl Default for ArrowOptions {
