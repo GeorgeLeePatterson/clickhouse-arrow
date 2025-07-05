@@ -3,7 +3,11 @@
 pub mod common;
 pub mod tests;
 
-const TRACING_DIRECTIVES: &[(&str, &str)] = &[("testcontainers", "debug")];
+const TRACING_DIRECTIVES: &[(&str, &str)] = &[
+    ("testcontainers", "debug"),
+    // --
+    ("arrow", "debug"),
+];
 
 // Test arrow e2e no compression
 #[cfg(feature = "test-utils")]
