@@ -35,16 +35,16 @@ cargo build --release
 # Run all tests (requires Docker for integration tests)
 just test
 # Or
-cargo test --features test_utils
+cargo test --features test-utils
 
 # Run specific test suites
 just test-one e2e_arrow
 # Or
-cargo test --test e2e_arrow --features test_utils
-cargo test --test e2e_native --features test_utils
+cargo test --test e2e_arrow --features test-utils
+cargo test --test e2e_native --features test-utils
 
 # Run with output visible
-cargo test --features test_utils -- --nocapture
+cargo test --features test-utils -- --nocapture
 ```
 
 ### Code Quality

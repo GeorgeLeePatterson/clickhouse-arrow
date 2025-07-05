@@ -17,7 +17,7 @@ mod schema;
 mod settings;
 pub mod spawn;
 pub mod telemetry;
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 pub mod test_utils;
 
 #[cfg(feature = "derive")]

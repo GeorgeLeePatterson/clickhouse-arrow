@@ -40,7 +40,7 @@ jobs:
 
           # Verify constants.rs matches
           echo "Verifying version constants..."
-          cargo test test_version_matches_cargo --features test_utils
+          cargo test test_version_matches_cargo --features test-utils
 
       - name: Publish to crates.io
         run: |

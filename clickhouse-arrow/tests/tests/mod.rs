@@ -3,17 +3,13 @@ pub mod compat;
 pub mod native;
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::AtomicU8;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use clickhouse_arrow::test_utils::{self, ClickHouseContainer};
 use futures_util::FutureExt;
 use tracing::{debug, error};
 
 use crate::common::constants::{DISABLE_CLEANUP_ENV, DISABLE_CLEANUP_ON_ERROR_ENV};
-
-/// Track how many tests have started and finished, for cleanup
-pub static TESTS_RUNNING: LazyLock<Arc<AtomicU8>> = LazyLock::new(|| Arc::new(AtomicU8::new(0)));
 
 /// Macro to run tests using the below test harness.
 #[macro_export]

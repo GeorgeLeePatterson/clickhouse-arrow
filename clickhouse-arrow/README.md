@@ -153,13 +153,13 @@ The following benchmarks were run on [TODO: Coming soon]:
 
 ```bash
 # Run all benchmarks
-cd clickhouse-arrow && cargo bench --features test_utils
+cd clickhouse-arrow && cargo bench --features test-utils
 
 # Run specific benchmark
-cd clickhouse-arrow && cargo bench --bench insert --features test_utils
+cd clickhouse-arrow && cargo bench --bench insert --features test-utils
 
 # Run with release-lto profile for best performance
-cd clickhouse-arrow && cargo bench --profile release-lto --features test_utils
+cd clickhouse-arrow && cargo bench --profile release-lto --features test-utils
 ```
 
 ## Queries
