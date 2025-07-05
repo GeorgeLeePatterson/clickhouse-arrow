@@ -29,15 +29,15 @@ cargo build --profile release-lto
 
 ### Testing
 ```bash
-# Run all tests (requires test_utils feature for integration tests)
-cargo test --features test_utils
+# Run all tests (requires test-utils feature for integration tests)
+cargo test --features test-utils
 
 # Run specific integration test suites
-cargo test --test e2e_arrow --features test_utils
-cargo test --test e2e_native --features "test_utils,derive"
+cargo test --test e2e_arrow --features test-utils
+cargo test --test e2e_native --features "test-utils,derive"
 
 # Run with output visible
-cargo test --features test_utils -- --nocapture
+cargo test --features test-utils -- --nocapture
 ```
 
 ### Linting and Formatting
@@ -53,21 +53,21 @@ cargo clippy --fix
 ```
 
 ### Running Examples
-All examples require the `test_utils` feature:
+All examples require the `test-utils` feature:
 ```bash
-cargo run --example select --features test_utils
-cargo run --example insert --features test_utils
-cargo run --example pool --features test_utils
+cargo run --example select --features test-utils
+cargo run --example insert --features test-utils
+cargo run --example pool --features test-utils
 
 # Control number of runs
-EXAMPLE_RUNS=50 cargo run --example insert --features test_utils
+EXAMPLE_RUNS=50 cargo run --example insert --features test-utils
 ```
 
 ### Benchmarking
 ```bash
-cargo bench --features test_utils
-cargo bench --bench insert --features test_utils
-cargo bench --bench query --features test_utils
+cargo bench --features test-utils
+cargo bench --bench insert --features test-utils
+cargo bench --bench query --features test-utils
 ```
 
 ## Architecture
@@ -117,7 +117,7 @@ cargo bench --bench query --features test_utils
    - `pool`: Connection pooling
    - `inner_pool`: Spawns multiple "inner connections" for improved concurrency
    - `cloud`: ClickHouse Cloud support
-   - `test_utils`: Required for tests/examples/benchmarks
+   - `test-utils`: Required for tests/examples/benchmarks
 
 ## Testing Strategy
 

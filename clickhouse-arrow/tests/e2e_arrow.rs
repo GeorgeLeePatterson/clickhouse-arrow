@@ -6,27 +6,27 @@ pub mod tests;
 const TRACING_DIRECTIVES: &[(&str, &str)] = &[("testcontainers", "debug")];
 
 // Test arrow e2e no compression
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(e2e_arrow_none, tests::arrow::test_round_trip_none, TRACING_DIRECTIVES, None);
 
 // Test arrow e2e lz4
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(e2e_arrow_lz4, tests::arrow::test_round_trip_lz4, TRACING_DIRECTIVES, None);
 
 // Test arrow e2e zstd
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(e2e_arrow_zstd, tests::arrow::test_round_trip_zstd, TRACING_DIRECTIVES, None);
 
 // Test arrow schema utils
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(e2e_arrow_schema, tests::arrow::test_schema_utils, TRACING_DIRECTIVES, None);
 
 // Test arrow execute scalar/settings
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(e2e_arrow_execute, tests::arrow::test_execute_queries, TRACING_DIRECTIVES, None);
 
 // Test ClickHouse nullable array support
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(
     e2e_arrow_nullable_array_support,
     tests::arrow::test_clickhouse_nullable_array_support,
@@ -35,7 +35,7 @@ e2e_test!(
 );
 
 // Test nullable array serialization
-#[cfg(feature = "test_utils")]
+#[cfg(feature = "test-utils")]
 e2e_test!(
     e2e_arrow_nullable_array,
     tests::arrow::test_nullable_array_serialization,

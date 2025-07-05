@@ -4,11 +4,11 @@ This directory contains examples demonstrating various features of clickhouse-ar
 
 ## Running Examples
 
-All examples require the `test_utils` feature to be enabled:
+All examples require the `test-utils` feature to be enabled:
 
 ```bash
 # Run a specific example
-cargo run --example insert --features test_utils
+cargo run --example insert --features test-utils
 # or `just example insert`
 ```
 

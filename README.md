@@ -90,7 +90,7 @@ clickhouse-arrow is designed for high performance:
 
 Run benchmarks with:
 ```bash
-cargo bench --features test_utils
+cargo bench --features test-utils
 ```
 
 ## Supported Data Types

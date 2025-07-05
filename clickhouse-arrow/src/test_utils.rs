@@ -64,17 +64,9 @@ pub fn get_filter(rust_log: &str, directives: Option<&[(&str, &str)]>) -> EnvFil
     };
 
     let mut filter = EnvFilter::new(level)
-        .add_directive("datafusion=info".parse().unwrap())
-        .add_directive("sqlparser=error".parse().unwrap())
         .add_directive("ureq=info".parse().unwrap())
-        .add_directive("tonic=error".parse().unwrap())
-        .add_directive("tower=error".parse().unwrap())
         .add_directive("tokio=info".parse().unwrap())
         .add_directive("runtime=error".parse().unwrap())
-        .add_directive("hyper=error".parse().unwrap())
-        .add_directive("h2=error".parse().unwrap())
-        .add_directive("reqwest=error".parse().unwrap())
-        .add_directive("rustls=error".parse().unwrap())
         .add_directive("opentelemetry_sdk=off".parse().unwrap());
 
     if let Some(directives) = directives {

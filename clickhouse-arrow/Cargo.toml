@@ -44,7 +44,7 @@ cloud = ["dep:ureq"]
 rust_decimal = ["dep:rust_decimal"]
 
 # -- Testing --
-test_utils = [
+test-utils = [
     "dep:testcontainers",
     "dep:tracing-subscriber",
 ]
@@ -73,7 +73,7 @@ parking_lot = "0.12"
 paste = "1"
 pin-project = "1"
 rustc-hash = "2"
-socket2 = "0.5"
+socket2 = { version = "0.6", features = ["all"] }
 strum = { version = "0.27", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = [
@@ -118,61 +118,61 @@ workspace = true
 
 [[test]]
 name = "e2e_arrow"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[test]]
 name = "e2e_arrow_chunked"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[test]]
 name = "e2e_native"
-required-features = ["test_utils", "derive"]
+required-features = ["test-utils", "derive"]
 
 [[test]]
 name = "e2e_compat"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 # EXAMPLES
 
 [[example]]
 name = "insert"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[example]]
 name = "pool"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[example]]
 name = "scalar"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[example]]
 name = "insert_multi_threaded"
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 # BENCHES
 
 [[bench]]
 name = "insert"
 harness = false
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[bench]]
 name = "pool_insert"
 harness = false
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[bench]]
 name = "query"
 harness = false
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[bench]]
 name = "scalar"
 harness = false
-required-features = ["test_utils"]
+required-features = ["test-utils"]
 
 [[bench]]
 name = "compression"
 harness = false
-required-features = ["test_utils"]
+required-features = ["test-utils"]

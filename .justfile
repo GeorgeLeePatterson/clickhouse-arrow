@@ -15,31 +15,31 @@ default:
 # --- TESTS ---
 test:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
-     -F test_utils -- --nocapture --show-output
+     -F test-utils -- --nocapture --show-output
 
 test-one test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
-     -F test_utils "{{ test_name }}" -- --nocapture --show-output
+     -F test-utils "{{ test_name }}" -- --nocapture --show-output
 
 test-integration test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
-     -F test_utils --test "{{ test_name }}" -- --nocapture --show-output
+     -F test-utils --test "{{ test_name }}" -- --nocapture --show-output
 
 coverage:
     cargo llvm-cov --html \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-dir coverage -F test_utils --open
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*" \
+     --output-dir coverage -F test-utils --open
 
 # --- COVERAGE ---
 coverage-json:
     cargo llvm-cov --json \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-path coverage/cov.json -F test_utils
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*" \
+     --output-path coverage/cov.json -F test-utils
 
 coverage-lcov:
     cargo llvm-cov --lcov \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-path coverage/lcov.info -F test_utils
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*" \
+     --output-path coverage/lcov.info -F test-utils
 
 # --- DOCS ---
 docs:
@@ -51,67 +51,67 @@ clear-benches:
     rm -rf target/criterion/*
 
 bench:
-    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release -F test_utils && \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release -F test-utils && \
      open ../target/criterion/report/index.html
 
 bench-lto:
-    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test_utils && \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test-utils && \
      open ../target/criterion/report/index.html
 
 bench-one bench:
     cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
      --profile=release \
-     -F test_utils \
+     -F test-utils \
      --bench "{{ bench }}" && \
      open ../target/criterion/report/index.html
 
 bench-one-lto bench:
     cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
      --profile=release-lto \
-     -F test_utils \
+     -F test-utils \
      --bench "{{ bench }}" && \
      open ../target/criterion/report/index.html
 
 # --- EXAMPLES ---
 debug-profile example:
     cd clickhouse-arrow && RUSTFLAGS='-g' cargo build \
-     -F test_utils \
+     -F test-utils \
      --example "{{ example }}"
 
 release-debug example:
     cd clickhouse-arrow && RUSTFLAGS='-g' cargo build \
      --profile=release-with-debug \
-     -F test_utils \
+     -F test-utils \
      --example "{{ example }}"
     codesign -s - -v -f --entitlements assets/mac.entitlements "target/release-with-debug/examples/{{ example }}"
 
 release-lto example:
     cd clickhouse-arrow && cargo build \
      --profile=release-lto \
-     -F test_utils \
+     -F test-utils \
      --example "{{ example }}"
     codesign -s - -v -f --entitlements assets/mac.entitlements "target/release-lto/examples/{{ example }}"
 
 example example:
-    cargo run -F test_utils --example "{{ example }}"
+    cargo run -F test-utils --example "{{ example }}"
 
 example-lto example:
-    cargo run --profile=release-lto -F test_utils --example "{{ example }}"
+    cargo run --profile=release-lto -F test-utils --example "{{ example }}"
 
 example-release-debug example:
-    cargo run --profile=release-with-debug -F test_utils --example "{{ example }}"
+    cargo run --profile=release-with-debug -F test-utils --example "{{ example }}"
 
 examples:
     @for ex in {{ examples }}; do \
         echo "Running example: $ex"; \
-        cargo run -F test_utils --example "$ex"; \
+        cargo run -F test-utils --example "$ex"; \
     done
 
 # --- PROFILING ---
 flamegraph example *args='':
     CARGO_PROFILE_RELEASE_DEBUG=true cargo flamegraph --root --flamechart --open \
      --profile=release-with-debug \
-     --features test_utils \
+     --features test-utils \
      --min-width="0.0001" \
      --example "{{ example }}" -- "{{ args }}"
 
@@ -235,7 +235,7 @@ prepare-release version:
 
     # Run version test to verify
     echo "Verifying version consistency..."
-    cargo test test_version_matches_cargo --features test_utils
+    cargo test test_version_matches_cargo --features test-utils
 
     # Generate full changelog
     echo "Generating changelog..."
