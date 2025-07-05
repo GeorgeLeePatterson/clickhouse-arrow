@@ -1,4 +1,5 @@
 //! TODO: Remove - developer docs
+use std::collections::VecDeque;
 use std::env;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
@@ -57,10 +58,20 @@ pub fn init_tracing(directives: Option<&[(&str, &str)]>) {
 /// # Panics
 #[allow(unused)]
 pub fn get_filter(rust_log: &str, directives: Option<&[(&str, &str)]>) -> EnvFilter {
+    let mut env_dirs = vec![];
     let level = if rust_log.is_empty() {
         LevelFilter::WARN.to_string()
+    } else if let Ok(level) = LevelFilter::from_str(rust_log) {
+        level.to_string()
     } else {
-        LevelFilter::from_str(rust_log).unwrap().to_string()
+        let mut parts = rust_log.split(',');
+        let level = parts.next().and_then(|p| LevelFilter::from_str(p).ok());
+        env_dirs = parts
+            .map(|s| s.split('=').collect::<VecDeque<_>>())
+            .filter(|s| s.len() == 2)
+            .map(|mut s| (s.pop_front().unwrap(), s.pop_front().unwrap()))
+            .collect::<Vec<_>>();
+        level.unwrap_or(LevelFilter::WARN).to_string()
     };
 
     let mut filter = EnvFilter::new(level)
@@ -73,6 +84,10 @@ pub fn get_filter(rust_log: &str, directives: Option<&[(&str, &str)]>) -> EnvFil
         for (key, value) in directives {
             filter = filter.add_directive(format!("{key}={value}").parse().unwrap());
         }
+    }
+
+    for (key, value) in env_dirs {
+        filter = filter.add_directive(format!("{key}={value}").parse().unwrap());
     }
 
     filter
