@@ -31,17 +31,17 @@ where
     S: Into<String>,
 {
     fn from(value: S) -> Self {
-        let engine = value.into().to_uppercase();
-        match engine.as_str() {
-            "MERGE_TREE" => Self::MergeTree,
-            "AGGREGATING_MERGE_TREE" => Self::AggregatingMergeTree,
-            "COLLAPSING_MERGE_TREE" => Self::CollapsingMergeTree,
-            "REPLACING_MERGE_TREE" => Self::ReplacingMergeTree,
-            "SUMMING_MERGE_TREE" => Self::SummingMergeTree,
+        let engine = value.into();
+        match engine.to_uppercase().as_str() {
+            "MERGETREE" => Self::MergeTree,
+            "AGGREGATINGMERGETREE" => Self::AggregatingMergeTree,
+            "COLLAPSINGMERGETREE" => Self::CollapsingMergeTree,
+            "REPLACINGMERGETREE" => Self::ReplacingMergeTree,
+            "SUMMINGMERGETREE" => Self::SummingMergeTree,
             "MEMORY" => Self::Memory,
             "LOG" => Self::Log,
-            "STRIPE_LOG" => Self::StripeLog,
-            "TINY_LOG" => Self::TinyLog,
+            "STRIPELOG" => Self::StripeLog,
+            "TINYLOG" => Self::TinyLog,
             // Be sure to add any new engines here
             _ => Self::Other(engine),
         }
@@ -690,7 +690,7 @@ mod tests {
 
     use arrow::datatypes::{DataType, Field, Schema};
 
-    use super::*;
+    use super::{ClickHouseEngine, *};
     use crate::Type;
 
     #[allow(clippy::needless_pass_by_value)]
@@ -1139,5 +1139,29 @@ mod tests {
         assert!(sql.contains("category Enum16('x' = 1,'y' = 2)"));
         assert!(sql.contains("ENGINE = MergeTree"));
         assert!(sql.contains("ORDER BY (category)"));
+    }
+
+    #[test]
+    fn test_engines() {
+        use super::ClickHouseEngine::*;
+
+        let engines = [
+            MergeTree,
+            AggregatingMergeTree,
+            CollapsingMergeTree,
+            ReplacingMergeTree,
+            SummingMergeTree,
+            Memory,
+            Log,
+            StripeLog,
+            TinyLog,
+            Other("NonExistentEngine".into()),
+        ];
+
+        for engine in engines {
+            let engine_str = engine.to_string();
+            let engine_from = ClickHouseEngine::from(engine_str);
+            assert_eq!(engine, engine_from);
+        }
     }
 }
