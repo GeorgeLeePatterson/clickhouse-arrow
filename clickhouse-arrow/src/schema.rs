@@ -9,6 +9,63 @@ use super::settings::{SettingValue, Settings};
 use crate::arrow::types::{SchemaConversions, schema_conversion};
 use crate::{ArrowOptions, ColumnDefinition, Error, Result, Row, Type};
 
+/// Non-exhaustive list of `ClickHouse` engines. Helps prevent typos when configuring the engine.
+///
+/// [`Self::Other`] can always be used in the case the list does not include the engine.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ClickHouseEngine {
+    MergeTree,
+    AggregatingMergeTree,
+    CollapsingMergeTree,
+    ReplacingMergeTree,
+    SummingMergeTree,
+    Memory,
+    Log,
+    StripeLog,
+    TinyLog,
+    Other(String),
+}
+
+impl<S> From<S> for ClickHouseEngine
+where
+    S: Into<String>,
+{
+    fn from(value: S) -> Self {
+        let engine = value.into().to_uppercase();
+        match engine.as_str() {
+            "MERGE_TREE" => Self::MergeTree,
+            "AGGREGATING_MERGE_TREE" => Self::AggregatingMergeTree,
+            "COLLAPSING_MERGE_TREE" => Self::CollapsingMergeTree,
+            "REPLACING_MERGE_TREE" => Self::ReplacingMergeTree,
+            "SUMMING_MERGE_TREE" => Self::SummingMergeTree,
+            "MEMORY" => Self::Memory,
+            "LOG" => Self::Log,
+            "STRIPE_LOG" => Self::StripeLog,
+            "TINY_LOG" => Self::TinyLog,
+            // Be sure to add any new engines here
+            _ => Self::Other(engine),
+        }
+    }
+}
+
+impl std::fmt::Display for ClickHouseEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Don't use wildcard, that way it gets updated as well
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::AggregatingMergeTree => write!(f, "AggregatingMergeTree"),
+            Self::CollapsingMergeTree => write!(f, "CollapsingMergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::SummingMergeTree => write!(f, "SummingMergeTree"),
+            Self::Memory => write!(f, "Memory"),
+            Self::Log => write!(f, "Log"),
+            Self::StripeLog => write!(f, "StripeLog"),
+            Self::TinyLog => write!(f, "TinyLog"),
+            Self::Other(engine) => write!(f, "{engine}"),
+        }
+    }
+}
+
 /// Options for creating a `ClickHouse` table, specifying engine, ordering, partitioning, and other
 /// settings.
 ///
@@ -53,6 +110,18 @@ impl CreateOptions {
     #[must_use]
     pub fn new(engine: impl Into<String>) -> Self {
         Self { engine: engine.into(), ..Default::default() }
+    }
+
+    /// Creates a new `CreateOptions` with the specified engine.
+    ///
+    /// # Arguments
+    /// - `engine`: The `ClickHouseEngine` .
+    ///
+    /// # Returns
+    /// A new `CreateOptions` instance with the specified engine.
+    #[must_use]
+    pub fn from_engine(engine: impl Into<ClickHouseEngine>) -> Self {
+        Self { engine: engine.into().to_string(), ..Default::default() }
     }
 
     /// Sets the `ORDER BY` clause for the table.
