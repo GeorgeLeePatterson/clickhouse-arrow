@@ -923,13 +923,12 @@ impl<T: ClientFormat> Client<T> {
     )]
     pub async fn create_database(&self, database: Option<&str>, qid: Option<Qid>) -> Result<()> {
         let database = database.unwrap_or(self.connection.database());
-        let database = database.to_lowercase();
-        if &database == "default" {
+        if database.eq_ignore_ascii_case("default") {
             warn!("Exiting, cannot create `default` database");
             return Ok(());
         }
 
-        let stmt = create_db_statement(&database)?;
+        let stmt = create_db_statement(database)?;
         self.execute(stmt, qid).await?;
         Ok(())
     }
@@ -973,8 +972,7 @@ impl<T: ClientFormat> Client<T> {
         fields(db.system = "clickhouse", db.operation = "drop.database")
     )]
     pub async fn drop_database(&self, database: &str, sync: bool, qid: Option<Qid>) -> Result<()> {
-        let database = database.to_lowercase();
-        if &database == "default" {
+        if database.eq_ignore_ascii_case("default") {
             warn!("Exiting, cannot drop `default` database");
             return Ok(());
         }
@@ -990,7 +988,7 @@ impl<T: ClientFormat> Client<T> {
             return Err(Error::InsufficientDDLScope(current_database.into()));
         }
 
-        let stmt = drop_db_statement(&database, sync)?;
+        let stmt = drop_db_statement(database, sync)?;
         self.execute(stmt, qid).await?;
         Ok(())
     }
