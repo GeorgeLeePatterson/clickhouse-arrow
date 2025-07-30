@@ -408,12 +408,11 @@ pub(crate) fn create_db_statement(database: &str) -> Result<String> {
         return Err(Error::DDLMalformed("Database name cannot be empty".into()));
     }
 
-    let db = database.to_lowercase();
-    if &db == "default" {
+    if database.eq_ignore_ascii_case("default") {
         return Err(Error::DDLMalformed("Cannot create `default` database".into()));
     }
 
-    Ok(format!("CREATE DATABASE IF NOT EXISTS {db}"))
+    Ok(format!("CREATE DATABASE IF NOT EXISTS {database}"))
 }
 
 /// Generates a `ClickHouse` `DROP DATABASE` statement.
@@ -441,13 +440,12 @@ pub(crate) fn drop_db_statement(database: &str, sync: bool) -> Result<String> {
         return Err(Error::DDLMalformed("Database name cannot be empty".into()));
     }
 
-    let db = database.to_lowercase();
-    if &db == "default" {
+    if database.eq_ignore_ascii_case("default") {
         return Err(Error::DDLMalformed("Cannot create `default` database".into()));
     }
 
     let mut ddl = "DROP DATABASE IF EXISTS ".to_string();
-    ddl.push_str(&db);
+    ddl.push_str(database);
     if sync {
         ddl.push_str(" SYNC");
     }
