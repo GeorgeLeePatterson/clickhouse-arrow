@@ -62,7 +62,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-clickhouse-arrow = "0.1.3"
+clickhouse-arrow = "0.1.4"
 
 # For derive macro support (on by default)
 clickhouse-arrow = { version = "0.1", features = ["derive"] }
