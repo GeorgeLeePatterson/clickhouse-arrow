@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Testing
+
+- Patches mishandling of RUST_LOG env in test_utils ([#15](https://github.com/georgeleepatterson/clickhouse-arrow/issues/15)) ([e88b023](https://github.com/georgeleepatterson/clickhouse-arrow/commit/e88b023531cda1f8a3c94c0536abc9769da14536))
+
+## [0.1.3] - 2025-07-05
+
 ### Bug Fixes
 
 - Ergonomics ([#12](https://github.com/georgeleepatterson/clickhouse-arrow/issues/12)) ([d6ec132](https://github.com/georgeleepatterson/clickhouse-arrow/commit/d6ec13277f9532ae877e6508b088e5d0af0aa3b9))
@@ -15,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Miscellaneous Tasks
 
 - Test cleanup, renames test-utils feature ([#13](https://github.com/georgeleepatterson/clickhouse-arrow/issues/13)) ([f02d73a](https://github.com/georgeleepatterson/clickhouse-arrow/commit/f02d73abe352a10a3318ed81839518fae23afa1d))
+- Prepare release v0.1.3 ([#14](https://github.com/georgeleepatterson/clickhouse-arrow/issues/14)) ([ca42b58](https://github.com/georgeleepatterson/clickhouse-arrow/commit/ca42b5881a98d3100b782b16db34b1a1796c63be))
 
 ### Testing
 
