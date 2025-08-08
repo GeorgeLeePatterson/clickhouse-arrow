@@ -211,8 +211,11 @@ There are cases where a round trip may deserialize a different type by schema or
 - **Option**: No options available rather provide hash maps for either `enum_i8` and/or `enum_i16` for `CreateOptions` during schema creation.
 - **Impact**: The default behavior will ignore enums when starting from arrow.
 
-> [!NOTE] For examples of these cases, refer to the tests in the module [arrow::types](src/arrow/types.rs)
+> [!NOTE]
+> For examples of these cases, refer to the tests in the module [arrow::types](src/arrow/types.rs)
 
-> [!NOTE] The configuration for the options above can be found in [options](src/client/options.rs)
+> [!NOTE]
+> The configuration for the options above can be found in [options](src/client/options.rs)
 
-> [!NOTE] For a builder of create options use during schema creation (eg `Engine`, `Order By`, `Enum8` and `Enum16` lookups), refer to [CreateOptions](src/schema.rs)
+> [!NOTE]
+> For a builder of create options use during schema creation (eg `Engine`, `Order By`, `Enum8` and `Enum16` lookups), refer to [CreateOptions](src/schema.rs)
