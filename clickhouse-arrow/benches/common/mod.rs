@@ -33,11 +33,11 @@ pub(crate) struct ClickHouseNativeRow {
 }
 
 pub(crate) fn init() {
-    if let Ok(l) = std::env::var("RUST_LOG") {
-        if !l.is_empty() {
-            // Add directives here
-            init_tracing(Some(&[/*("tokio", "error")*/]));
-        }
+    if let Ok(l) = std::env::var("RUST_LOG")
+        && !l.is_empty()
+    {
+        // Add directives here
+        init_tracing(Some(&[/*("tokio", "error")*/]));
     }
 }
 

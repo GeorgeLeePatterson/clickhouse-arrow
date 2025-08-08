@@ -278,13 +278,13 @@ async fn roundtrip_uuid() {
 
 #[tokio::test]
 async fn roundtrip_ipv4() {
-    let values = &[Value::Ipv4(Ipv4Addr::new(0, 0, 0, 0).into())];
+    let values = &[Value::Ipv4(Ipv4Addr::UNSPECIFIED.into())];
     assert_eq!(&values[..], roundtrip_values(&Type::Ipv4, &values[..]).await.unwrap());
 }
 
 #[tokio::test]
 async fn roundtrip_ipv6() {
-    let values = &[Value::Ipv6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into())];
+    let values = &[Value::Ipv6(Ipv6Addr::UNSPECIFIED.into())];
     assert_eq!(&values[..], roundtrip_values(&Type::Ipv6, &values[..]).await.unwrap());
 }
 
@@ -910,12 +910,12 @@ fn roundtrip_sized_network_types_sync() {
     use crate::{Ipv4, Ipv6};
     let test_cases = vec![
         (Type::Ipv4, vec![
-            Value::Ipv4(Ipv4(Ipv4Addr::new(0, 0, 0, 0))),
+            Value::Ipv4(Ipv4(Ipv4Addr::UNSPECIFIED)),
             Value::Ipv4(Ipv4(Ipv4Addr::new(192, 168, 1, 1))),
-            Value::Ipv4(Ipv4(Ipv4Addr::new(255, 255, 255, 255))),
+            Value::Ipv4(Ipv4(Ipv4Addr::BROADCAST)),
         ]),
         (Type::Ipv6, vec![
-            Value::Ipv6(Ipv6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))),
+            Value::Ipv6(Ipv6(Ipv6Addr::UNSPECIFIED)),
             Value::Ipv6(Ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
         ]),
     ];
@@ -966,4 +966,133 @@ fn roundtrip_sized_enum_types_sync() {
         assert!(result.is_ok(), "Failed for type: {type_:?}");
         assert_eq!(values, result.unwrap());
     }
+}
+
+#[tokio::test]
+async fn test_write_default() {
+    let mut writer = Cursor::new(Vec::new());
+
+    // Test all basic integer and numeric types
+    assert!(Type::Int8.write_default(&mut writer).await.is_ok());
+    assert!(Type::Int16.write_default(&mut writer).await.is_ok());
+    assert!(Type::Int32.write_default(&mut writer).await.is_ok());
+    assert!(Type::Int64.write_default(&mut writer).await.is_ok());
+    assert!(Type::Int128.write_default(&mut writer).await.is_ok());
+    assert!(Type::Int256.write_default(&mut writer).await.is_ok());
+    assert!(Type::UInt8.write_default(&mut writer).await.is_ok());
+    assert!(Type::UInt16.write_default(&mut writer).await.is_ok());
+    assert!(Type::UInt32.write_default(&mut writer).await.is_ok());
+    assert!(Type::UInt64.write_default(&mut writer).await.is_ok());
+    assert!(Type::UInt128.write_default(&mut writer).await.is_ok());
+    assert!(Type::UInt256.write_default(&mut writer).await.is_ok());
+    assert!(Type::Float32.write_default(&mut writer).await.is_ok());
+    assert!(Type::Float64.write_default(&mut writer).await.is_ok());
+
+    // Test decimal types
+    assert!(Type::Decimal32(2).write_default(&mut writer).await.is_ok());
+    assert!(Type::Decimal64(4).write_default(&mut writer).await.is_ok());
+    assert!(Type::Decimal128(6).write_default(&mut writer).await.is_ok());
+    assert!(Type::Decimal256(8).write_default(&mut writer).await.is_ok());
+
+    // Test string and binary types
+    assert!(Type::String.write_default(&mut writer).await.is_ok());
+    assert!(Type::Binary.write_default(&mut writer).await.is_ok());
+    assert!(Type::FixedSizedString(10).write_default(&mut writer).await.is_ok());
+    assert!(Type::FixedSizedBinary(16).write_default(&mut writer).await.is_ok());
+
+    // Test date/time types
+    assert!(Type::Date.write_default(&mut writer).await.is_ok());
+    assert!(Type::Date32.write_default(&mut writer).await.is_ok());
+    assert!(Type::DateTime(chrono_tz::UTC).write_default(&mut writer).await.is_ok());
+    assert!(Type::DateTime64(3, chrono_tz::UTC).write_default(&mut writer).await.is_ok());
+
+    // Test network types
+    assert!(Type::Ipv4.write_default(&mut writer).await.is_ok());
+    assert!(Type::Ipv6.write_default(&mut writer).await.is_ok());
+    assert!(Type::Uuid.write_default(&mut writer).await.is_ok());
+
+    // Test enum types
+    assert!(Type::Enum8(vec![("test".to_string(), 1)]).write_default(&mut writer).await.is_ok());
+    assert!(Type::Enum16(vec![("test".to_string(), 1)]).write_default(&mut writer).await.is_ok());
+
+    // Test collection types
+    assert!(Type::Array(Box::new(Type::UInt8)).write_default(&mut writer).await.is_ok());
+    assert!(
+        Type::Map(Box::new(Type::String), Box::new(Type::UInt32))
+            .write_default(&mut writer)
+            .await
+            .is_ok()
+    );
+
+    // Test tuple type
+    assert!(Type::Tuple(vec![Type::Int32, Type::String]).write_default(&mut writer).await.is_ok());
+
+    // Test low cardinality
+    assert!(Type::LowCardinality(Box::new(Type::String)).write_default(&mut writer).await.is_ok());
+
+    // Test unsupported type (should return error)
+    assert!(Type::Point.write_default(&mut writer).await.is_err());
+}
+
+#[test]
+fn test_put_default() {
+    let mut writer = Vec::new();
+
+    // Test all basic integer and numeric types
+    assert!(Type::Int8.put_default(&mut writer).is_ok());
+    assert!(Type::Int16.put_default(&mut writer).is_ok());
+    assert!(Type::Int32.put_default(&mut writer).is_ok());
+    assert!(Type::Int64.put_default(&mut writer).is_ok());
+    assert!(Type::Int128.put_default(&mut writer).is_ok());
+    assert!(Type::Int256.put_default(&mut writer).is_ok());
+    assert!(Type::UInt8.put_default(&mut writer).is_ok());
+    assert!(Type::UInt16.put_default(&mut writer).is_ok());
+    assert!(Type::UInt32.put_default(&mut writer).is_ok());
+    assert!(Type::UInt64.put_default(&mut writer).is_ok());
+    assert!(Type::UInt128.put_default(&mut writer).is_ok());
+    assert!(Type::UInt256.put_default(&mut writer).is_ok());
+    assert!(Type::Float32.put_default(&mut writer).is_ok());
+    assert!(Type::Float64.put_default(&mut writer).is_ok());
+
+    // Test decimal types
+    assert!(Type::Decimal32(2).put_default(&mut writer).is_ok());
+    assert!(Type::Decimal64(4).put_default(&mut writer).is_ok());
+    assert!(Type::Decimal128(6).put_default(&mut writer).is_ok());
+    assert!(Type::Decimal256(8).put_default(&mut writer).is_ok());
+
+    // Test string and binary types
+    assert!(Type::String.put_default(&mut writer).is_ok());
+    assert!(Type::Binary.put_default(&mut writer).is_ok());
+    assert!(Type::FixedSizedString(10).put_default(&mut writer).is_ok());
+    assert!(Type::FixedSizedBinary(16).put_default(&mut writer).is_ok());
+
+    // Test date/time types
+    assert!(Type::Date.put_default(&mut writer).is_ok());
+    assert!(Type::Date32.put_default(&mut writer).is_ok());
+    assert!(Type::DateTime(chrono_tz::UTC).put_default(&mut writer).is_ok());
+    assert!(Type::DateTime64(3, chrono_tz::UTC).put_default(&mut writer).is_ok());
+
+    // Test network types
+    assert!(Type::Ipv4.put_default(&mut writer).is_ok());
+    assert!(Type::Ipv6.put_default(&mut writer).is_ok());
+    assert!(Type::Uuid.put_default(&mut writer).is_ok());
+
+    // Test enum types
+    assert!(Type::Enum8(vec![("test".to_string(), 1)]).put_default(&mut writer).is_ok());
+    assert!(Type::Enum16(vec![("test".to_string(), 1)]).put_default(&mut writer).is_ok());
+
+    // Test collection types
+    assert!(Type::Array(Box::new(Type::UInt8)).put_default(&mut writer).is_ok());
+    assert!(
+        Type::Map(Box::new(Type::String), Box::new(Type::UInt32)).put_default(&mut writer).is_ok()
+    );
+
+    // Test tuple type
+    assert!(Type::Tuple(vec![Type::Int32, Type::String]).put_default(&mut writer).is_ok());
+
+    // Test low cardinality
+    assert!(Type::LowCardinality(Box::new(Type::String)).put_default(&mut writer).is_ok());
+
+    // Test unsupported type (should return error)
+    assert!(Type::Point.put_default(&mut writer).is_err());
 }

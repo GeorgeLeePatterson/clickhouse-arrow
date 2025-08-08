@@ -56,9 +56,9 @@ impl Destination {
                 addrs.iter().next().map(|addr| addr.ip().to_string()).unwrap_or_default()
             }
             DestinationInner::SocketAddr(addr) => addr.ip().to_string(),
-            DestinationInner::HostPort(host, _) => host.to_string(),
+            DestinationInner::HostPort(host, _) => host.clone(),
             DestinationInner::Endpoint(endpoint) => {
-                endpoint.split(':').next().map(ToString::to_string).unwrap_or(endpoint.to_string())
+                endpoint.split(':').next().map(ToString::to_string).unwrap_or(endpoint.clone())
             }
         }
     }
@@ -156,13 +156,13 @@ impl From<(String, u16)> for Destination {
 
 impl From<&(String, u16)> for Destination {
     fn from((host, port): &(String, u16)) -> Self {
-        Destination { inner: DestinationInner::HostPort(host.to_string(), *port) }
+        Destination { inner: DestinationInner::HostPort(host.clone(), *port) }
     }
 }
 
 impl From<(&String, u16)> for Destination {
     fn from((host, port): (&String, u16)) -> Self {
-        Destination { inner: DestinationInner::HostPort(host.to_string(), port) }
+        Destination { inner: DestinationInner::HostPort(host.clone(), port) }
     }
 }
 
@@ -180,7 +180,7 @@ impl From<String> for Destination {
 
 impl From<&String> for Destination {
     fn from(endpoint: &String) -> Self {
-        Destination { inner: DestinationInner::Endpoint(endpoint.to_string()) }
+        Destination { inner: DestinationInner::Endpoint(endpoint.clone()) }
     }
 }
 
@@ -215,9 +215,7 @@ mod tests {
     use super::*;
 
     // Helper to create Destination variants
-    fn socket_addr() -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000)
-    }
+    fn socket_addr() -> SocketAddr { SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000) }
 
     #[tokio::test]
     async fn test_resolve_socket_addrs() {

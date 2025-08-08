@@ -1051,7 +1051,7 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::ArrowDeserialize(err)
-            if err.to_string().contains("Expected Decimal128Array")
+            if err.clone().contains("Expected Decimal128Array")
         ));
     }
 
@@ -1086,7 +1086,7 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::ArrowDeserialize(err)
-            if err.to_string().contains("Expected Decimal256Array")
+            if err.clone().contains("Expected Decimal256Array")
         ));
     }
 
@@ -1207,7 +1207,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::ArrowDeserialize(e))
-            if e.to_string().contains("Could not downcast struct array")
+            if e.clone().contains("Could not downcast struct array")
         ));
     }
 

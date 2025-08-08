@@ -821,38 +821,27 @@ impl Type {
             Type::FixedSizedString(n) | Type::FixedSizedBinary(n) => {
                 writer.write_all(&vec![0u8; *n]).await?;
             }
-            Type::Int8 => writer.write_i8(0).await?,
-            Type::Int16 => writer.write_i16_le(0).await?,
-            Type::Int32 => writer.write_i32_le(0).await?,
-            Type::Int64 => writer.write_i64_le(0).await?,
-            Type::Int128 => writer.write_all(&[0; 16]).await?,
-            Type::Int256 => writer.write_all(&[0; 32]).await?,
+            Type::Int8 | Type::Enum8(_) => writer.write_i8(0).await?,
+            Type::Int16 | Type::Enum16(_) => writer.write_i16_le(0).await?,
+            Type::Int32 | Type::Date32 | Type::Decimal32(_) => writer.write_i32_le(0).await?,
+            Type::Int64 | Type::Decimal64(_) => writer.write_i64_le(0).await?,
+            Type::Int128 | Type::UInt128 | Type::Uuid | Type::Ipv6 | Type::Decimal128(_) => {
+                writer.write_all(&[0; 16]).await?;
+            }
+            Type::Int256 | Type::UInt256 | Type::Decimal256(_) => {
+                writer.write_all(&[0; 32]).await?;
+            }
             Type::UInt8 => writer.write_u8(0).await?,
-            Type::UInt16 => writer.write_u16_le(0).await?,
-            Type::UInt32 => writer.write_u32_le(0).await?,
+            Type::UInt16 | Type::Date => writer.write_u16_le(0).await?,
+            Type::UInt32 | Type::Ipv4 | Type::DateTime(_) => writer.write_u32_le(0).await?,
             Type::UInt64 => writer.write_u64_le(0).await?,
-            Type::UInt128 => writer.write_all(&[0; 16]).await?,
-            Type::UInt256 => writer.write_all(&[0; 32]).await?,
             Type::Float32 => writer.write_f32_le(0.0).await?,
             Type::Float64 => writer.write_f64_le(0.0).await?,
-            Type::Uuid => writer.write_all(&[0; 16]).await?,
-            Type::Ipv4 => writer.write_u32_le(0).await?,
-            Type::Ipv6 => writer.write_all(&[0; 16]).await?,
-            Type::Date => writer.write_u16_le(0).await?,
-            Type::Date32 => writer.write_i32_le(0).await?,
-            Type::DateTime(_) => writer.write_u32_le(0).await?,
             Type::DateTime64(precision, _) => {
                 let bytes = (0_i64).to_le_bytes();
                 writer.write_all(&bytes[..*precision]).await?;
             }
-            Type::Decimal32(_) => writer.write_i32_le(0).await?,
-            Type::Decimal64(_) => writer.write_i64_le(0).await?,
-            Type::Decimal128(_) => writer.write_all(&[0; 16]).await?,
-            Type::Decimal256(_) => writer.write_all(&[0; 32]).await?,
-            Type::Array(_) => writer.write_var_uint(0).await?, // Empty array
-            Type::Map(_, _) => writer.write_var_uint(0).await?, // Empty map
-            Type::Enum8(_) => writer.write_i8(0).await?,
-            Type::Enum16(_) => writer.write_i16(0).await?,
+            Type::Array(_) | Type::Map(_, _) => writer.write_var_uint(0).await?, // Empty array/map
             // Recursive
             Type::LowCardinality(inner) => Box::pin(inner.write_default(writer)).await?,
             Type::Tuple(inner) => {
@@ -893,8 +882,7 @@ impl Type {
                 let bytes = (0_i64).to_le_bytes();
                 writer.put_slice(&bytes[..*precision]);
             }
-            Type::Array(_) => writer.put_var_uint(0)?, // Empty array
-            Type::Map(_, _) => writer.put_var_uint(0)?, // Empty map
+            Type::Array(_) | Type::Map(_, _) => writer.put_var_uint(0)?, // Empty array/map
             Type::Enum16(_) => writer.put_i16(0),
             // Recursive
             Type::LowCardinality(inner) => inner.put_default(writer)?,

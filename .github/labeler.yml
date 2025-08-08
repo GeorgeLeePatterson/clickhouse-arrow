@@ -2,7 +2,7 @@
 
 documentation:
   - changed-files:
-    - any-glob-to-any-file: 
+    - any-glob-to-any-file:
       - '**/*.md'
       - 'docs/**'
 
@@ -36,3 +36,21 @@ examples:
     - any-glob-to-any-file:
       - 'examples/**'
       - '**/examples/**'
+
+arrow:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/arrow/**'
+      - '**/arrow.rs'
+
+deserialize:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/deserialize/**'
+      - '**/deserialize.rs'
+
+serialize:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/serialize/**'
+      - '**/serialize.rs'

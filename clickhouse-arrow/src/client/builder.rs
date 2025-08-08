@@ -1009,7 +1009,7 @@ mod tests {
     fn test_accessors_configured() {
         let settings = Settings::default();
         let builder = default_builder()
-            .with_socket_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000))
+            .with_socket_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000))
             .with_settings(settings.clone())
             .with_options(ClientOptions { use_tls: true, ..Default::default() });
         assert!(builder.destination().is_some());
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn test_with_socket_addr() {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000);
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000);
         let builder = default_builder().with_socket_addr(addr);
         assert_eq!(builder.destination(), Some(&Destination::from(addr)));
         assert!(!builder.verified());

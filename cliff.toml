@@ -43,6 +43,8 @@ commit_parsers = [
     { message = "^test", group = "Testing" },
     { message = "^chore\\(release\\):", skip = true },
     { message = "^chore", group = "Miscellaneous Tasks" },
+    { message = "^ci", group = "Miscellaneous Tasks" },
+    { message = "^revert", group = "Revert" },
     { body = ".*security", group = "Security" },
 ]
 protect_breaking_commits = false
