@@ -22,6 +22,49 @@ A high-performance, async Rust client for `ClickHouse` with native Arrow integra
 - **☁️ Cloud Ready**: Full `ClickHouse` Cloud compatibility
 - **🛡️ Type Safe**: Compile-time type checking with the `#[derive(Row)]` macro
 
+## Performance
+
+### Benchmarks
+
+All benchmarks run on Apple M2 Pro (12-core) with 16GB RAM using `ClickHouse` 25.5.2.47 and Rust 1.89.0 with LTO optimizations.
+
+#### Query Performance (500M rows)
+- **clickhouse-arrow**: 3.68s (19% faster than clickhouse-rs)
+- **clickhouse-rs**: 4.56s
+
+#### Insert Performance Summary
+
+| Rows | clickhouse-arrow (none) | clickhouse-arrow (LZ4) | clickhouse-rs (none) | clickhouse-rs (LZ4) |
+|------|------------------------|------------------------|---------------------|-------------------|
+| 10k  | 5.60ms                 | 5.20ms                 | 6.16ms              | 7.53ms            |
+| 100k | 41.97ms                | 42.12ms                | 47.30ms             | 51.66ms           |
+| 200k | 97.21ms                | 116.81ms               | 126.67ms            | 134.28ms          |
+| 300k | 143.06ms               | 160.53ms               | 196.39ms            | 183.42ms          |
+| 400k | 188.21ms               | 223.60ms               | 255.80ms            | 303.35ms          |
+
+**Key Performance Insights:**
+- **Arrow format** consistently outperforms row binary format by 10-25%
+- **Query performance** is 19% faster with Arrow format
+- **LZ4 compression** shows mixed results - beneficial for smaller datasets, slight overhead for larger ones
+- **Zero-Copy** with arrow integration, enables zero-copy data transfer where possible
+- **Throughput scales** linearly with dataset size
+- **Connection Pooling**, using the `pool` feature enables connection reuse for better throughput
+
+### Running Benchmarks
+
+```bash
+# Run all benchmarks with LTO optimizations
+just bench-lto
+
+# Run specific benchmark
+just bench-one insert
+
+# View detailed results
+open target/criterion/report/index.html
+```
+
+*Benchmarks use realistic workloads with mixed data types (integers, strings, timestamps, arrays) representative of typical `ClickHouse` usage patterns. To benchmark with scalar data only, similar to the benchmarks in `ch-go`, use the `scalar` bench*
+
 ## Details
 
 The crate supports two "modes" of operation:
@@ -126,41 +169,6 @@ let map_type = DataType::Map(
 ```
 
 These constants ensure your Arrow schemas align with `ClickHouse`'s expectations and maintain compatibility with arrow-rs conventions.
-
-## Performance & Benchmarks
-
-### Benchmark Results
-
-The following benchmarks were run on [TODO: Coming soon]:
-
-#### Insert Performance
-[TODO: Coming soon]
-
-#### Query Performance
-[TODO: Coming soon]
-
-#### Memory Usage
-[TODO: Coming soon]
-
-### Key Performance Features
-
-- **Compression Benefits**: LZ4/ZSTD compression often improves performance  over remote networks due to reduced network I/O and can sometimes speed up even on localhost due to deterministic deserialization patterns
-- **Zero-Copy**: Arrow integration enables zero-copy data transfer where possible
-- **Streaming**: Large datasets are processed in chunks to maintain low memory footprint
-- **Connection Pooling**: The `pool` feature enables connection reuse for better throughput
-
-### Running Benchmarks
-
-```bash
-# Run all benchmarks
-cd clickhouse-arrow && cargo bench --features test-utils
-
-# Run specific benchmark
-cd clickhouse-arrow && cargo bench --bench insert --features test-utils
-
-# Run with release-lto profile for best performance
-cd clickhouse-arrow && cargo bench --profile release-lto --features test-utils
-```
 
 ## Queries
 

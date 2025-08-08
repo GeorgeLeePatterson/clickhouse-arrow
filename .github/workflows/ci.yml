@@ -32,6 +32,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@master
       with:
@@ -88,6 +94,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable

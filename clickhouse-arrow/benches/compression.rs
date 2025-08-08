@@ -93,21 +93,19 @@ fn criterion_benchmark(c: &mut Criterion) {
         let schema = batch.schema();
 
         // Setup clients
-        let builder =
+        let client_builder =
             arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-                .with_compression(CompressionMethod::None);
+                .with_ipv4_only(true);
+
+        let builder = client_builder.clone().with_compression(CompressionMethod::None);
         let arrow_client_none =
             rt.block_on(builder.build::<ArrowFormat>()).expect("clickhouse native arrow setup");
 
-        let builder =
-            arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-                .with_compression(CompressionMethod::LZ4);
+        let builder = client_builder.clone().with_compression(CompressionMethod::LZ4); // Default
         let arrow_client_lz4 =
             rt.block_on(builder.build::<ArrowFormat>()).expect("clickhouse native arrow setup");
 
-        let builder =
-            arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-                .with_compression(CompressionMethod::ZSTD);
+        let builder = client_builder.clone().with_compression(CompressionMethod::ZSTD);
         let arrow_client_zstd =
             rt.block_on(builder.build::<ArrowFormat>()).expect("clickhouse native arrow setup");
 

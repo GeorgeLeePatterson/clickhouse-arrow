@@ -64,6 +64,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // Create arrow pool outside of loop
     let arrow_client_builder =
         arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
+            .with_ipv4_only(true)
             .with_compression(CompressionMethod::LZ4);
 
     // Pool
