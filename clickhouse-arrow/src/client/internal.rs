@@ -230,12 +230,11 @@ impl<T: ClientFormat> InternalConn<T> {
                 result.inspect_err(|error| error!(?error, { ATT_CID } = cid, "Fatal error"))?;
 
                 // Queue up next query if any
-                if self.executing.is_none() {
-                    if let Some(query) = self.pending.pop_front() {
+                if self.executing.is_none()
+                    && let Some(query) = self.pending.pop_front() {
                         self.send_query(writer, query).await?;
                         flush = OperationTask::Chunk(ChunkBoundary::Flush);
                     }
-                }
             }
             else => {}
         };

@@ -1496,7 +1496,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::ArrowSerialize(e))
-            if e.to_string().contains("Binary must be 16 bytes")
+            if e.clone().contains("Binary must be 16 bytes")
         ));
     }
 
@@ -1547,7 +1547,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::ArrowSerialize(e))
-            if e.to_string().contains("FixedSizeBinary must be 32 bytes for Int256")
+            if e.clone().contains("FixedSizeBinary must be 32 bytes for Int256")
         ));
     }
 
@@ -2395,7 +2395,7 @@ mod tests_sync {
         assert!(matches!(
             result,
             Err(Error::ArrowSerialize(e))
-            if e.to_string().contains("Binary must be 16 bytes")
+            if e.clone().contains("Binary must be 16 bytes")
         ));
     }
 
@@ -2446,7 +2446,7 @@ mod tests_sync {
         assert!(matches!(
             result,
             Err(Error::ArrowSerialize(e))
-            if e.to_string().contains("FixedSizeBinary must be 32 bytes for Int256")
+            if e.clone().contains("FixedSizeBinary must be 32 bytes for Int256")
         ));
     }
 

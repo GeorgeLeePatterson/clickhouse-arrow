@@ -175,8 +175,7 @@ impl FromSql for String {
             return Err(unexpected_type(type_));
         }
         match value {
-            Value::String(x) => Ok(String::from_utf8(x)?),
-            Value::Object(x) => Ok(String::from_utf8(x)?),
+            Value::String(x) | Value::Object(x) => Ok(String::from_utf8(x)?),
             _ => Err(unexpected_type(type_)),
         }
     }

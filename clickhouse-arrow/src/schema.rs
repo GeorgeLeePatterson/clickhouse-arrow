@@ -308,7 +308,7 @@ impl CreateOptions {
     /// - Returns `DDLMalformed` if the engine is empty, primary keys are invalid, or sampling
     ///   doesn’t reference a primary key.
     fn build(&self) -> Result<String> {
-        let engine = self.engine.to_string();
+        let engine = self.engine.clone();
         if engine.is_empty() {
             return Err(Error::DDLMalformed("An engine is required, received empty string".into()));
         }
@@ -346,14 +346,13 @@ impl CreateOptions {
             }
 
             // Validate sampling
-            if let Some(sample) = self.sampling.as_ref() {
-                if !order_by.iter().any(|o| sample.contains(o.as_str())) {
-                    return Err(Error::DDLMalformed(format!(
-                        "Sampling must refer to a primary key: order by = {order_by:?}, \
-                         sampling={:?}",
-                        self.sampling
-                    )));
-                }
+            if let Some(sample) = self.sampling.as_ref()
+                && !order_by.iter().any(|o| sample.contains(o.as_str()))
+            {
+                return Err(Error::DDLMalformed(format!(
+                    "Sampling must refer to a primary key: order by = {order_by:?}, sampling={:?}",
+                    self.sampling
+                )));
             }
 
             options.push(format!("ORDER BY ({})", order_by.join(", ")));
@@ -676,7 +675,7 @@ impl ColumnDefine for RecordBatchDefinition {
                 } else {
                     None
                 };
-            fields.push((field.name().to_string(), type_, default_val));
+            fields.push((field.name().clone(), type_, default_val));
         }
         Ok(Some(fields))
     }

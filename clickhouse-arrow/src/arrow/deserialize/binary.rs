@@ -243,13 +243,7 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
                 }
                 Arc::new(b.finish())
             },
-            Type::Uuid => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(Fixed(16) => reader));
-                }
-                Arc::new(b.finish())
-            },
-            Type::Int128 | Type::UInt128 => {
+            Type::Uuid | Type::Int128 | Type::UInt128 => {
                 for i in 0..rows {
                    super::opt_value!(ok => b, i, nulls, binary_async!(Fixed(16) => reader));
                 }
@@ -635,7 +629,7 @@ mod tests {
             .expect("Failed to deserialize Ipv6");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
         assert_eq!(array.value(0), Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1).octets());
-        assert_eq!(array.value(1), Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).octets());
+        assert_eq!(array.value(1), Ipv6Addr::LOCALHOST.octets());
         assert_eq!(array.nulls(), None);
     }
 
@@ -662,7 +656,7 @@ mod tests {
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
         assert_eq!(array.value(0), Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1).octets());
         assert!(!array.is_valid(1));
-        assert_eq!(array.value(2), Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).octets());
+        assert_eq!(array.value(2), Ipv6Addr::LOCALHOST.octets());
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
     }
 

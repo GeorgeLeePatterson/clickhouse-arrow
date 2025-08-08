@@ -101,7 +101,7 @@ impl Block {
 
         let mut columns = schema
             .iter()
-            .map(|(name, _)| (name.to_string(), Vec::with_capacity(rows.len())))
+            .map(|(name, _)| (name.clone(), Vec::with_capacity(rows.len())))
             .collect::<IndexMap<String, Vec<_>>>();
 
         rows.into_iter()

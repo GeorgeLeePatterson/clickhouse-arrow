@@ -425,10 +425,7 @@ impl Settings {
     /// assert_eq!(kv_pairs, vec![("max_threads".to_string(), "8".to_string())]);
     /// ```
     pub fn encode_to_key_value_strings(&self) -> Vec<(String, String)> {
-        self.0
-            .iter()
-            .map(|setting| (setting.key.to_string(), setting.value.to_string()))
-            .collect()
+        self.0.iter().map(|setting| (setting.key.clone(), setting.value.to_string())).collect()
     }
 
     /// Converts settings to a vector of formatted strings.

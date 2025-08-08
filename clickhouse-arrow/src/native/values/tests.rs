@@ -229,7 +229,7 @@ fn roundtrip_uuid() {
 
 #[test]
 fn roundtrip_ipv4() {
-    let fixed = Ipv4::from(Ipv4Addr::new(0, 0, 0, 0));
+    let fixed = Ipv4::from(Ipv4Addr::UNSPECIFIED);
     assert_eq!(fixed, roundtrip(fixed, &Type::Ipv4));
 }
 

@@ -413,8 +413,8 @@ impl<T: ClientFormat> Connection<T> {
         use crate::client::writer::Writer;
 
         let client_hello = ClientHello {
-            default_database: options.default_database.to_string(),
-            username:         options.username.to_string(),
+            default_database: options.default_database.clone(),
+            username:         options.username.clone(),
             password:         options.password.get().to_string(),
         };
 

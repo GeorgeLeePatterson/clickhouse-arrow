@@ -278,13 +278,13 @@ async fn roundtrip_uuid() {
 
 #[tokio::test]
 async fn roundtrip_ipv4() {
-    let values = &[Value::Ipv4(Ipv4Addr::new(0, 0, 0, 0).into())];
+    let values = &[Value::Ipv4(Ipv4Addr::UNSPECIFIED.into())];
     assert_eq!(&values[..], roundtrip_values(&Type::Ipv4, &values[..]).await.unwrap());
 }
 
 #[tokio::test]
 async fn roundtrip_ipv6() {
-    let values = &[Value::Ipv6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into())];
+    let values = &[Value::Ipv6(Ipv6Addr::UNSPECIFIED.into())];
     assert_eq!(&values[..], roundtrip_values(&Type::Ipv6, &values[..]).await.unwrap());
 }
 
@@ -910,12 +910,12 @@ fn roundtrip_sized_network_types_sync() {
     use crate::{Ipv4, Ipv6};
     let test_cases = vec![
         (Type::Ipv4, vec![
-            Value::Ipv4(Ipv4(Ipv4Addr::new(0, 0, 0, 0))),
+            Value::Ipv4(Ipv4(Ipv4Addr::UNSPECIFIED)),
             Value::Ipv4(Ipv4(Ipv4Addr::new(192, 168, 1, 1))),
-            Value::Ipv4(Ipv4(Ipv4Addr::new(255, 255, 255, 255))),
+            Value::Ipv4(Ipv4(Ipv4Addr::BROADCAST)),
         ]),
         (Type::Ipv6, vec![
-            Value::Ipv6(Ipv6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))),
+            Value::Ipv6(Ipv6(Ipv6Addr::UNSPECIFIED)),
             Value::Ipv6(Ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
         ]),
     ];
