@@ -39,6 +39,7 @@ jobs:
         components: rustfmt, clippy
 
     - name: Install nightly for formatting
+      if: matrix.rust == 'stable'
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: rustfmt
