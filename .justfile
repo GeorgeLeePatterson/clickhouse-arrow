@@ -58,6 +58,11 @@ bench-lto:
     cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test-utils && \
      open ../target/criterion/report/index.html
 
+bench-lto-update:
+    cd clickhouse-arrow && \
+     cargo bench --profile=release-lto -F test-utils --bench "scalar" && \
+     cargo bench --profile=release-lto -F test-utils --bench "insert"
+
 bench-one bench:
     cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
      --profile=release \
@@ -160,6 +165,13 @@ fix:
     cargo clippy --fix --all-features --all-targets --allow-dirty
 
 # --- MAINTENANCE ---
+
+# Run checks CI will
+checks:
+    cargo +nightly fmt -- --check
+    cargo +nightly clippy --all-features --all-targets
+    cargo +stable clippy --all-features --all-targets -- -D warnings
+    just -f {{justfile()}} test
 
 # Initialize development environment for maintainers
 init-dev:

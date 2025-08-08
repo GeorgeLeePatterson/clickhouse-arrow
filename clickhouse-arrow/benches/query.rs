@@ -77,6 +77,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         // Setup clients
         let arrow_client_builder =
             arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
+                .with_ipv4_only(true)
                 .with_compression(CompressionMethod::None);
         let arrow_client = rt
             .block_on(arrow_client_builder.build::<ArrowFormat>())

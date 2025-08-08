@@ -57,50 +57,50 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut insert_group = c.benchmark_group("Insert");
 
+    // Create a test batch to pull out schema
+    let schema = arrow_tests::create_test_batch(1, false).schema();
+
+    // Setup arrow clients
+    let client_builder =
+        arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
+            .with_ipv4_only(true);
+    let arrow_client = rt
+        .block_on(
+            client_builder.clone().with_compression(CompressionMethod::None).build::<ArrowFormat>(),
+        )
+        .expect("clickhouse native arrow setup");
+    let arrow_client_lz4 = rt
+        .block_on(
+            client_builder.clone().with_compression(CompressionMethod::LZ4).build::<ArrowFormat>(),
+        )
+        .expect("clickhouse native arrow setup");
+
+    // Setup rs clients
+    let rs_client = common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::None);
+    let rs_client_lz4 =
+        common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::Lz4);
+
+    // Setup database
+    rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_client))
+        .expect("setup database");
+
+    // Setup tables
+    let arrow_table_ref = rt
+        .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
+        .expect("clickhouse rs table");
+    let rs_table_ref = rt
+        .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
+        .expect("clickhouse rs table");
+
     // Test with different row counts
     let row_counts = vec![10_000, 100_000, 200_000, 300_000, 400_000];
 
     for rows in row_counts {
-        print_msg(format!("Running test for {rows} rows"));
+        print_msg(format!("Insert test for {rows} rows"));
 
         // Pre-create the batch and rows to avoid including this in benchmark time
         let batch = arrow_tests::create_test_batch(rows, false);
         let test_rows = common::create_test_rows(rows);
-        let schema = batch.schema();
-
-        // Setup arrow clients
-        let arrow_client = rt
-            .block_on(
-                arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-                    .with_compression(CompressionMethod::None)
-                    .build::<ArrowFormat>(),
-            )
-            .expect("clickhouse native arrow setup");
-        let arrow_client_lz4 = rt
-            .block_on(
-                arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
-                    .with_compression(CompressionMethod::LZ4)
-                    .build::<ArrowFormat>(),
-            )
-            .expect("clickhouse native arrow setup");
-
-        // Setup rs clients
-        let rs_client =
-            common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::None);
-        let rs_client_lz4 =
-            common::setup_clickhouse_rs(ch).with_compression(clickhouse::Compression::Lz4);
-
-        // Setup database
-        rt.block_on(arrow_tests::setup_database(common::TEST_DB_NAME, &arrow_client))
-            .expect("setup database");
-
-        // Setup tables
-        let arrow_table_ref = rt
-            .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
-            .expect("clickhouse rs table");
-        let rs_table_ref = rt
-            .block_on(arrow_tests::setup_table(&arrow_client, common::TEST_DB_NAME, &schema))
-            .expect("clickhouse rs table");
 
         // Benchmark arrow insert no compression
         insert_arrow("none", &arrow_table_ref, rows, &arrow_client, &batch, &mut insert_group, &rt);

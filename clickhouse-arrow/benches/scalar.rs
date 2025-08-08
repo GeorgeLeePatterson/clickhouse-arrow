@@ -50,7 +50,7 @@ fn query_arrow_native(
     rt: &Runtime,
 ) {
     let _ = group.sample_size(10).measurement_time(Duration::from_secs(60)).bench_with_input(
-        BenchmarkId::new("clickhouse_arrow_native", rows),
+        BenchmarkId::new("clickhouse_arrow", rows),
         &(query, client),
         |b, (query, client)| {
             b.to_async(rt).iter(|| async move {
@@ -83,11 +83,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     let rows = 500_000_000;
     let query = format!("SELECT number FROM system.numbers_mt LIMIT {rows}");
 
-    print_msg(format!("Running test for {rows} rows"));
+    print_msg(format!("Scalar query - default compression - test for {rows} rows"));
 
     // Setup clients
     let arrow_client_builder =
         arrow_tests::setup_test_arrow_client(ch.get_native_url(), &ch.user, &ch.password)
+            .with_ipv4_only(true)
             .with_compression(CompressionMethod::LZ4);
 
     let arrow_client = rt
