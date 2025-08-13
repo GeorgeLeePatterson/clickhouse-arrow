@@ -74,3 +74,14 @@ debug = "full"
 
 [profile.instruments.package."*"]
 debug = "full"
+
+[profile.ci]
+inherits = "dev"
+incremental = false
+
+# ci turns off debug info, etc. for dependencies to allow for smaller binaries making caching more effective
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false

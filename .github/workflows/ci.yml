@@ -64,10 +64,10 @@ jobs:
       run: cargo +nightly fmt -- --check
 
     - name: Run clippy
-      run: cargo +stable clippy --all-features --all-targets -- -D warnings
+      run: cargo +stable clippy --profile ci --all-features --all-targets -- -D warnings
 
     - name: Build stable
-      run: cargo +stable build --all-features --verbose
+      run: cargo +stable build --profile ci --all-features --verbose
 
   coverage:
     name: Code Coverage
@@ -91,7 +91,7 @@ jobs:
 
     - name: Generate code coverage
       run: |
-        cargo llvm-cov --features test-utils --workspace --lcov --output-path lcov.info \
+        cargo llvm-cov --profile ci --features test-utils --workspace --lcov --output-path lcov.info \
          --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*"
 
     - name: Upload coverage to Codecov
@@ -122,7 +122,7 @@ jobs:
         toolchain: nightly
 
     - name: Run tests
-      run: cargo +nightly test --features test-utils --verbose
+      run: cargo +nightly test --profile ci --features test-utils --verbose
 
     # TODO: Convert doc test to tests and reenable
     # - name: Run doc tests
