@@ -2,7 +2,7 @@
 
 `ClickHouse` access in rust over `ClickHouse`'s native protocol.
 
-Currently supports revision `54477`, `DBMS_MIN_REVISION_WITH_QUERY_PLAN_SERIALIZATION`, the latest revision as of June 2025.
+Currently supports revision `54479`, `DBMS_MIN_REVISION_WITH_VERSIONED_CLUSTER_FUNCTION_PROTOCOL`, the latest revision as of June 2025.
 
 [![Crates.io](https://img.shields.io/crates/v/clickhouse-arrow.svg)](https://crates.io/crates/clickhouse-arrow)
 [![Documentation](https://docs.rs/clickhouse-arrow/badge.svg)](https://docs.rs/clickhouse-arrow)

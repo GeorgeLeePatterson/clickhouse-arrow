@@ -257,6 +257,13 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
                 None
             };
 
+        let _server_cluster_function_porotocl_version =
+            if revision_version >= DBMS_MIN_REVISION_WITH_VERSIONED_CLUSTER_FUNCTION_PROTOCOL {
+                Some(reader.read_var_uint().await?)
+            } else {
+                None
+            };
+
         trace!(
             server_name,
             version = format!("{major_version}.{minor_version}.{patch_version}"),

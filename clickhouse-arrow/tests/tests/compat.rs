@@ -27,8 +27,9 @@ pub async fn test_arrow_compat(ch: Arc<ClickHouseContainer>) {
     #[expect(clippy::disallowed_methods)]
     drop(tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
-            let disp = format!("{event:?}");
-            println!("New profile event: {}", &disp[0..15]);
+            let client_id = event.client_id;
+            let ev: &str = event.event.as_ref();
+            println!("New profile event: client id = {client_id}, event = {ev}");
         }
     }));
 
