@@ -91,7 +91,7 @@ jobs:
 
     - name: Generate code coverage
       run: |
-        cargo llvm-cov --profile ci --features test-utils --workspace --lcov --output-path lcov.info \
+        cargo llvm-cov --features test-utils --workspace --lcov --output-path lcov.info \
          --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*"
 
     - name: Upload coverage to Codecov
