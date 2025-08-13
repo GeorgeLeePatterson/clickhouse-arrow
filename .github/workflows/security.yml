@@ -2,6 +2,14 @@ name: Security Audit
 
 on:
   push:
+    branches: [main]
+    paths:
+      # Run if workflow changes
+      - '.github/workflows/security.yml'
+      # Run on changed dependencies
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+  pull_request:
     paths:
       # Run if workflow changes
       - '.github/workflows/security.yml'
@@ -22,7 +30,9 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/audit@v1
-        name: Audit Rust Dependencies
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run audit check
+        # Ignored until https://github.com/apache/datafusion/issues/15571
+        # ignored py03 warning until arrow 55 upgrade
+        run: cargo audit --ignore RUSTSEC-2024-0370 --ignore RUSTSEC-2025-0020
