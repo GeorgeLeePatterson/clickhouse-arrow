@@ -104,11 +104,11 @@ Full support for ClickHouse data types including:
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/GeorgeLeePatterson/clickhouse-arrow/blob/main/LICENSE) for details.
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/GeorgeLeePatterson/clickhouse-arrow/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## Releasing
 
