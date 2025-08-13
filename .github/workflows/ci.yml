@@ -28,7 +28,7 @@ jobs:
       code: ${{ steps.changes.outputs.code }}
     steps:
     - uses: actions/checkout@v4
-    - uses: dorny/paths-filter@v3
+    - uses: dorny/paths-filter@master
       id: changes
       with:
         predicate-quantifier: 'every'
@@ -42,76 +42,29 @@ jobs:
             - '!.justfile'
             - '!LICENSE'
 
-  test:
-    name: Test
+  check:
+    name: Check
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - nightly
     steps:
     - uses: actions/checkout@v4
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
       with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+        components: clippy
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ matrix.rust }}
-        components: rustfmt, clippy
-
-    - name: Install nightly for formatting
-      if: matrix.rust == 'stable'
+    - name: Install Rust nightly (for formatting)
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: rustfmt
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo build
-      uses: actions/cache@v4
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
     - name: Check formatting
-      if: matrix.rust == 'stable'
       run: cargo +nightly fmt -- --check
 
     - name: Run clippy
-      run: |
-        if [[ "${{ matrix.rust }}" == "nightly" ]]; then
-          cargo +nightly clippy --all-features --all-targets
-        else
-          cargo +stable clippy --all-features --all-targets -- -D warnings
-        fi
-
-    - name: Build
-      run: cargo +${{ matrix.rust }} build --all-features --verbose
-
-    - name: Run tests
-      run: cargo +${{ matrix.rust }} test --features test-utils --verbose
-
-    # TODO: Convert doc test to tests and reenable
-    # - name: Run doc tests
-    #   run: cargo +${{ matrix.rust }} test --doc --all-features
+      run: cargo +stable clippy --all-features --all-targets -- -D warnings
 
   coverage:
     name: Code Coverage
@@ -146,11 +99,40 @@ jobs:
         fail_ci_if_error: true
         disable_telem: true
 
+  test-nightly:
+    name: Test nightly
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly
+
+    - name: Build
+      run: cargo +nightly build --all-features --verbose
+
+    - name: Run tests
+      run: cargo +nightly test --features test-utils --verbose
+
+    # TODO: Convert doc test to tests and reenable
+    # - name: Run doc tests
+    #   run: cargo +nightly test --doc --all-features
+
 
   # Summary job that branch protection can depend on
   ci-success:
     name: CI Success
-    needs: [changes, test, coverage]
+    needs: [changes, test-nightly, coverage]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -162,7 +144,7 @@ jobs:
             exit 0
           fi
 
-          if [[ "${{ needs.test.result }}" != "success" ||
+          if [[ "${{ needs.test-nightly.result }}" != "success" ||
                 "${{ needs.coverage.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
