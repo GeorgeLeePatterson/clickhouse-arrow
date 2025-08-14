@@ -298,6 +298,11 @@ tag-release version:
         exit 1
     fi
 
+    # Verify publish will work
+    cargo publish --dry-run -p clickhouse-arrow-derive --no-verify
+    sleep 10 # Wait for crates.io to index
+    cargo publish --dry-run -p clickhouse-arrow --no-verify
+
     # Create and push tag
     git tag -a "v{{version}}" -m "Release v{{version}}"
     git push origin "v{{version}}"
