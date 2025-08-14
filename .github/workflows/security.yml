@@ -3,37 +3,49 @@ name: Security Audit
 on:
   push:
     branches: [main]
-    paths:
-      # Run if workflow changes
-      - '.github/workflows/security.yml'
-      # Run on changed dependencies
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
   pull_request:
-    paths:
-      # Run if workflow changes
-      - '.github/workflows/security.yml'
-      # Run on changed dependencies
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+
   # Rerun periodically to pick up new advisories
   schedule:
     - cron: '0 0 * * *'
-  # Run manually
+
   workflow_dispatch:
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.changes.outputs.deps }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dorny/paths-filter@master
+      id: changes
+      with:
+        filters: |
+          deps:
+            - '.github/workflows/security.yml'
+            - '**/Cargo.toml'
+            - '**/Cargo.lock'
+
   audit:
     name: Audit Dependencies
     runs-on: ubuntu-latest
+    needs: changes
     permissions:
       contents: read
       issues: write
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.deps == 'true'
       - name: Install cargo-audit
+        if: needs.changes.outputs.deps == 'true'
         run: cargo install cargo-audit
       - name: Run audit check
+        if: needs.changes.outputs.deps == 'true'
         # Ignored until https://github.com/apache/datafusion/issues/15571
         # ignored py03 warning until arrow 55 upgrade
         run: cargo audit --ignore RUSTSEC-2024-0370 --ignore RUSTSEC-2025-0020
+      - name: Nothing to check
+        if: needs.changes.outputs.deps == 'false'
+        run: echo "No changes detected"

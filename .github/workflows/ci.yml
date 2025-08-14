@@ -41,6 +41,11 @@ jobs:
             - '!.gitignore'
             - '!.justfile'
             - '!LICENSE'
+            - '!.github/workflows/pr.yml'
+            - '!.github/workflows/release.yml'
+            - '!.github/workflows/security.yml'
+            - '!.github/dependabot.yml'
+            - '!.github/labeler.yml'
 
   check:
     name: Check
