@@ -11,6 +11,10 @@ on:
         default: false
         required: false
         type: boolean
+      version:
+        description: 'Version to release (e.g., 0.1.5)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -33,15 +37,30 @@ jobs:
 
       - name: Verify version consistency
         run: |
-          # Extract version from tag
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # Determine version based on trigger type
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ inputs.version }}" ]; then
+              # Use provided version input
+              VERSION="${{ inputs.version }}"
+              echo "Using provided version: $VERSION"
+            else
+              # Extract version from Cargo.toml
+              VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+              echo "Using version from Cargo.toml: $VERSION"
+            fi
+          else
+            # Extract version from tag (push trigger)
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "Using version from tag: $VERSION"
+          fi
+          
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
           # Check that Cargo.toml has the correct version
           CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           if [ "$CARGO_VERSION" != "$VERSION" ]; then
-            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($VERSION)"
-            echo "Please ensure the release PR was merged before tagging"
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match expected version ($VERSION)"
+            echo "Please ensure versions are consistent"
             exit 1
           fi
 
@@ -83,4 +102,6 @@ jobs:
         with:
           body_path: release_notes_for_tag.md
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: ${{ contains(env.VERSION, '-rc') || contains(env.VERSION, '-beta') || contains(env.VERSION, '-alpha') }}
+          tag_name: v${{ env.VERSION }}
+          name: Release v${{ env.VERSION }}
