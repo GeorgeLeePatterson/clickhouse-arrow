@@ -6,7 +6,7 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      skip-publish:
+      skip_publish:
         description: 'Create release only'
         default: false
         required: false
@@ -53,7 +53,7 @@ jobs:
             VERSION=${GITHUB_REF#refs/tags/v}
             echo "Using version from tag: $VERSION"
           fi
-          
+
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
           # Check that Cargo.toml has the correct version
