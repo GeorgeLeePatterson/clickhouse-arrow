@@ -9,6 +9,7 @@ pub(crate) const DB_NAME: &str = "example_insert_test";
 pub(crate) const ROWS: usize = 100_000;
 const DISABLE_CLEANUP_ENV: &str = "DISABLE_CLEANUP";
 
+#[allow(unused)]
 pub(crate) fn init(directives: Option<&[(&str, &str)]>) {
     if let Ok(l) = std::env::var("RUST_LOG")
         && !l.is_empty()
@@ -18,6 +19,7 @@ pub(crate) fn init(directives: Option<&[(&str, &str)]>) {
     }
 }
 
+#[allow(unused)]
 pub(crate) async fn setup(directives: Option<&[(&str, &str)]>) -> &'static ClickHouseContainer {
     // Init tracing
     init(directives);
@@ -29,6 +31,7 @@ pub(crate) async fn setup(directives: Option<&[(&str, &str)]>) -> &'static Click
 ///
 /// # Errors
 /// # Panics
+#[allow(unused)]
 pub(crate) async fn run_example_with_cleanup<F, Fut>(
     example: F,
     directives: Option<&[(&str, &str)]>,

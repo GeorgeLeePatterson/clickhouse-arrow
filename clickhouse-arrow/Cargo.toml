@@ -44,10 +44,7 @@ cloud = ["dep:ureq"]
 rust_decimal = ["dep:rust_decimal"]
 
 # -- Testing --
-test-utils = [
-    "dep:testcontainers",
-    "dep:tracing-subscriber",
-]
+test-utils = ["dep:testcontainers", "dep:tracing-subscriber"]
 
 # DEPENDENCIES
 
@@ -100,7 +97,10 @@ rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 testcontainers = { version = "0.25", optional = true }
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "fmt",
+    "env-filter",
+], optional = true }
 ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
 
 [dev-dependencies]
@@ -149,6 +149,9 @@ required-features = ["test-utils"]
 [[example]]
 name = "insert_multi_threaded"
 required-features = ["test-utils"]
+
+[[example]]
+name = "issue_34"
 
 # BENCHES
 
