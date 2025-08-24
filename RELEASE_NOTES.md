@@ -1,21 +1,13 @@
-## [0.1.5] - 2025-08-13
-
-### Bug Fixes
-
-- Upgrades protocol revision to latest, 54479 ([#28](https://github.com/georgeleepatterson/clickhouse-arrow/issues/28)) ([4eac72d](https://github.com/georgeleepatterson/clickhouse-arrow/commit/4eac72d38a72542c066520cc64f8199a3f4a6b79))
+## [0.1.6] - 2025-08-24
 
 ### Documentation
 
-- Patches formatting in README for notes ([#25](https://github.com/georgeleepatterson/clickhouse-arrow/issues/25)) ([333b43c](https://github.com/georgeleepatterson/clickhouse-arrow/commit/333b43c0060c4ce82f09a2a795b66f4ffa68df73))
-- Updates links in README ([42fc74f](https://github.com/georgeleepatterson/clickhouse-arrow/commit/42fc74f1ca12959566599af2eed9e85ceca00a26))
+- Fixes broken doc links, inlines readme ([#35](https://github.com/georgeleepatterson/clickhouse-arrow/issues/35)) ([81c360a](https://github.com/georgeleepatterson/clickhouse-arrow/commit/81c360a19dad0b7e745feb4cc130bfb5a1219067))
 
 ### Miscellaneous Tasks
 
-- Updates pr and labeler ([#22](https://github.com/georgeleepatterson/clickhouse-arrow/issues/22)) ([27e5b66](https://github.com/georgeleepatterson/clickhouse-arrow/commit/27e5b66ff06639f58790976644595c2a24832374))
-- Updates ci workflow to prevent double fmt checks ([#24](https://github.com/georgeleepatterson/clickhouse-arrow/issues/24)) ([d16effe](https://github.com/georgeleepatterson/clickhouse-arrow/commit/d16effec900b8ae8cb4ab113be7a8e7625b030ef))
-
-### Testing
-
-- Updates benchmarks to use ipv4 only, includes results in README ([#26](https://github.com/georgeleepatterson/clickhouse-arrow/issues/26)) ([c7ba6de](https://github.com/georgeleepatterson/clickhouse-arrow/commit/c7ba6de060e0eab38f4ec70731254ba403677871))
+- Updates release workflow, dry run ([#31](https://github.com/georgeleepatterson/clickhouse-arrow/issues/31)) ([8a7a6b1](https://github.com/georgeleepatterson/clickhouse-arrow/commit/8a7a6b19b7ccff86387eef5d5770b88e9cdbf039))
+- Updates release workflow to include version ([#32](https://github.com/georgeleepatterson/clickhouse-arrow/issues/32)) ([55f8324](https://github.com/georgeleepatterson/clickhouse-arrow/commit/55f8324781f67f2af6c24d41d27b3971b4b43529))
+- Patches typo in variable for release ([#33](https://github.com/georgeleepatterson/clickhouse-arrow/issues/33)) ([06d69d2](https://github.com/georgeleepatterson/clickhouse-arrow/commit/06d69d256c322228b2e58be38b4a26db4ef2ac07))
 
 
