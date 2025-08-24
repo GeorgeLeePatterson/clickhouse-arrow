@@ -137,18 +137,22 @@ required-features = ["test-utils"]
 [[example]]
 name = "insert"
 required-features = ["test-utils"]
+doc-scrape-examples = false
 
 [[example]]
 name = "pool"
 required-features = ["test-utils"]
+doc-scrape-examples = false
 
 [[example]]
 name = "scalar"
 required-features = ["test-utils"]
+doc-scrape-examples = false
 
 [[example]]
 name = "insert_multi_threaded"
 required-features = ["test-utils"]
+doc-scrape-examples = false
 
 # BENCHES
 

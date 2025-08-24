@@ -613,7 +613,7 @@ impl ClientBuilder {
     /// Sets the Arrow-specific options for `ClickHouse` connections.
     ///
     /// This method configures options specific to the Arrow format (used by
-    /// [`ArrowClient`]), such as schema mapping or data type conversions. These options
+    /// [`Client<ArrowFormat>`]), such as schema mapping or data type conversions. These options
     /// are applied when the client is built with [`ClientBuilder::build`] for
     /// [`ArrowFormat`]. Use this to customize Arrow interoperability.
     ///
@@ -735,7 +735,7 @@ impl ClientBuilder {
     /// This method creates a [`Client`] using the configured destination, options,
     /// settings, and context. It verifies the destination (via
     /// [`ClientBuilder::verify`] if not already verified) and establishes a connection
-    /// to the `ClickHouse` server. The client type (`NativeClient` or `ArrowClient`)
+    /// to the `ClickHouse` server. The client type (`NativeClient` or `Client<ArrowFormat>`)
     /// is determined by the format `T` (e.g., [`NativeFormat`] or [`ArrowFormat`]).
     ///
     /// # Parameters
@@ -806,7 +806,7 @@ impl ClientBuilder {
     /// This method creates a [`ConnectionManager<T>`] for managing a pool of
     /// [`Client<T>`] instances, allowing efficient reuse of connections. It verifies
     /// the destination and configures the manager with the specified health check
-    /// behavior. The client type (`NativeClient` or `ArrowClient`) is determined by
+    /// behavior. The client type (`NativeClient` or `Client<ArrowFormat>`) is determined by
     /// the format `T` (e.g., [`NativeFormat`] or [`ArrowFormat`]).
     ///
     /// # Parameters
