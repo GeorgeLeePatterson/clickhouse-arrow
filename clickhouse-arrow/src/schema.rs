@@ -70,7 +70,7 @@ impl std::fmt::Display for ClickHouseEngine {
 /// settings.
 ///
 /// This struct is used to configure the creation of a `ClickHouse` table via
-/// [`create_table_statement_from_arrow`]. It supports common table options like `ORDER BY`,
+/// `create_table_statement_from_arrow`. It supports common table options like `ORDER BY`,
 /// `PRIMARY KEY`, `PARTITION BY`, `SAMPLE BY`, `TTL`, and custom settings. It also allows
 /// specifying default values for columns and enabling defaults for nullable columns.
 ///
@@ -473,7 +473,7 @@ pub(crate) fn drop_db_statement(database: &str, sync: bool) -> Result<String> {
 /// # Example
 /// ```rust,ignore
 /// use arrow::datatypes::{DataType, Field, Schema};
-/// use clickhouse_arrow::sql::{CreateOptions, create_table_statement_from_arrow};
+/// use crate::sql::{CreateOptions, create_table_statement_from_arrow};
 /// use std::sync::Arc;
 ///
 /// let schema = Arc::new(Schema::new(vec![

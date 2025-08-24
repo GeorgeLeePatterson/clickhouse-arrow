@@ -10,9 +10,10 @@ use crate::prelude::Secret;
 ///
 /// The `ClientOptions` struct defines the settings used to establish a connection
 /// to a `ClickHouse` server and handle data serialization/deserialization with
-/// Apache Arrow. These options are typically set via [`ClientBuilder`] methods
-/// (e.g., [`ClientBuilder::with_username`], [`ClientBuilder::with_tls`]) or
-/// constructed directly for use with [`Client::connect`].
+/// Apache Arrow. These options are typically set via [`super::builder::ClientBuilder`] methods
+/// (e.g., [`super::builder::ClientBuilder::with_username`],
+/// [`super::builder::ClientBuilder::with_tls`]) or constructed directly for use with
+/// [`crate::Client::connect`].
 ///
 /// # Fields
 /// - `username`: The username for authenticating with `ClickHouse` (default: `"default"`).
@@ -228,8 +229,8 @@ impl Extension {
 /// The `ArrowOptions` struct defines settings that control how Apache Arrow data types
 /// are mapped to `ClickHouse` types during serialization (e.g., inserts), deserialization
 /// (e.g., queries), and schema creation (e.g., DDL operations). These options are used
-/// by [`ArrowClient`] and set via [`ClientBuilder::with_arrow_options`] or directly in
-/// [`ClientOptions`].
+/// by [`crate::ArrowClient`] and set via [`super::builder::ClientBuilder::with_arrow_options`] or
+/// directly in [`ClientOptions`].
 ///
 /// # Fields
 /// - `strings_as_strings`: If `true`, maps `ClickHouse` `String` to Arrow `Utf8`; if `false`, maps
