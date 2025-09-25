@@ -4,7 +4,7 @@ use super::DeserializerState;
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
 use crate::client::connection::ClientMetadata;
-use crate::compression::{compress_data_sync, decompress_data_async};
+use crate::compression::{DecompressionReader, compress_data_sync};
 use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::native::block::Block;
 use crate::native::protocol::CompressionMethod;
@@ -37,9 +37,8 @@ impl super::sealed::ClientFormatImpl<Block> for NativeFormat {
         Ok(if let CompressionMethod::None = metadata.compression {
             Block::read_async(reader, revision, (), state).await?.into_option()
         } else {
-            let mut buffer =
-                BytesMut::from_iter(decompress_data_async(reader, metadata.compression).await?);
-            Block::read(&mut buffer, revision, (), state)?.into_option()
+            let mut decompressor = DecompressionReader::new(metadata.compression, reader).await?;
+            Block::read_async(&mut decompressor, revision, (), state).await?.into_option()
         })
     }
 
