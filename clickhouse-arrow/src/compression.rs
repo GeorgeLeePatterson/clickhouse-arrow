@@ -1,107 +1,32 @@
 /// Compression and decompression utilities for `ClickHouse`'s native protocol.
 ///
-/// This module provides functions to compress and decompress data using LZ4, as well as a
-/// `DecompressionReader` for streaming decompression of `ClickHouse` data blocks. It supports
-/// the `CompressionMethod` enum from the protocol module, handling both LZ4 and no
-/// compression.
+/// This module provides streaming compression and decompression utilities for `ClickHouse`
+/// data blocks. It supports the `CompressionMethod` enum from the protocol module, handling
+/// LZ4, ZSTD, and uncompressed payloads.
 ///
 /// # Features
-/// - Compresses raw data into LZ4 format with `compress_data`.
-/// - Decompresses LZ4-compressed data with `decompress_data`, including checksum validation.
-/// - Provides `DecompressionReader` for async reading of decompressed data streams.
+/// - Streaming compression via [`StreamingCompressor`]
+/// - Streaming decompression via [`StreamingDecompressor`]
 ///
 /// # `ClickHouse` Reference
 /// See the [ClickHouse Native Protocol Documentation](https://clickhouse.com/docs/en/interfaces/tcp)
 /// for details on compression in the native protocol.
+use std::convert::TryInto;
 use std::future::Future;
+use std::io::ErrorKind;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use futures_util::FutureExt;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
+use pin_project::pin_project;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
-use crate::io::{ClickHouseRead, ClickHouseWrite};
+use crate::io::ClickHouseRead;
 use crate::native::protocol::CompressionMethod;
 use crate::{Error, Result};
 
-/// Writes compressed data using `ClickHouse` chunk format.
-///
-/// Compresses the input data using the specified compression method and writes it with:
-/// - 16 bytes: `CityHash128` checksum of the compressed block
-/// - 1 byte: compression type
-/// - 4 bytes: compressed size (including 9-byte header)
-/// - 4 bytes: decompressed size
-/// - N bytes: compressed payload
-///
-/// # Arguments
-/// * `writer` - The writer to write compressed data to
-/// * `raw` - The raw data to compress
-/// * `compression` - The compression method to use (LZ4, ZSTD, or None)
-///
-/// # Returns
-/// `Result<()>` indicating success or failure
-#[expect(clippy::cast_possible_truncation)]
-#[cfg_attr(not(test), expect(unused))]
-pub(crate) async fn compress_data<W: ClickHouseWrite>(
-    writer: &mut W,
-    raw: Vec<u8>,
-    compression: CompressionMethod,
-) -> Result<()> {
-    let decompressed_size = raw.len();
-    let mut out = match compression {
-        // ZSTD with default compression level (1)
-        CompressionMethod::ZSTD => zstd::bulk::compress(&raw, 1)
-            .map_err(|e| Error::SerializeError(format!("ZSTD compress error: {e}")))?,
-        // LZ4
-        CompressionMethod::LZ4 => lz4_flex::compress(&raw),
-        // None
-        CompressionMethod::None => return Ok(()),
-    };
-
-    let mut new_out = Vec::with_capacity(out.len() + 13);
-    new_out.push(compression.byte());
-    new_out.extend_from_slice(&(out.len() as u32 + 9).to_le_bytes()[..]);
-    new_out.extend_from_slice(&(decompressed_size as u32).to_le_bytes()[..]);
-    new_out.append(&mut out);
-
-    let hash = cityhash_rs::cityhash_102_128(&new_out[..]);
-    writer.write_u64_le((hash >> 64) as u64).await?;
-    writer.write_u64_le(hash as u64).await?;
-    writer.write_all(&new_out[..]).await?;
-
-    Ok(())
-}
-
-#[expect(clippy::cast_possible_truncation)]
-pub(crate) async fn compress_data_sync<W: ClickHouseWrite>(
-    writer: &mut W,
-    raw: bytes::Bytes,
-    compression: CompressionMethod,
-) -> Result<()> {
-    let decompressed_size = raw.len();
-    let mut out = match compression {
-        // ZSTD with default compression level (1)
-        CompressionMethod::ZSTD => zstd::bulk::compress(&raw, 1)
-            .map_err(|e| Error::SerializeError(format!("ZSTD compress error: {e}")))?,
-        // LZ4
-        CompressionMethod::LZ4 => lz4_flex::compress(&raw),
-        // None
-        CompressionMethod::None => return Ok(()),
-    };
-
-    let mut new_out = Vec::with_capacity(out.len() + 13);
-    new_out.push(compression.byte());
-    new_out.extend_from_slice(&(out.len() as u32 + 9).to_le_bytes()[..]);
-    new_out.extend_from_slice(&(decompressed_size as u32).to_le_bytes()[..]);
-    new_out.append(&mut out);
-
-    let hash = cityhash_rs::cityhash_102_128(&new_out[..]);
-    writer.write_u64_le((hash >> 64) as u64).await?;
-    writer.write_u64_le(hash as u64).await?;
-    writer.write_all(&new_out[..]).await?;
-
-    Ok(())
-}
+/// Number of bytes in the per-frame header: algorithm tag + compressed and decompressed sizes.
+const COMPRESSED_FRAME_HEADER_BYTES: usize = 1 + 4 + 4;
 
 /// Reads and decompresses a single compression chunk.
 ///
@@ -110,7 +35,7 @@ pub(crate) async fn compress_data_sync<W: ClickHouseWrite>(
 /// format:
 /// - 16 bytes: `CityHash128` checksum
 /// - 1 byte: compression type
-/// - 4 bytes: compressed size (including 9-byte header)
+/// - 4 bytes: compressed size (including the frame header)
 /// - 4 bytes: decompressed size
 /// - N bytes: compressed payload
 ///
@@ -126,82 +51,8 @@ pub(crate) async fn compress_data_sync<W: ClickHouseWrite>(
 /// - Checksum mismatches indicating data corruption
 /// - Decompression failures
 /// - Memory safety violations for oversized chunks
-pub(crate) async fn decompress_data_async(
-    reader: &mut impl ClickHouseRead,
-    compression: CompressionMethod,
-) -> Result<Vec<u8>> {
-    // Read checksum (16 bytes)
-    let checksum_high = reader
-        .read_u64_le()
-        .await
-        .map_err(|e| Error::Protocol(format!("Failed to read checksum high: {e}")))?;
-    let checksum_low = reader
-        .read_u64_le()
-        .await
-        .map_err(|e| Error::Protocol(format!("Failed to read checksum low: {e}")))?;
-    let checksum = (u128::from(checksum_high) << 64) | u128::from(checksum_low);
-
-    // Read compression header (9 bytes)
-    let type_byte = reader
-        .read_u8()
-        .await
-        .map_err(|e| Error::Protocol(format!("Failed to read compression type: {e}")))?;
-    if type_byte != compression.byte() {
-        return Err(Error::Protocol(format!(
-            "Unexpected compression algorithm for {compression}: {type_byte:02x}"
-        )));
-    }
-
-    let compressed_size = reader
-        .read_u32_le()
-        .await
-        .map_err(|e| Error::Protocol(format!("Failed to read compressed size: {e}")))?;
-    let decompressed_size = reader
-        .read_u32_le()
-        .await
-        .map_err(|e| Error::Protocol(format!("Failed to read decompressed size: {e}")))?;
-
-    // Sanity checks
-    if compressed_size > 100_000_000 || decompressed_size > 1_000_000_000 {
-        return Err(Error::Protocol("Chunk size too large".to_string()));
-    }
-
-    // Build the complete compressed block for checksum validation
-    let mut compressed = vec![0u8; compressed_size as usize];
-    let _ = reader
-        .read_exact(&mut compressed[9..])
-        .await
-        .map_err(|e| Error::Protocol(format!("Failed to read compressed payload: {e}")))?;
-    compressed[0] = type_byte;
-    compressed[1..5].copy_from_slice(&compressed_size.to_le_bytes());
-    compressed[5..9].copy_from_slice(&decompressed_size.to_le_bytes());
-
-    // Validate checksum
-    let calc_checksum = cityhash_rs::cityhash_102_128(&compressed);
-    if calc_checksum != checksum {
-        return Err(Error::Protocol(format!(
-            "Checksum mismatch: expected {checksum:032x}, got {calc_checksum:032x}"
-        )));
-    }
-
-    // Decompress based on compression method
-    match compression {
-        CompressionMethod::LZ4 => {
-            lz4_flex::decompress(&compressed[9..], decompressed_size as usize)
-                .map_err(|e| Error::DeserializeError(format!("LZ4 decompress error: {e}")))
-        }
-        CompressionMethod::ZSTD => {
-            zstd::bulk::decompress(&compressed[9..], decompressed_size as usize)
-                .map_err(|e| Error::DeserializeError(format!("ZSTD decompress error: {e}")))
-        }
-        CompressionMethod::None => {
-            Err(Error::DeserializeError("Attempted to decompress uncompressed data".into()))
-        }
-    }
-}
-
 type BlockReadingFuture<'a, R> =
-    Pin<Box<dyn Future<Output = Result<(Vec<u8>, &'a mut R)>> + Send + Sync + 'a>>;
+    Pin<Box<dyn Future<Output = Result<(Option<Vec<u8>>, &'a mut R)>> + Send + Sync + 'a>>;
 
 /// An async reader that decompresses `ClickHouse` data blocks on-the-fly.
 ///
@@ -210,14 +61,14 @@ type BlockReadingFuture<'a, R> =
 ///
 /// # Example
 /// ```rust,ignore
-/// use clickhouse_arrow::compression::{CompressionMethod, DecompressionReader};
+/// use clickhouse_arrow::compression::{CompressionMethod, StreamingDecompressor};
 /// use tokio::io::AsyncReadExt;
 ///
-/// let mut decompressor = DecompressionReader::new(CompressionMethod::LZ4, reader);
+/// let mut decompressor = StreamingDecompressor::new(CompressionMethod::LZ4, reader);
 /// let mut buffer = vec![0u8; 1024];
 /// let bytes_read = decompressor.read(&mut buffer).await.unwrap();
 /// ```
-pub(crate) struct DecompressionReader<'a, R: ClickHouseRead + 'static> {
+pub(crate) struct StreamingDecompressor<'a, R: ClickHouseRead + 'static> {
     mode:                 CompressionMethod,
     inner:                Option<&'a mut R>,
     decompressed:         Vec<u8>,
@@ -225,234 +76,526 @@ pub(crate) struct DecompressionReader<'a, R: ClickHouseRead + 'static> {
     block_reading_future: Option<BlockReadingFuture<'a, R>>,
 }
 
-impl<'a, R: ClickHouseRead> DecompressionReader<'a, R> {
-    /// Creates a new streaming decompressor by reading all compression chunks.
+impl<'a, R: ClickHouseRead> StreamingDecompressor<'a, R> {
+    /// Creates a new streaming decompressor and primes it with the first chunk.
     ///
-    /// Reads and decompresses all compression chunks from the provided reader,
-    /// concatenating them into a single decompressed buffer. Each chunk is validated
-    /// with its `CityHash128` checksum before decompression.
+    /// Reads and decompresses the first available compression chunk from the provided
+    /// reader, validating the frame checksum before yielding data. Subsequent chunks are
+    /// fetched lazily as the [`AsyncRead`] implementation consumes the stream.
     ///
     /// # Arguments
     /// * `mode` - The compression method
     /// * `reader` - The `ClickHouse` reader containing compressed chunk data
     ///
     /// # Returns
-    /// A `DecompressionReader` ready to serve decompressed data via `AsyncRead`
+    /// A `StreamingDecompressor` ready to serve decompressed data via `AsyncRead`
     ///
     /// # Errors
     /// - Checksum validation failures
     /// - Decompression errors
     /// - I/O errors reading from the underlying stream
     /// - Memory safety violations (chunk sizes exceeding limits)
-    #[cfg_attr(not(test), expect(unused))]
+    async fn read_chunk(inner: &mut R, mode: CompressionMethod) -> Result<Option<Vec<u8>>> {
+        let mut checksum_bytes = [0u8; 16];
+        checksum_bytes[0] = match inner.read_u8().await {
+            Ok(byte) => byte,
+            Err(e) => {
+                if e.kind() == ErrorKind::UnexpectedEof {
+                    return Ok(None);
+                }
+                return Err(Error::Protocol(format!("Failed to read checksum high: {e}")));
+            }
+        };
+
+        let _ = inner
+            .read_exact(&mut checksum_bytes[1..])
+            .await
+            .map_err(|e| Error::Protocol(format!("Failed to read checksum high: {e}")))?;
+
+        let checksum_high = u64::from_le_bytes(checksum_bytes[..8].try_into().unwrap());
+        let checksum_low = u64::from_le_bytes(checksum_bytes[8..].try_into().unwrap());
+        let checksum = (u128::from(checksum_high) << 64) | u128::from(checksum_low);
+
+        let mut header = [0u8; COMPRESSED_FRAME_HEADER_BYTES];
+        let _ = inner
+            .read_exact(&mut header)
+            .await
+            .map_err(|e| Error::Protocol(format!("Failed to read compression header: {e}")))?;
+
+        let type_byte = header[0];
+        if type_byte != mode.byte() {
+            return Err(Error::Protocol(format!(
+                "Unexpected compression algorithm for {mode}: {type_byte:02x}"
+            )));
+        }
+
+        let compressed_size = u32::from_le_bytes(header[1..5].try_into().unwrap());
+        let decompressed_size = u32::from_le_bytes(header[5..9].try_into().unwrap());
+
+        if compressed_size < COMPRESSED_FRAME_HEADER_BYTES as u32 {
+            return Err(Error::Protocol(format!("Compressed block too small: {compressed_size}")));
+        }
+
+        if compressed_size > 100_000_000 || decompressed_size > 1_000_000_000 {
+            return Err(Error::Protocol("Chunk size too large".to_string()));
+        }
+
+        let payload_len = (compressed_size as usize) - COMPRESSED_FRAME_HEADER_BYTES;
+        let mut payload = vec![0u8; payload_len];
+        let _ = inner
+            .read_exact(&mut payload)
+            .await
+            .map_err(|e| Error::Protocol(format!("Failed to read compressed payload: {e}")))?;
+
+        let mut header_plus_payload =
+            Vec::with_capacity(COMPRESSED_FRAME_HEADER_BYTES + payload_len);
+        header_plus_payload.extend_from_slice(&header);
+        header_plus_payload.extend_from_slice(&payload);
+
+        let calc_checksum = cityhash_rs::cityhash_102_128(&header_plus_payload);
+        if calc_checksum != checksum {
+            return Err(Error::Protocol(format!(
+                "Checksum mismatch: expected {checksum:032x}, got {calc_checksum:032x}"
+            )));
+        }
+
+        let decompressed = match mode {
+            CompressionMethod::LZ4 => lz4_flex::decompress(&payload, decompressed_size as usize)
+                .map_err(|e| Error::DeserializeError(format!("LZ4 decompress error: {e}")))?,
+            CompressionMethod::ZSTD => zstd::bulk::decompress(&payload, decompressed_size as usize)
+                .map_err(|e| Error::DeserializeError(format!("ZSTD decompress error: {e}")))?,
+            CompressionMethod::None => {
+                return Err(Error::DeserializeError(
+                    "Attempted to decompress uncompressed data".into(),
+                ));
+            }
+        };
+
+        Ok(Some(decompressed))
+    }
+
+    #[cfg_attr(not(test), allow(unused))]
     pub(crate) async fn new(mode: CompressionMethod, inner: &'a mut R) -> Result<Self> {
-        // Decompress intial block
-        let decompressed = decompress_data_async(inner, mode).await.inspect_err(|error| {
+        if matches!(mode, CompressionMethod::None) {
+            return Err(Error::DeserializeError(
+                "Attempted to decompress uncompressed data".into(),
+            ));
+        }
+
+        let chunk = Self::read_chunk(inner, mode).await.inspect_err(|error| {
             tracing::error!(?error, "Error decompressing data");
         })?;
 
-        Ok(Self { mode, inner: Some(inner), decompressed, position: 0, block_reading_future: None })
+        let mut inner_opt = Some(inner);
+        let decompressed = match chunk {
+            Some(data) => data,
+            None => {
+                inner_opt = None;
+                Vec::new()
+            }
+        };
+
+        Ok(Self { mode, inner: inner_opt, decompressed, position: 0, block_reading_future: None })
     }
 }
 
-impl<R: ClickHouseRead> AsyncRead for DecompressionReader<'_, R> {
+impl<R: ClickHouseRead> AsyncRead for StreamingDecompressor<'_, R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if buf.remaining() == 0 {
-            return Poll::Ready(Ok(()));
-        }
+        loop {
+            if buf.remaining() == 0 {
+                return Poll::Ready(Ok(()));
+            }
 
-        // Check if we have a pending operation to complete first
-        if let Some(block_reading_future) = self.block_reading_future.as_mut() {
-            match block_reading_future.poll_unpin(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Ok((value, inner))) => {
-                    drop(self.block_reading_future.take());
-                    self.decompressed = value;
-                    self.position = 0;
-                    self.inner = Some(inner);
-                    // Fall through to serve data or potentially read more
-                }
-                Poll::Ready(Err(e)) => {
-                    drop(self.block_reading_future.take());
-                    return Poll::Ready(Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
+            if let Some(block_reading_future) = self.block_reading_future.as_mut() {
+                match block_reading_future.poll_unpin(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok((Some(value), inner))) => {
+                        drop(self.block_reading_future.take());
+                        self.decompressed = value;
+                        self.position = 0;
+                        self.inner = Some(inner);
+                        continue;
+                    }
+                    Poll::Ready(Ok((None, _inner))) => {
+                        drop(self.block_reading_future.take());
+                        self.decompressed.clear();
+                        self.position = 0;
+                        self.inner = None;
+                        return Poll::Ready(Ok(()));
+                    }
+                    Poll::Ready(Err(e)) => {
+                        drop(self.block_reading_future.take());
+                        return Poll::Ready(Err(std::io::Error::new(ErrorKind::InvalidData, e)));
+                    }
                 }
             }
-        }
 
-        // If we have available data, serve what we can
-        let available = self.decompressed.len() - self.position;
-        if available > 0 {
-            let to_serve = available.min(buf.remaining());
-            buf.put_slice(&self.decompressed[self.position..self.position + to_serve]);
-            self.position += to_serve;
+            let available = self.decompressed.len() - self.position;
+            if available > 0 {
+                let to_serve = available.min(buf.remaining());
+                buf.put_slice(&self.decompressed[self.position..self.position + to_serve]);
+                self.position += to_serve;
+                return Poll::Ready(Ok(()));
+            }
+
+            if let Some(inner) = self.inner.take() {
+                let mode = self.mode;
+                self.block_reading_future = Some(Box::pin(async move {
+                    let chunk = Self::read_chunk(inner, mode).await?;
+                    Ok((chunk, inner))
+                }));
+                continue;
+            }
+
             return Poll::Ready(Ok(()));
         }
+    }
+}
 
-        // We have no data available in our buffer
-        // Try to read the next chunk if we still have an inner reader
-        if let Some(inner) = self.inner.take() {
-            let mode = self.mode;
-            self.block_reading_future = Some(Box::pin(async move {
-                let value = decompress_data_async(inner, mode).await?;
-                Ok((value, inner))
-            }));
-            // Immediately try to poll the future we just created
-            return self.poll_read(cx, buf);
+/// Async writer that frames and compresses data into ClickHouse compression chunks.
+/// Each chunk is written as:
+/// [16 bytes checksum][1 byte type][4 bytes compressed_size_with_header][4 bytes
+/// decompressed_size][payload]
+#[pin_project]
+pub(crate) struct StreamingCompressor<W: AsyncWrite + Unpin> {
+    #[pin]
+    inner:                  W,
+    method:                 CompressionMethod,
+    max_uncompressed_chunk: usize,
+    in_buf:                 Vec<u8>,
+    out_buf:                Vec<u8>,
+    out_pos:                usize,
+}
+
+impl<W: AsyncWrite + Unpin> StreamingCompressor<W> {
+    pub(crate) fn new(inner: W, method: CompressionMethod, max_uncompressed_chunk: usize) -> Self {
+        Self {
+            inner,
+            method,
+            max_uncompressed_chunk: max_uncompressed_chunk.max(64 * 1024),
+            in_buf: Vec::with_capacity(max_uncompressed_chunk),
+            out_buf: Vec::new(),
+            out_pos: 0,
         }
+    }
 
-        // No inner reader left AND no data in buffer - this is true EOF
-        // Only return EOF if we've actually exhausted all data sources
+    /// Consume the compressor and return the wrapped writer.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn into_inner(self) -> W { self.inner }
+
+    fn build_frame(
+        method: CompressionMethod,
+        in_buf: &mut Vec<u8>,
+        out_buf: &mut Vec<u8>,
+        out_pos: &mut usize,
+    ) -> Result<()> {
+        if in_buf.is_empty() {
+            return Ok(());
+        }
+        let decompressed_size = in_buf.len();
+        // Compress
+        let mut compressed = match method {
+            CompressionMethod::LZ4 => lz4_flex::compress(in_buf),
+            CompressionMethod::ZSTD => zstd::bulk::compress(in_buf, 1)
+                .map_err(|e| Error::SerializeError(format!("ZSTD compress error: {e}")))?,
+            CompressionMethod::None => {
+                // Should not be used with None (caller decides), but handle gracefully
+                out_buf.clear();
+                *out_pos = 0;
+                in_buf.clear();
+                return Ok(());
+            }
+        };
+
+        let type_byte = method.byte();
+        let compressed_size_with_header =
+            (compressed.len() as u32) + COMPRESSED_FRAME_HEADER_BYTES as u32;
+        let decompressed_u32 = decompressed_size as u32;
+
+        // Compose header+payload for checksum
+        out_buf.clear();
+        *out_pos = 0;
+        out_buf.reserve(16 + COMPRESSED_FRAME_HEADER_BYTES + compressed.len());
+        out_buf.resize(16, 0); // checksum placeholder
+        out_buf.push(type_byte);
+        out_buf.extend_from_slice(&compressed_size_with_header.to_le_bytes());
+        out_buf.extend_from_slice(&decompressed_u32.to_le_bytes());
+        out_buf.append(&mut compressed);
+
+        let checksum = cityhash_rs::cityhash_102_128(&out_buf[16..]);
+        let hi = (checksum >> 64) as u64;
+        let lo = checksum as u64;
+
+        out_buf[..8].copy_from_slice(&hi.to_le_bytes());
+        out_buf[8..16].copy_from_slice(&lo.to_le_bytes());
+
+        in_buf.clear();
+        Ok(())
+    }
+
+    fn poll_drain_out_buf(
+        mut inner: Pin<&mut W>,
+        out_buf: &mut Vec<u8>,
+        out_pos: &mut usize,
+        cx: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        while *out_pos < out_buf.len() {
+            let start = *out_pos;
+            let remaining = &out_buf[start..];
+            match inner.as_mut().poll_write(cx, remaining) {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        ErrorKind::WriteZero,
+                        "write zero",
+                    )));
+                }
+                Poll::Ready(Ok(nw)) => {
+                    *out_pos += nw;
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
         Poll::Ready(Ok(()))
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for StreamingCompressor<W> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let mut this = self.project();
+        match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+        let max_uncompressed_chunk = *this.max_uncompressed_chunk;
+        let remaining = max_uncompressed_chunk - this.in_buf.len();
+        let take = remaining.min(buf.len());
+        if take > 0 {
+            this.in_buf.extend_from_slice(&buf[..take]);
+        }
+        if this.in_buf.len() >= max_uncompressed_chunk {
+            let method = *this.method;
+            if let Err(e) = Self::build_frame(method, this.in_buf, this.out_buf, this.out_pos) {
+                return Poll::Ready(Err(std::io::Error::new(ErrorKind::Other, e.to_string())));
+            }
+            match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+            this.out_buf.clear();
+            *this.out_pos = 0;
+        }
+        Poll::Ready(Ok(take))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let mut this = self.project();
+        match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+        if !this.in_buf.is_empty() {
+            let method = *this.method;
+            if let Err(e) = Self::build_frame(method, this.in_buf, this.out_buf, this.out_pos) {
+                return Poll::Ready(Err(std::io::Error::new(ErrorKind::Other, e.to_string())));
+            }
+            match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+            this.out_buf.clear();
+            *this.out_pos = 0;
+        }
+        this.inner.poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        ready!(self.as_mut().poll_flush(cx))?;
+        let this = self.project();
+        this.inner.poll_shutdown(cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_write_compressed_data_lz4() {
-        let data = b"test data for compression".to_vec();
-        let mut buffer = Vec::new();
-
-        compress_data(&mut buffer, data.clone(), CompressionMethod::LZ4).await.unwrap();
-        assert!(!buffer.is_empty());
-        assert!(buffer.len() >= 25); // 16 checksum + 9 header + payload
-
-        // Verify we can decompress it back
-        let mut reader = Cursor::new(buffer);
-        let decompressed =
-            decompress_data_async(&mut reader, CompressionMethod::LZ4).await.unwrap();
-        assert_eq!(decompressed, data);
+    #[derive(Default)]
+    struct CollectingWriter {
+        data: Vec<u8>,
     }
 
-    #[tokio::test]
-    async fn test_write_compressed_data_zstd() {
-        let data = b"test data for ZSTD compression".to_vec();
-        let mut buffer = Vec::new();
-
-        compress_data(&mut buffer, data.clone(), CompressionMethod::ZSTD).await.unwrap();
-        assert!(!buffer.is_empty());
-        assert!(buffer.len() >= 25); // 16 checksum + 9 header + payload
-
-        // Verify we can decompress it back
-        let mut reader = Cursor::new(buffer);
-        let decompressed =
-            decompress_data_async(&mut reader, CompressionMethod::ZSTD).await.unwrap();
-        assert_eq!(decompressed, data);
+    impl CollectingWriter {
+        fn into_inner(self) -> Vec<u8> { self.data }
     }
 
-    #[tokio::test]
-    async fn test_write_compressed_data_none() {
-        let data = b"test data no compression".to_vec();
-        let mut buffer = Vec::new();
+    impl AsyncWrite for CollectingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.data.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
 
-        compress_data(&mut buffer, data.clone(), CompressionMethod::None).await.unwrap();
-        assert!(buffer.is_empty());
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
 
-        // For None compression, the data should be in the same chunk format
-        let mut reader = Cursor::new(buffer);
-        let decompressed = decompress_data_async(&mut reader, CompressionMethod::None).await;
-        assert!(decompressed.is_err());
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    async fn compress_with_streaming(
+        data: &[u8],
+        method: CompressionMethod,
+        chunk_size: usize,
+    ) -> Vec<u8> {
+        let writer = CollectingWriter::default();
+        let mut compressor = StreamingCompressor::new(writer, method, chunk_size);
+        compressor.write_all(data).await.unwrap();
+        compressor.shutdown().await.unwrap();
+        compressor.into_inner().into_inner()
     }
 
     #[tokio::test]
     async fn test_decompress_data_lz4() {
         let data = b"test data for LZ4 decompression".to_vec();
+        let compressed =
+            compress_with_streaming(&data, CompressionMethod::LZ4, data.len() + 16).await;
 
-        // First compress the data
-        let mut buffer = Vec::new();
-        compress_data(&mut buffer, data.clone(), CompressionMethod::LZ4).await.unwrap();
+        let mut reader = Cursor::new(compressed);
+        let mut decompressor =
+            StreamingDecompressor::new(CompressionMethod::LZ4, &mut reader).await.unwrap();
+        let mut decompressed = Vec::new();
+        let _ = decompressor.read_to_end(&mut decompressed).await.unwrap();
 
-        // Then decompress it
-        let mut reader = Cursor::new(buffer);
-        let decompressed =
-            decompress_data_async(&mut reader, CompressionMethod::LZ4).await.unwrap();
         assert_eq!(decompressed, data);
     }
 
     #[tokio::test]
     async fn test_decompress_data_zstd() {
         let data = b"test data for ZSTD decompression".to_vec();
+        let compressed =
+            compress_with_streaming(&data, CompressionMethod::ZSTD, data.len() + 16).await;
 
-        // First compress the data
-        let mut buffer = Vec::new();
-        compress_data(&mut buffer, data.clone(), CompressionMethod::ZSTD).await.unwrap();
+        let mut reader = Cursor::new(compressed);
+        let mut decompressor =
+            StreamingDecompressor::new(CompressionMethod::ZSTD, &mut reader).await.unwrap();
+        let mut decompressed = Vec::new();
+        let _ = decompressor.read_to_end(&mut decompressed).await.unwrap();
 
-        // Then decompress it
-        let mut reader = Cursor::new(buffer);
-        let decompressed =
-            decompress_data_async(&mut reader, CompressionMethod::ZSTD).await.unwrap();
         assert_eq!(decompressed, data);
     }
 
     #[tokio::test]
-    async fn test_decompression_reader_single_chunk() {
+    async fn test_decompress_data_none_errors() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let result = StreamingDecompressor::new(CompressionMethod::None, &mut reader).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_decompressor_single_chunk() {
         let data = b"test data for single chunk reading".to_vec();
-        let expected_len = data.len();
+        let compressed =
+            compress_with_streaming(&data, CompressionMethod::LZ4, data.len() + 16).await;
 
-        // Prepare compressed data
-        let mut buffer = Vec::new();
-        compress_data(&mut buffer, data.clone(), CompressionMethod::LZ4).await.unwrap();
+        let mut reader = Cursor::new(compressed);
+        let mut decompressor =
+            StreamingDecompressor::new(CompressionMethod::LZ4, &mut reader).await.unwrap();
 
-        // Create decompression reader
-        let mut reader = Cursor::new(buffer);
-        let mut decompression_reader =
-            DecompressionReader::new(CompressionMethod::LZ4, &mut reader).await.unwrap();
-
-        // Read exactly the amount of data we expect (like real ClickHouse usage)
-        let mut result = vec![0u8; expected_len];
-        let _ = decompression_reader.read_exact(&mut result).await.unwrap();
+        let mut result = vec![0u8; data.len()];
+        let _ = decompressor.read_exact(&mut result).await.unwrap();
 
         assert_eq!(result, data);
     }
 
     #[tokio::test]
-    async fn test_round_trip_compression() {
-        let original_data = b"This is a longer piece of test data that should compress well with both LZ4 and ZSTD algorithms".to_vec();
+    async fn test_streaming_decompressor_multiple_chunks() {
+        let data = (0..200_000).map(|idx| (idx % 251) as u8).collect::<Vec<_>>();
+        let compressed = compress_with_streaming(&data, CompressionMethod::LZ4, 8 * 1024).await;
 
-        for compression in [CompressionMethod::LZ4, CompressionMethod::ZSTD] {
-            // Compress
-            let mut compressed_buffer = Vec::new();
-            compress_data(&mut compressed_buffer, original_data.clone(), compression)
-                .await
-                .unwrap();
+        let mut reader = Cursor::new(compressed);
+        let mut decompressor =
+            StreamingDecompressor::new(CompressionMethod::LZ4, &mut reader).await.unwrap();
 
-            // Decompress
-            let mut reader = Cursor::new(compressed_buffer);
-            let decompressed = decompress_data_async(&mut reader, compression).await.unwrap();
+        let mut output = Vec::new();
+        let _ = decompressor.read_to_end(&mut output).await.unwrap();
 
-            assert_eq!(decompressed, original_data, "Round trip failed for {compression:?}");
+        assert_eq!(output, data);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_compressor_emits_data_on_flush() {
+        let data = b"flush me".repeat(10);
+        let writer = CollectingWriter::default();
+        let mut compressor = StreamingCompressor::new(writer, CompressionMethod::LZ4, 64 * 1024);
+
+        compressor.write_all(&data).await.unwrap();
+        compressor.flush().await.unwrap();
+        let compressed = compressor.into_inner().into_inner();
+
+        assert!(!compressed.is_empty());
+
+        let mut reader = Cursor::new(compressed);
+        let mut decompressor =
+            StreamingDecompressor::new(CompressionMethod::LZ4, &mut reader).await.unwrap();
+        let mut decompressed = Vec::new();
+        let _ = decompressor.read_to_end(&mut decompressed).await.unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_compressor_round_trip() {
+        let payload = b"This is a longer piece of test data that should compress well with both LZ4 and ZSTD algorithms"
+            .repeat(4);
+
+        for method in [CompressionMethod::LZ4, CompressionMethod::ZSTD] {
+            let compressed = compress_with_streaming(&payload, method, 16 * 1024).await;
+
+            let mut reader = Cursor::new(compressed);
+            let mut decompressor = StreamingDecompressor::new(method, &mut reader).await.unwrap();
+            let mut round_trip = Vec::new();
+            let _ = decompressor.read_to_end(&mut round_trip).await.unwrap();
+
+            assert_eq!(round_trip, payload, "round trip failed for {method:?}");
         }
     }
 
     #[tokio::test]
     async fn test_checksum_validation() {
         let data = b"test data for checksum validation".to_vec();
+        let mut compressed =
+            compress_with_streaming(&data, CompressionMethod::LZ4, data.len() + 16).await;
 
-        // Create properly compressed data
-        let mut buffer = Vec::new();
-        compress_data(&mut buffer, data.clone(), CompressionMethod::LZ4).await.unwrap();
+        // Corrupt the checksum (first byte of the high u64)
+        compressed[0] ^= 0xFF;
 
-        // Corrupt the checksum (first 8 bytes)
-        buffer[0] ^= 0xFF;
+        let mut reader = Cursor::new(compressed);
+        let result = StreamingDecompressor::new(CompressionMethod::LZ4, &mut reader).await;
 
-        // Decompression should fail due to checksum mismatch
-        let mut reader = Cursor::new(buffer);
-        let result = decompress_data_async(&mut reader, CompressionMethod::LZ4).await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Checksum mismatch"));
+        let err = result.err().expect("expected checksum mismatch error");
+        assert!(err.to_string().contains("Checksum mismatch"));
     }
 }

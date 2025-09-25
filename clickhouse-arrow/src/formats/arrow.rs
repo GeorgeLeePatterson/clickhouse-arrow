@@ -1,12 +1,13 @@
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
-use bytes::BytesMut;
+use tokio::io::AsyncWriteExt as _;
 
+// use bytes::BytesMut;
 use super::DeserializerState;
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
 use crate::arrow::ArrowDeserializerState;
-use crate::compression::{compress_data_sync, decompress_data_async};
+use crate::compression::{StreamingCompressor, StreamingDecompressor};
 use crate::connection::ClientMetadata;
 use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::native::protocol::CompressionMethod;
@@ -50,13 +51,20 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
                 .await
                 .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
         } else {
-            let mut raw = BytesMut::with_capacity(batch.get_array_memory_size());
+            // Stream-compress Arrow blocks during async serialization (avoid buffering entire
+            // batch)
+            let mut sc = StreamingCompressor::new(
+                writer,
+                metadata.compression,
+                1 << 20, // 1 MiB chunks (consider exposing via ClientOptions)
+            );
             batch
-                .write(&mut raw, revision, header, metadata.arrow_options)
-                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
-            compress_data_sync(writer, raw.freeze(), metadata.compression)
+                .write_async(&mut sc, revision, header, metadata.arrow_options)
+                .instrument(trace_span!("serialize_block_streaming"))
                 .await
-                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "compressing"))?;
+                .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "serialize"))?;
+            // Flush frames but do not shutdown the underlying socket
+            drop(sc.flush().await);
         }
 
         Ok(())
@@ -72,10 +80,9 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
         if let CompressionMethod::None = metadata.compression {
             RecordBatch::read_async(reader, revision, arrow_options, state).await
         } else {
-            let mut buffer =
-                BytesMut::from_iter(decompress_data_async(reader, metadata.compression).await?);
-            // TODO: Spawn onto an executor "state.executor"
-            RecordBatch::read(&mut buffer, revision, arrow_options, state)
+            // Stream-decompress compressed Arrow blocks and read via async path
+            let mut decompressor = StreamingDecompressor::new(metadata.compression, reader).await?;
+            RecordBatch::read_async(&mut decompressor, revision, arrow_options, state).await
         }
         .inspect_err(|error| error!(?error, "deserializing arrow record batch"))
         .map(RecordBatch::into_option)
