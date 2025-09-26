@@ -8,9 +8,8 @@ pub(crate) mod sized;
 pub(crate) mod string;
 pub(crate) mod tuple;
 
-use super::low_cardinality::LOW_CARDINALITY_VERSION;
 use super::*;
-use crate::io::ClickHouseBytesRead;
+use crate::io::ClickHouseRead;
 
 // Core protocol parsing
 pub(crate) trait ClickHouseNativeDeserializer {
@@ -19,8 +18,6 @@ pub(crate) trait ClickHouseNativeDeserializer {
         reader: &'a mut R,
         state: &'a mut DeserializerState,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn deserialize_prefix<R: ClickHouseBytesRead>(&self, reader: &mut R) -> Result<()>;
 }
 
 impl ClickHouseNativeDeserializer for Type {
@@ -96,39 +93,6 @@ impl ClickHouseNativeDeserializer for Type {
             Ok(())
         }
         .boxed()
-    }
-
-    fn deserialize_prefix<R: ClickHouseBytesRead>(&self, reader: &mut R) -> Result<()> {
-        match self {
-            Type::Array(inner) | Type::Nullable(inner) => inner.deserialize_prefix(reader)?,
-            Type::Point => {
-                for _ in 0..2 {
-                    Type::Float64.deserialize_prefix(reader)?;
-                }
-            }
-            Type::LowCardinality(_) => {
-                let version = reader.try_get_u64_le()?;
-                if version != LOW_CARDINALITY_VERSION {
-                    return Err(Error::DeserializeError(format!(
-                        "LowCardinality: invalid low cardinality version: {version}"
-                    )));
-                }
-            }
-            Type::Map(key, value) => {
-                let nested = super::map::normalize_map_type(key, value);
-                nested.deserialize_prefix(reader)?;
-            }
-            Type::Tuple(inner) => {
-                for inner_type in inner {
-                    inner_type.deserialize_prefix(reader)?;
-                }
-            }
-            Type::Object => {
-                let _ = reader.try_get_i8()?;
-            }
-            _ => {}
-        }
-        Ok(())
     }
 }
 

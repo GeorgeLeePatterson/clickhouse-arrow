@@ -20,7 +20,7 @@ use super::values::{
     u256,
 };
 use crate::formats::{DeserializerState, SerializerState};
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::{Date32, Error, Result};
 
 /// A raw `ClickHouse` type.
@@ -363,70 +363,6 @@ impl Type {
         .boxed()
     }
 
-    pub(crate) fn deserialize_column_sync(
-        &self,
-        reader: &mut impl ClickHouseBytesRead,
-        rows: usize,
-        state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        use deserialize::*;
-
-        if rows > MAX_STRING_SIZE {
-            return Err(Error::Protocol(format!(
-                "deserialize response size too large. {rows} > {MAX_STRING_SIZE}"
-            )));
-        }
-
-        Ok(match self {
-            Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::Int64
-            | Type::Int128
-            | Type::Int256
-            | Type::UInt8
-            | Type::UInt16
-            | Type::UInt32
-            | Type::UInt64
-            | Type::UInt128
-            | Type::UInt256
-            | Type::Float32
-            | Type::Float64
-            | Type::Decimal32(_)
-            | Type::Decimal64(_)
-            | Type::Decimal128(_)
-            | Type::Decimal256(_)
-            | Type::Uuid
-            | Type::Date
-            | Type::Date32
-            | Type::DateTime(_)
-            | Type::DateTime64(_, _)
-            | Type::Ipv4
-            | Type::Ipv6
-            | Type::Enum8(_)
-            | Type::Enum16(_) => sized::SizedDeserializer::read_sync(self, reader, rows, state)?,
-            Type::String | Type::FixedSizedString(_) | Type::Binary | Type::FixedSizedBinary(_) => {
-                string::StringDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Array(_) => array::ArrayDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Ring => geo::RingDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Polygon => geo::PolygonDeserializer::read_sync(self, reader, rows, state)?,
-            Type::MultiPolygon => {
-                geo::MultiPolygonDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Tuple(_) => tuple::TupleDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Point => geo::PointDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Nullable(_) => {
-                nullable::NullableDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Map(_, _) => map::MapDeserializer::read_sync(self, reader, rows, state)?,
-            Type::LowCardinality(_) => {
-                low_cardinality::LowCardinalityDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Object => object::ObjectDeserializer::read_sync(self, reader, rows, state)?,
-        })
-    }
-
     pub(crate) fn serialize_column<'a, W: ClickHouseWrite>(
         &'a self,
         values: Vec<Value>,
@@ -500,74 +436,6 @@ impl Type {
             Ok(())
         }
         .boxed()
-    }
-
-    pub(crate) fn serialize_column_sync(
-        &self,
-        values: Vec<Value>,
-        writer: &mut impl ClickHouseBytesWrite,
-        state: &mut SerializerState,
-    ) -> Result<()> {
-        use serialize::*;
-        match self {
-            Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::Int64
-            | Type::Int128
-            | Type::Int256
-            | Type::UInt8
-            | Type::UInt16
-            | Type::UInt32
-            | Type::UInt64
-            | Type::UInt128
-            | Type::UInt256
-            | Type::Float32
-            | Type::Float64
-            | Type::Decimal32(_)
-            | Type::Decimal64(_)
-            | Type::Decimal128(_)
-            | Type::Decimal256(_)
-            | Type::Uuid
-            | Type::Date
-            | Type::Date32
-            | Type::DateTime(_)
-            | Type::DateTime64(_, _)
-            | Type::Ipv4
-            | Type::Ipv6
-            | Type::Enum8(_)
-            | Type::Enum16(_) => {
-                sized::SizedSerializer::write_sync(self, values, writer, state)?;
-            }
-
-            Type::String | Type::FixedSizedString(_) | Type::Binary | Type::FixedSizedBinary(_) => {
-                string::StringSerializer::write_sync(self, values, writer, state)?;
-            }
-
-            Type::Array(_) => {
-                array::ArraySerializer::write_sync(self, values, writer, state)?;
-            }
-            Type::Tuple(_) => {
-                tuple::TupleSerializer::write_sync(self, values, writer, state)?;
-            }
-            Type::Point => geo::PointSerializer::write_sync(self, values, writer, state)?,
-            Type::Ring => geo::RingSerializer::write_sync(self, values, writer, state)?,
-            Type::Polygon => geo::PolygonSerializer::write_sync(self, values, writer, state)?,
-            Type::MultiPolygon => {
-                geo::MultiPolygonSerializer::write_sync(self, values, writer, state)?;
-            }
-            Type::Nullable(_) => {
-                nullable::NullableSerializer::write_sync(self, values, writer, state)?;
-            }
-            Type::Map(_, _) => map::MapSerializer::write_sync(self, values, writer, state)?,
-            Type::LowCardinality(_) => {
-                low_cardinality::LowCardinalitySerializer::write_sync(self, values, writer, state)?;
-            }
-            Type::Object => {
-                object::ObjectSerializer::write_sync(self, values, writer, state)?;
-            }
-        }
-        Ok(())
     }
 
     #[expect(clippy::too_many_lines)]
@@ -855,48 +723,6 @@ impl Type {
         }
         Ok(())
     }
-
-    pub(crate) fn put_default<W: ClickHouseBytesWrite>(&self, writer: &mut W) -> Result<()> {
-        match self.strip_null() {
-            Type::String | Type::Binary => {
-                writer.put_string("")?;
-            }
-            Type::FixedSizedString(n) | Type::FixedSizedBinary(n) => {
-                writer.put_slice(&vec![0u8; *n]);
-            }
-            Type::Int8 | Type::Enum8(_) => writer.put_i8(0),
-            Type::Int16 => writer.put_i16_le(0),
-            Type::Int32 | Type::Date32 | Type::Decimal32(_) => writer.put_i32_le(0),
-            Type::Int64 | Type::Decimal64(_) => writer.put_i64_le(0),
-            Type::Int128 | Type::UInt128 | Type::Uuid | Type::Ipv6 | Type::Decimal128(_) => {
-                writer.put_slice(&[0; 16]);
-            }
-            Type::Int256 | Type::UInt256 | Type::Decimal256(_) => writer.put_slice(&[0; 32]),
-            Type::UInt8 => writer.put_u8(0),
-            Type::UInt16 | Type::Date => writer.put_u16_le(0),
-            Type::UInt32 | Type::Ipv4 | Type::DateTime(_) => writer.put_u32_le(0),
-            Type::UInt64 => writer.put_u64_le(0),
-            Type::Float32 => writer.put_f32_le(0.0),
-            Type::Float64 => writer.put_f64_le(0.0),
-            Type::DateTime64(precision, _) => {
-                let bytes = (0_i64).to_le_bytes();
-                writer.put_slice(&bytes[..*precision]);
-            }
-            Type::Array(_) | Type::Map(_, _) => writer.put_var_uint(0)?, // Empty array/map
-            Type::Enum16(_) => writer.put_i16(0),
-            // Recursive
-            Type::LowCardinality(inner) => inner.put_default(writer)?,
-            Type::Tuple(inner) => {
-                for t in inner {
-                    t.put_default(writer)?;
-                }
-            }
-            _ => {
-                return Err(Error::SerializeError(format!("No default value for type: {self:?}")));
-            }
-        }
-        Ok(())
-    }
 }
 
 pub(crate) trait Deserializer {
@@ -924,13 +750,6 @@ pub(crate) trait Deserializer {
         rows: usize,
         state: &mut DeserializerState,
     ) -> impl Future<Output = Result<Vec<Value>>>;
-
-    fn read_sync(
-        type_: &Type,
-        reader: &mut impl ClickHouseBytesRead,
-        rows: usize,
-        state: &mut DeserializerState,
-    ) -> Result<Vec<Value>>;
 }
 
 pub(crate) trait Serializer {
@@ -948,11 +767,4 @@ pub(crate) trait Serializer {
         writer: &mut W,
         state: &mut SerializerState,
     ) -> impl Future<Output = Result<()>>;
-
-    fn write_sync(
-        type_: &Type,
-        values: Vec<Value>,
-        writer: &mut impl ClickHouseBytesWrite,
-        state: &mut SerializerState,
-    ) -> Result<()>;
 }

@@ -1,6 +1,6 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::{Error, Result};
 
 /// Metadata about a block
@@ -43,37 +43,6 @@ impl BlockInfo {
         writer.write_var_uint(2).await?; // Bucket num
         writer.write_i32_le(self.bucket_num).await?; // Bucket num
         writer.write_var_uint(0).await?; // End field
-        Ok(())
-    }
-
-    pub(crate) fn read<R: ClickHouseBytesRead>(reader: &mut R) -> Result<Self> {
-        let mut new = Self::default();
-        loop {
-            let field_num = reader.try_get_var_uint()?;
-            match field_num {
-                0 => break,
-                1 => {
-                    new.is_overflows = reader.try_get_u8()? != 0;
-                }
-                2 => {
-                    new.bucket_num = reader.try_get_i32_le()?;
-                }
-                field_num => {
-                    return Err(Error::Protocol(format!(
-                        "unknown block info field number: {field_num}"
-                    )));
-                }
-            }
-        }
-        Ok(new)
-    }
-
-    pub(crate) fn write<W: ClickHouseBytesWrite>(self, writer: &mut W) -> Result<()> {
-        writer.put_var_uint(1)?; // Block info version
-        writer.put_u8(if self.is_overflows { 1 } else { 2 }); // Is overflows
-        writer.put_var_uint(2)?; // Bucket num
-        writer.put_i32_le(self.bucket_num); // Bucket num
-        writer.put_var_uint(0)?; // End field
         Ok(())
     }
 }

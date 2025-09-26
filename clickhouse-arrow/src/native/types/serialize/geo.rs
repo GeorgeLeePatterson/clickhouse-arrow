@@ -1,5 +1,5 @@
 use super::{ClickHouseNativeSerializer, Serializer, SerializerState, Type};
-use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
+use crate::io::ClickHouseWrite;
 use crate::{Result, Value};
 
 pub(crate) struct PointSerializer;
@@ -31,25 +31,6 @@ impl Serializer for PointSerializer {
         }
         for column in columns {
             Type::Float64.serialize_column(column, writer, state).await?;
-        }
-        Ok(())
-    }
-
-    fn write_sync(
-        _type_: &Type,
-        values: Vec<Value>,
-        writer: &mut impl ClickHouseBytesWrite,
-        state: &mut SerializerState,
-    ) -> Result<()> {
-        let mut columns = (0..2).map(|_| Vec::with_capacity(values.len())).collect::<Vec<_>>();
-        for value in values {
-            let Value::Point(point) = value else { unreachable!() };
-            for (i, col) in columns.iter_mut().enumerate() {
-                col.push(Value::Float64(point.0[i]));
-            }
-        }
-        for column in columns {
-            Type::Float64.serialize_column_sync(column, writer, state)?;
         }
         Ok(())
     }
