@@ -11,7 +11,7 @@
 /// # `ClickHouse` Reference
 /// See the [ClickHouse Native Protocol Documentation](https://clickhouse.com/docs/en/interfaces/tcp)
 /// for details on compression in the native protocol.
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::future::Future;
 use std::io::ErrorKind;
 use std::pin::Pin;
@@ -132,7 +132,10 @@ impl<'a, R: ClickHouseRead> StreamingDecompressor<'a, R> {
         let compressed_size = u32::from_le_bytes(header[1..5].try_into().unwrap());
         let decompressed_size = u32::from_le_bytes(header[5..9].try_into().unwrap());
 
-        if compressed_size < COMPRESSED_FRAME_HEADER_BYTES as u32 {
+        let header_len_u32 =
+            u32::try_from(COMPRESSED_FRAME_HEADER_BYTES).expect("frame header fits in u32");
+
+        if compressed_size < header_len_u32 {
             return Err(Error::Protocol(format!("Compressed block too small: {compressed_size}")));
         }
 
@@ -140,7 +143,8 @@ impl<'a, R: ClickHouseRead> StreamingDecompressor<'a, R> {
             return Err(Error::Protocol("Chunk size too large".to_string()));
         }
 
-        let payload_len = (compressed_size as usize) - COMPRESSED_FRAME_HEADER_BYTES;
+        let payload_len = usize::try_from(compressed_size).expect("compressed size exceeds usize")
+            - COMPRESSED_FRAME_HEADER_BYTES;
         let mut payload = vec![0u8; payload_len];
         let _ = inner
             .read_exact(&mut payload)
@@ -187,12 +191,11 @@ impl<'a, R: ClickHouseRead> StreamingDecompressor<'a, R> {
         })?;
 
         let mut inner_opt = Some(inner);
-        let decompressed = match chunk {
-            Some(data) => data,
-            None => {
-                inner_opt = None;
-                Vec::new()
-            }
+        let decompressed = if let Some(data) = chunk {
+            data
+        } else {
+            inner_opt = None;
+            Vec::new()
         };
 
         Ok(Self { mode, inner: inner_opt, decompressed, position: 0, block_reading_future: None })
@@ -256,9 +259,9 @@ impl<R: ClickHouseRead> AsyncRead for StreamingDecompressor<'_, R> {
     }
 }
 
-/// Async writer that frames and compresses data into ClickHouse compression chunks.
+/// Async writer that frames and compresses data into `ClickHouse` compression chunks.
 /// Each chunk is written as:
-/// [16 bytes checksum][1 byte type][4 bytes compressed_size_with_header][4 bytes
+/// [16 bytes checksum][1 byte type][4 bytes `compressed_size_with_header`][4 bytes
 /// decompressed_size][payload]
 #[pin_project]
 pub(crate) struct StreamingCompressor<W: AsyncWrite + Unpin> {
@@ -312,9 +315,15 @@ impl<W: AsyncWrite + Unpin> StreamingCompressor<W> {
         };
 
         let type_byte = method.byte();
-        let compressed_size_with_header =
-            (compressed.len() as u32) + COMPRESSED_FRAME_HEADER_BYTES as u32;
-        let decompressed_u32 = decompressed_size as u32;
+        let header_len_u32 =
+            u32::try_from(COMPRESSED_FRAME_HEADER_BYTES).expect("frame header fits in u32");
+        let compressed_len = u32::try_from(compressed.len()).map_err(|_| {
+            Error::SerializeError("Compressed block larger than u32::MAX".to_string())
+        })?;
+        let compressed_size_with_header = compressed_len + header_len_u32;
+        let decompressed_u32 = u32::try_from(decompressed_size).map_err(|_| {
+            Error::SerializeError("Decompressed block larger than u32::MAX".to_string())
+        })?;
 
         // Compose header+payload for checksum
         out_buf.clear();
@@ -327,8 +336,8 @@ impl<W: AsyncWrite + Unpin> StreamingCompressor<W> {
         out_buf.append(&mut compressed);
 
         let checksum = cityhash_rs::cityhash_102_128(&out_buf[16..]);
-        let hi = (checksum >> 64) as u64;
-        let lo = checksum as u64;
+        let hi = u64::try_from(checksum >> 64).expect("shifted checksum fits in u64");
+        let lo = u64::try_from(checksum & u128::from(u64::MAX)).expect("checksum fits in u64");
 
         out_buf[..8].copy_from_slice(&hi.to_le_bytes());
         out_buf[8..16].copy_from_slice(&lo.to_le_bytes());
@@ -339,7 +348,7 @@ impl<W: AsyncWrite + Unpin> StreamingCompressor<W> {
 
     fn poll_drain_out_buf(
         mut inner: Pin<&mut W>,
-        out_buf: &mut Vec<u8>,
+        out_buf: &[u8],
         out_pos: &mut usize,
         cx: &mut Context<'_>,
     ) -> Poll<std::io::Result<()>> {
@@ -371,7 +380,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for StreamingCompressor<W> {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         let mut this = self.project();
-        match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+        match Self::poll_drain_out_buf(this.inner.as_mut(), &this.out_buf[..], this.out_pos, cx) {
             Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
@@ -385,9 +394,10 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for StreamingCompressor<W> {
         if this.in_buf.len() >= max_uncompressed_chunk {
             let method = *this.method;
             if let Err(e) = Self::build_frame(method, this.in_buf, this.out_buf, this.out_pos) {
-                return Poll::Ready(Err(std::io::Error::new(ErrorKind::Other, e.to_string())));
+                return Poll::Ready(Err(std::io::Error::other(e.to_string())));
             }
-            match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+            match Self::poll_drain_out_buf(this.inner.as_mut(), &this.out_buf[..], this.out_pos, cx)
+            {
                 Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
@@ -400,7 +410,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for StreamingCompressor<W> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let mut this = self.project();
-        match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+        match Self::poll_drain_out_buf(this.inner.as_mut(), &this.out_buf[..], this.out_pos, cx) {
             Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
@@ -408,9 +418,10 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for StreamingCompressor<W> {
         if !this.in_buf.is_empty() {
             let method = *this.method;
             if let Err(e) = Self::build_frame(method, this.in_buf, this.out_buf, this.out_pos) {
-                return Poll::Ready(Err(std::io::Error::new(ErrorKind::Other, e.to_string())));
+                return Poll::Ready(Err(std::io::Error::other(e.to_string())));
             }
-            match Self::poll_drain_out_buf(this.inner.as_mut(), this.out_buf, this.out_pos, cx) {
+            match Self::poll_drain_out_buf(this.inner.as_mut(), &this.out_buf[..], this.out_pos, cx)
+            {
                 Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,

@@ -3,7 +3,7 @@
 //! `clickhouse-arrow` uses the `tracing` crate to emit spans and events for debugging and
 //! monitoring. To enable tracing, add a subscriber in your application:
 //!
-//! ```rust
+//! ```ignore
 //! use tracing_subscriber;
 //!
 //! tracing_subscriber::fmt()

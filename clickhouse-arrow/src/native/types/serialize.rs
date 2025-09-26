@@ -8,9 +8,8 @@ pub(crate) mod sized;
 pub(crate) mod string;
 pub(crate) mod tuple;
 
-use super::low_cardinality::LOW_CARDINALITY_VERSION;
 use super::*;
-use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
+use crate::io::ClickHouseWrite;
 
 pub(crate) trait ClickHouseNativeSerializer {
     fn serialize_prefix_async<'a, W: ClickHouseWrite>(
@@ -18,12 +17,6 @@ pub(crate) trait ClickHouseNativeSerializer {
         writer: &'a mut W,
         state: &'a mut SerializerState,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
-
-    fn serialize_prefix<W: ClickHouseBytesWrite>(
-        &self,
-        writer: &mut W,
-        _state: &mut SerializerState,
-    );
 }
 
 impl ClickHouseNativeSerializer for Type {
@@ -93,38 +86,5 @@ impl ClickHouseNativeSerializer for Type {
             Ok(())
         }
         .boxed()
-    }
-
-    fn serialize_prefix<W: ClickHouseBytesWrite>(
-        &self,
-        writer: &mut W,
-        state: &mut SerializerState,
-    ) {
-        let type_ = match self {
-            Type::Nullable(inner) | Type::Array(inner) => inner,
-            Type::Map(key, value) => &super::map::normalize_map_type(key, value),
-            Type::Tuple(inner) => {
-                for item in inner {
-                    item.serialize_prefix(writer, state);
-                }
-                return;
-            }
-            Type::Point => {
-                for _ in 0..2 {
-                    Type::Float64.serialize_prefix(writer, state);
-                }
-                return;
-            }
-            Type::LowCardinality(_) => {
-                writer.put_u64_le(LOW_CARDINALITY_VERSION);
-                return;
-            }
-            Type::Object => {
-                writer.put_i8(1);
-                return;
-            }
-            _ => return,
-        };
-        type_.serialize_prefix(writer, state);
     }
 }

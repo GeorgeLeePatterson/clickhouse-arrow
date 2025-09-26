@@ -10,7 +10,7 @@ use tokio::io::AsyncReadExt;
 
 use super::ClickHouseArrowDeserializer;
 use crate::arrow::builder::TypedBuilder;
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Nullable` type into an Arrow array.
@@ -82,28 +82,6 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
         vec![]
     };
     inner.deserialize_arrow_async(builder, reader, data_type, rows, &nulls, rbuffer).await
-}
-
-pub(crate) fn deserialize<R: ClickHouseBytesRead>(
-    inner: &Type,
-    builder: &mut TypedBuilder,
-    reader: &mut R,
-    data_type: &DataType,
-    rows: usize,
-    rbuffer: &mut Vec<u8>,
-) -> Result<ArrayRef> {
-    let nulls = if rows > 0 {
-        let mut mask = vec![0u8; rows];
-        reader.try_copy_to_slice(&mut mask)?;
-        if mask.len() != rows {
-            return Err(Error::DeserializeError(format!("Nulls={}, rows={rows}", mask.len())));
-        }
-        mask
-    } else {
-        vec![]
-    };
-
-    inner.deserialize_arrow(builder, reader, data_type, rows, &nulls, rbuffer)
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@
 //! use arrow::datatypes::Int8Type;
 //! use clickhouse_arrow::types::{Type, enums::deserialize, DeserializerState};
 //! use std::sync::Arc;
-//! use tokio::io::Cursor;
+//! use std::io::Cursor;
 //!
 //! #[tokio::test]
 //! async fn test_enum8() {

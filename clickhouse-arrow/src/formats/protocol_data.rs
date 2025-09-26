@@ -1,5 +1,5 @@
 use super::DeserializerState;
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::{Result, Type};
 
 /// Trait for serializing and deserializing data into `ClickHouse`'s native block format.
@@ -32,16 +32,6 @@ pub(crate) trait ProtocolData<Return, Deser: Default> {
         options: Self::Options,
     ) -> impl Future<Output = Result<()>> + Send;
 
-    fn write<W: ClickHouseBytesWrite>(
-        self,
-        _writer: &mut W,
-        _revision: u64,
-        _header: Option<&[(String, Type)]>,
-        _options: Self::Options,
-    ) -> Result<()>
-    where
-        Self: Sized;
-
     /// Reads a `ClickHouse` native block and constructs the data.
     ///
     /// # Arguments
@@ -59,13 +49,6 @@ pub(crate) trait ProtocolData<Return, Deser: Default> {
         options: Self::Options,
         state: &mut DeserializerState<Deser>,
     ) -> impl Future<Output = Result<Return>> + Send;
-
-    fn read<R: ClickHouseBytesRead + 'static>(
-        _reader: &mut R,
-        _revision: u64,
-        _options: Self::Options,
-        _state: &mut DeserializerState<Deser>,
-    ) -> Result<Return>;
 }
 
 /// Simple trait to determine whether a `Block` of data (whatever impls `ProtocolData`) is empty, ie

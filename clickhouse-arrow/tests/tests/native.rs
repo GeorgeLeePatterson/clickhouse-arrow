@@ -10,7 +10,25 @@ use crate::common::header;
 use crate::common::native_helpers::*;
 
 /// # Panics
-pub async fn test_round_trip(ch: Arc<ClickHouseContainer>) {
+pub async fn test_round_trip_none(ch: Arc<ClickHouseContainer>) {
+    test_round_trip_with_compression(ch, CompressionMethod::None).await;
+}
+
+/// # Panics
+pub async fn test_round_trip_lz4(ch: Arc<ClickHouseContainer>) {
+    test_round_trip_with_compression(ch, CompressionMethod::LZ4).await;
+}
+
+/// # Panics
+pub async fn test_round_trip_zstd(ch: Arc<ClickHouseContainer>) {
+    test_round_trip_with_compression(ch, CompressionMethod::ZSTD).await;
+}
+
+/// # Panics
+async fn test_round_trip_with_compression(
+    ch: Arc<ClickHouseContainer>,
+    compression: CompressionMethod,
+) {
     let native_url = ch.get_native_url();
     debug!("ClickHouse Native URL: {native_url}");
 
@@ -23,7 +41,7 @@ pub async fn test_round_trip(ch: Arc<ClickHouseContainer>) {
         .with_username(&ch.user)
         .with_password(&ch.password)
         .with_ipv4_only(true)
-        .with_compression(CompressionMethod::LZ4)
+        .with_compression(compression)
         .build()
         .await
         .expect("Building client");
