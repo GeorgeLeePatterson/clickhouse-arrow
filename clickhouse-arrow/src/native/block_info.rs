@@ -7,11 +7,13 @@ use crate::{Error, Result};
 #[derive(Debug, Clone, Copy)]
 pub struct BlockInfo {
     pub is_overflows: bool,
-    pub bucket_num:   i32,
+    pub bucket_num: i32,
 }
 
 impl Default for BlockInfo {
-    fn default() -> Self { BlockInfo { is_overflows: false, bucket_num: -1 } }
+    fn default() -> Self {
+        BlockInfo { is_overflows: false, bucket_num: -1 }
+    }
 }
 
 impl BlockInfo {

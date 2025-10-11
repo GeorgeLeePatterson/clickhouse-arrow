@@ -785,22 +785,20 @@ mod tests {
     fn test_utf8_array() {
         let array = StringArray::from(vec![Some("hello"), None, Some("world")]);
         let result = array_to_values(&array, &DataType::Utf8, None).unwrap();
-        assert_eq!(result, vec![
-            Value::String(b"hello".to_vec()),
-            Value::Null,
-            Value::String(b"world".to_vec()),
-        ]);
+        assert_eq!(
+            result,
+            vec![Value::String(b"hello".to_vec()), Value::Null, Value::String(b"world".to_vec()),]
+        );
     }
 
     #[test]
     fn test_binary_array_values() {
         let array = BinaryArray::from(vec![Some(b"abc".as_ref()), None, Some(b"def".as_ref())]);
         let result = array_to_values(&array, &DataType::Binary, None).unwrap();
-        assert_eq!(result, vec![
-            Value::String(b"abc".to_vec()),
-            Value::Null,
-            Value::String(b"def".to_vec()),
-        ]);
+        assert_eq!(
+            result,
+            vec![Value::String(b"abc".to_vec()), Value::Null, Value::String(b"def".to_vec()),]
+        );
     }
 
     #[test]
@@ -838,10 +836,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::Array(vec![Value::Int32(1), Value::Int32(2)]),
-            Value::Array(vec![Value::Int32(3), Value::Int32(4)]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Array(vec![Value::Int32(1), Value::Int32(2)]),
+                Value::Array(vec![Value::Int32(3), Value::Int32(4)]),
+            ]
+        );
     }
 
     #[test]
@@ -862,10 +863,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::Array(vec![Value::Int32(1), Value::Int32(2)]),
-            Value::Array(vec![Value::Int32(3), Value::Int32(4)]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Array(vec![Value::Int32(1), Value::Int32(2)]),
+                Value::Array(vec![Value::Int32(3), Value::Int32(4)]),
+            ]
+        );
     }
 
     #[test]
@@ -902,11 +906,10 @@ mod tests {
             Some(&Type::Enum8(pairs.clone())),
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::Enum8("a".to_string(), 1),
-            Value::Null,
-            Value::Enum8("b".to_string(), 2),
-        ]);
+        assert_eq!(
+            result,
+            vec![Value::Enum8("a".to_string(), 1), Value::Null, Value::Enum8("b".to_string(), 2),]
+        );
     }
 
     #[test]
@@ -923,11 +926,14 @@ mod tests {
             Some(&Type::Enum16(pairs.clone())),
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::Enum16("x".to_string(), 10),
-            Value::Null,
-            Value::Enum16("y".to_string(), 20),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Enum16("x".to_string(), 10),
+                Value::Null,
+                Value::Enum16("y".to_string(), 20),
+            ]
+        );
     }
 
     #[test]
@@ -945,10 +951,13 @@ mod tests {
         )]);
         let fields = Fields::from_iter(vec![outer_field]);
         let result = array_to_values(&outer_struct_array, &DataType::Struct(fields), None).unwrap();
-        assert_eq!(result, vec![
-            Value::Tuple(vec![Value::Tuple(vec![Value::Int32(1)])]),
-            Value::Tuple(vec![Value::Tuple(vec![Value::Int32(2)])]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Tuple(vec![Value::Tuple(vec![Value::Int32(1)])]),
+                Value::Tuple(vec![Value::Tuple(vec![Value::Int32(2)])]),
+            ]
+        );
     }
 
     #[test]
@@ -959,11 +968,14 @@ mod tests {
         let result =
             array_to_values(&array, &DataType::Timestamp(TimeUnit::Second, Some(tz)), None)
                 .unwrap();
-        assert_eq!(result, vec![
-            Value::DateTime(DateTime(Tz::America__New_York, 1_625_097_600)),
-            Value::Null,
-            Value::DateTime(DateTime(Tz::America__New_York, 1_625_184_000)),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::DateTime(DateTime(Tz::America__New_York, 1_625_097_600)),
+                Value::Null,
+                Value::DateTime(DateTime(Tz::America__New_York, 1_625_184_000)),
+            ]
+        );
     }
 
     // Cross-type conversion tests
@@ -995,10 +1007,10 @@ mod tests {
         )
         .unwrap();
         let result = array_to_values(&array, &DataType::FixedSizeBinary(5), None).unwrap();
-        assert_eq!(result, vec![
-            Value::String(b"abcde".to_vec()),
-            Value::String(b"fghij".to_vec()),
-        ]);
+        assert_eq!(
+            result,
+            vec![Value::String(b"abcde".to_vec()), Value::String(b"fghij".to_vec()),]
+        );
     }
 
     #[test]
@@ -1101,29 +1113,38 @@ mod tests {
     fn test_date64_array() {
         let array = Date64Array::from(vec![Some(0), None, Some(1)]);
         let result = array_to_values(&array, &DataType::Date64, None).unwrap();
-        assert_eq!(result, vec![
-            Value::DateTime64(DynDateTime64(Tz::UTC, 0, 3)),
-            Value::Null,
-            Value::DateTime64(DynDateTime64(Tz::UTC, 1, 3)),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::DateTime64(DynDateTime64(Tz::UTC, 0, 3)),
+                Value::Null,
+                Value::DateTime64(DynDateTime64(Tz::UTC, 1, 3)),
+            ]
+        );
 
         // With timezone
         let typ = Type::DateTime64(3, Tz::America__New_York);
         let result = array_to_values(&array, &DataType::Date64, Some(&typ)).unwrap();
-        assert_eq!(result, vec![
-            Value::DateTime64(DynDateTime64(Tz::America__New_York, 0, 3)),
-            Value::Null,
-            Value::DateTime64(DynDateTime64(Tz::America__New_York, 1, 3)),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::DateTime64(DynDateTime64(Tz::America__New_York, 0, 3)),
+                Value::Null,
+                Value::DateTime64(DynDateTime64(Tz::America__New_York, 1, 3)),
+            ]
+        );
 
         // With timezone default
         let typ = Type::Date;
         let result = array_to_values(&array, &DataType::Date64, Some(&typ)).unwrap();
-        assert_eq!(result, vec![
-            Value::DateTime64(DynDateTime64(Tz::UTC, 0, 3)),
-            Value::Null,
-            Value::DateTime64(DynDateTime64(Tz::UTC, 1, 3)),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::DateTime64(DynDateTime64(Tz::UTC, 0, 3)),
+                Value::Null,
+                Value::DateTime64(DynDateTime64(Tz::UTC, 1, 3)),
+            ]
+        );
     }
 
     #[test]
@@ -1132,11 +1153,14 @@ mod tests {
             TimestampSecondArray::from(vec![Some(1_625_097_600), None, Some(1_625_184_000)]);
         let result =
             array_to_values(&array, &DataType::Timestamp(TimeUnit::Second, None), None).unwrap();
-        assert_eq!(result, vec![
-            Value::DateTime(DateTime(chrono_tz::UTC, 1_625_097_600)),
-            Value::Null,
-            Value::DateTime(DateTime(chrono_tz::UTC, 1_625_184_000)),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::DateTime(DateTime(chrono_tz::UTC, 1_625_097_600)),
+                Value::Null,
+                Value::DateTime(DateTime(chrono_tz::UTC, 1_625_184_000)),
+            ]
+        );
     }
 
     #[test]
@@ -1156,10 +1180,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::Array(vec![Value::Int32(1), Value::Int32(2)]),
-            Value::Array(vec![Value::Int32(3), Value::Int32(4)]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Array(vec![Value::Int32(1), Value::Int32(2)]),
+                Value::Array(vec![Value::Int32(3), Value::Int32(4)]),
+            ]
+        );
     }
 
     #[test]
@@ -1172,10 +1199,13 @@ mod tests {
         ]);
         let fields = Fields::from_iter(vec![int_field, str_field]);
         let result = array_to_values(&struct_array, &DataType::Struct(fields), None).unwrap();
-        assert_eq!(result, vec![
-            Value::Tuple(vec![Value::Int32(1), Value::String(b"x".to_vec())]),
-            Value::Tuple(vec![Value::Int32(2), Value::String(b"y".to_vec())]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Tuple(vec![Value::Int32(1), Value::String(b"x".to_vec())]),
+                Value::Tuple(vec![Value::Int32(2), Value::String(b"y".to_vec())]),
+            ]
+        );
     }
 
     #[test]
@@ -1191,10 +1221,13 @@ mod tests {
         ]);
         let fields = Fields::from_iter(vec![int_field, str_field]);
         let result = array_to_values(&struct_array, &DataType::Struct(fields), None).unwrap();
-        assert_eq!(result, vec![
-            Value::Tuple(vec![Value::Int32(1), Value::String(b"x".to_vec())]),
-            Value::Tuple(vec![Value::Int32(2), Value::Null]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Tuple(vec![Value::Int32(1), Value::String(b"x".to_vec())]),
+                Value::Tuple(vec![Value::Int32(2), Value::Null]),
+            ]
+        );
     }
 
     #[test]
@@ -1242,10 +1275,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::Map(vec![Value::String(b"k1".to_vec())], vec![Value::Int32(10)]),
-            Value::Map(vec![Value::String(b"k2".to_vec())], vec![Value::Int32(20)]),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Value::Map(vec![Value::String(b"k1".to_vec())], vec![Value::Int32(10)]),
+                Value::Map(vec![Value::String(b"k2".to_vec())], vec![Value::Int32(20)]),
+            ]
+        );
     }
 
     #[test]
@@ -1262,11 +1298,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, vec![
-            Value::String(b"hello".to_vec()),
-            Value::Null,
-            Value::String(b"world".to_vec()),
-        ]);
+        assert_eq!(
+            result,
+            vec![Value::String(b"hello".to_vec()), Value::Null, Value::String(b"world".to_vec()),]
+        );
     }
 
     #[test]
@@ -1303,31 +1338,34 @@ mod tests {
             Field::new("v_14", DataType::Utf8, false),
         ]));
         let str_vals = vec!["a", "b", "c"];
-        let batch = RecordBatch::try_new(schema, vec![
-            Arc::new(Int8Array::from(vec![1, 2, 3])),
-            Arc::new(Int16Array::from(vec![1, 2, 3])),
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-            Arc::new(UInt8Array::from(vec![1, 2, 3])),
-            Arc::new(UInt16Array::from(vec![1, 2, 3])),
-            Arc::new(UInt32Array::from(vec![1, 2, 3])),
-            Arc::new(UInt64Array::from(vec![1, 2, 3])),
-            Arc::new(Float32Array::from(vec![1.0_f32, 2.0, 3.0])),
-            Arc::new(Float64Array::from(vec![1.0_f64, 2.0, 3.0])),
-            Arc::new(TimestampSecondArray::from(vec![1, 2, 3])),
-            Arc::new(TimestampMillisecondArray::from(vec![1000, 2 * 1000, 3 * 1000])),
-            Arc::new(TimestampMicrosecondArray::from(vec![
-                1_000_000,
-                2 * 1_000_000,
-                3 * 1_000_000,
-            ])),
-            Arc::new(TimestampNanosecondArray::from(vec![
-                1_000_000_000,
-                2 * 1_000_000_000,
-                3 * 1_000_000_000,
-            ])),
-            Arc::new(StringArray::from(str_vals.clone())),
-        ])
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int8Array::from(vec![1, 2, 3])),
+                Arc::new(Int16Array::from(vec![1, 2, 3])),
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(UInt8Array::from(vec![1, 2, 3])),
+                Arc::new(UInt16Array::from(vec![1, 2, 3])),
+                Arc::new(UInt32Array::from(vec![1, 2, 3])),
+                Arc::new(UInt64Array::from(vec![1, 2, 3])),
+                Arc::new(Float32Array::from(vec![1.0_f32, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![1.0_f64, 2.0, 3.0])),
+                Arc::new(TimestampSecondArray::from(vec![1, 2, 3])),
+                Arc::new(TimestampMillisecondArray::from(vec![1000, 2 * 1000, 3 * 1000])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    1_000_000,
+                    2 * 1_000_000,
+                    3 * 1_000_000,
+                ])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    1_000_000_000,
+                    2 * 1_000_000_000,
+                    3 * 1_000_000_000,
+                ])),
+                Arc::new(StringArray::from(str_vals.clone())),
+            ],
+        )
         .unwrap();
 
         let result = batch_to_rows(&batch, None).unwrap().collect::<Vec<_>>();
@@ -1339,23 +1377,26 @@ mod tests {
         for (i, row) in result.into_iter().enumerate() {
             let row = row.unwrap();
             let seed = i + 1;
-            assert_eq!(row, vec![
-                Value::Int8(seed as i8),
-                Value::Int16(seed as i16),
-                Value::Int32(seed as i32),
-                Value::Int64(seed as i64),
-                Value::UInt8(seed as u8),
-                Value::UInt16(seed as u16),
-                Value::UInt32(seed as u32),
-                Value::UInt64(seed as u64),
-                Value::Float32(seed as f32),
-                Value::Float64(seed as f64),
-                Value::DateTime(DateTime(Tz::UTC, seed as u32)),
-                Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1000, 3)),
-                Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1_000_000, 6)),
-                Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1_000_000_000, 9)),
-                Value::String(str_vals[i].as_bytes().to_vec())
-            ]);
+            assert_eq!(
+                row,
+                vec![
+                    Value::Int8(seed as i8),
+                    Value::Int16(seed as i16),
+                    Value::Int32(seed as i32),
+                    Value::Int64(seed as i64),
+                    Value::UInt8(seed as u8),
+                    Value::UInt16(seed as u16),
+                    Value::UInt32(seed as u32),
+                    Value::UInt64(seed as u64),
+                    Value::Float32(seed as f32),
+                    Value::Float64(seed as f64),
+                    Value::DateTime(DateTime(Tz::UTC, seed as u32)),
+                    Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1000, 3)),
+                    Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1_000_000, 6)),
+                    Value::DateTime64(DynDateTime64(Tz::UTC, seed as u64 * 1_000_000_000, 9)),
+                    Value::String(str_vals[i].as_bytes().to_vec())
+                ]
+            );
         }
     }
 
@@ -1365,20 +1406,23 @@ mod tests {
             Field::new("id", DataType::Int32, true),
             Field::new("name", DataType::Utf8, true),
         ]));
-        let batch = RecordBatch::try_new(schema, vec![
-            Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
-            Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])),
-        ])
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])),
+            ],
+        )
         .unwrap();
 
         let mut result = batch_to_rows(&batch, None).unwrap().collect::<Vec<_>>();
         assert_eq!(result.len(), 3);
         assert_eq!(result.pop().unwrap().unwrap(), vec![Value::Int32(3), Value::Null]);
         assert_eq!(result.pop().unwrap().unwrap(), vec![Value::Null, Value::String(b"b".to_vec())]);
-        assert_eq!(result.pop().unwrap().unwrap(), vec![
-            Value::Int32(1),
-            Value::String(b"a".to_vec())
-        ]);
+        assert_eq!(
+            result.pop().unwrap().unwrap(),
+            vec![Value::Int32(1), Value::String(b"a".to_vec())]
+        );
     }
 
     #[test]
@@ -1387,12 +1431,15 @@ mod tests {
             Arc::new(Schema::new(vec![Field::new("uuid", DataType::FixedSizeBinary(16), false)]));
         let uuid1 = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let uuid2 = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap();
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![uuid1.as_bytes(), uuid2.as_bytes()].into_iter(),
-            )
-            .unwrap(),
-        )])
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![uuid1.as_bytes(), uuid2.as_bytes()].into_iter(),
+                )
+                .unwrap(),
+            )],
+        )
         .unwrap();
 
         let type_hints = vec![("uuid".to_string(), Type::Uuid)];

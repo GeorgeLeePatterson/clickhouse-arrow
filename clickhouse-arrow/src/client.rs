@@ -80,8 +80,8 @@ pub struct ConnectionContext {
 /// Emitted clickhouse events from the underlying connection
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub event:     ClickHouseEvent,
-    pub qid:       Qid,
+    pub event: ClickHouseEvent,
+    pub qid: Qid,
     pub client_id: u16,
 }
 
@@ -134,9 +134,9 @@ pub enum ClickHouseEvent {
 #[derive(Clone, Debug)]
 pub struct Client<T: ClientFormat> {
     pub client_id: u16,
-    connection:    Arc<connection::Connection<T>>,
-    events:        Arc<broadcast::Sender<Event>>,
-    settings:      Option<Arc<Settings>>,
+    connection: Arc<connection::Connection<T>>,
+    events: Arc<broadcast::Sender<Event>>,
+    settings: Option<Arc<Settings>>,
 }
 
 impl<T: ClientFormat> Client<T> {
@@ -163,7 +163,9 @@ impl<T: ClientFormat> Client<T> {
     ///     .with_username("default")
     ///     .with_password("");
     /// ```
-    pub fn builder() -> ClientBuilder { ClientBuilder::new() }
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::new()
+    }
 
     /// Establishes a connection to a `ClickHouse` server over TCP, with optional TLS support.
     ///
@@ -277,7 +279,9 @@ impl<T: ClientFormat> Client<T> {
     /// let status = client.status();
     /// println!("Connection status: {status:?}");
     /// ```
-    pub fn status(&self) -> ConnectionStatus { self.connection.status() }
+    pub fn status(&self) -> ConnectionStatus {
+        self.connection.status()
+    }
 
     /// Subscribes to progress and profile events from `ClickHouse` queries.
     ///
@@ -310,7 +314,9 @@ impl<T: ClientFormat> Client<T> {
     /// // Execute a query to generate events
     /// client.query("SELECT * FROM large_table").await.unwrap();
     /// ```
-    pub fn subscribe_events(&self) -> broadcast::Receiver<Event> { self.events.subscribe() }
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
+        self.events.subscribe()
+    }
 
     /// Checks the health of the underlying `ClickHouse` connection.
     ///

@@ -28,8 +28,8 @@ pub type ConnectionPool<T> = bb8::Pool<ConnectionManager<T>>;
 /// Helper to construct a bb8 connection pool
 pub struct ConnectionPoolBuilder<T: ClientFormat> {
     client_builder: ClientBuilder,
-    pool:           PoolBuilder<T>,
-    check_health:   bool,
+    pool: PoolBuilder<T>,
+    check_health: bool,
 }
 
 impl<T: ClientFormat> ConnectionPoolBuilder<T> {
@@ -46,13 +46,19 @@ impl<T: ClientFormat> ConnectionPoolBuilder<T> {
     }
 
     /// Get the underlying client builder's unique identifier.
-    pub fn connection_identifier(&self) -> String { self.client_builder.connection_identifier() }
+    pub fn connection_identifier(&self) -> String {
+        self.client_builder.connection_identifier()
+    }
 
     /// Get a reference to the current configured [`ClientOptions`]
-    pub fn client_options(&self) -> &ClientOptions { self.client_builder.options() }
+    pub fn client_options(&self) -> &ClientOptions {
+        self.client_builder.options()
+    }
 
     /// Get a reference to the current configured [`Settings`]
-    pub fn client_settings(&self) -> Option<&Settings> { self.client_builder.settings() }
+    pub fn client_settings(&self) -> Option<&Settings> {
+        self.client_builder.settings()
+    }
 
     /// Whether the underlying connection will issue a `ping` when checking health.
     #[must_use]
@@ -107,9 +113,9 @@ impl<T: ClientFormat> ConnectionPoolBuilder<T> {
 /// `ConnectionManager` is the underlying manager that `bb8::Pool` uses to manage connections.
 #[derive(Clone)]
 pub struct ConnectionManager<T: ClientFormat> {
-    builder:      ClientBuilder,
+    builder: ClientBuilder,
     check_health: bool,
-    _phantom:     std::marker::PhantomData<Client<T>>,
+    _phantom: std::marker::PhantomData<Client<T>>,
 }
 
 impl<T: ClientFormat> ConnectionManager<T> {
@@ -190,9 +196,13 @@ impl<T: ClientFormat> ConnectionManager<T> {
     }
 
     /// Useful to determine if 2 connections are essentially the same
-    pub fn connection_identifier(&self) -> String { self.builder.connection_identifier() }
+    pub fn connection_identifier(&self) -> String {
+        self.builder.connection_identifier()
+    }
 
-    async fn connect(&self) -> Result<Client<T>> { self.builder.clone().build().await }
+    async fn connect(&self) -> Result<Client<T>> {
+        self.builder.clone().build().await
+    }
 }
 
 impl<T: ClientFormat> ManageConnection for ConnectionManager<T> {
@@ -243,20 +253,20 @@ impl<T: ClientFormat> ManageConnection for ConnectionManager<T> {
 #[derive(Debug, Clone, Copy)]
 pub struct ExponentialBackoff {
     current_interval: Duration,
-    factor:           f64,
-    max_interval:     Duration,
+    factor: f64,
+    max_interval: Duration,
     max_elapsed_time: Option<Duration>,
-    attempts:         u32,
+    attempts: u32,
 }
 
 impl ExponentialBackoff {
     pub fn new() -> Self {
         ExponentialBackoff {
             current_interval: Duration::from_millis(10), // Start with 100ms
-            factor:           2.0,
-            max_interval:     Duration::from_secs(60),
+            factor: 2.0,
+            max_interval: Duration::from_secs(60),
             max_elapsed_time: Some(Duration::from_secs(900)), // 15 minutes
-            attempts:         0,
+            attempts: 0,
         }
     }
 
@@ -278,5 +288,7 @@ impl ExponentialBackoff {
 }
 
 impl Default for ExponentialBackoff {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

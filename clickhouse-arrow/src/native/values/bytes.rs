@@ -59,17 +59,25 @@ impl FromSql for Bytes {
 impl Deref for Bytes {
     type Target = Vec<u8>;
 
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl DerefMut for Bytes {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl From<Bytes> for Vec<u8> {
-    fn from(value: Bytes) -> Self { value.0 }
+    fn from(value: Bytes) -> Self {
+        value.0
+    }
 }
 
 impl From<Vec<u8>> for Bytes {
-    fn from(value: Vec<u8>) -> Self { Self(value) }
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
 }

@@ -84,9 +84,13 @@ pub(crate) trait EmptyBlock {
 }
 
 impl EmptyBlock for crate::native::block::Block {
-    fn no_data(&self) -> bool { self.column_data.is_empty() && self.column_types.is_empty() }
+    fn no_data(&self) -> bool {
+        self.column_data.is_empty() && self.column_types.is_empty()
+    }
 }
 
 impl EmptyBlock for arrow::record_batch::RecordBatch {
-    fn no_data(&self) -> bool { self.num_rows() == 0 && self.num_columns() == 0 }
+    fn no_data(&self) -> bool {
+        self.num_rows() == 0 && self.num_columns() == 0
+    }
 }

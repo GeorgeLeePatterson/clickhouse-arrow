@@ -151,7 +151,9 @@ impl Type {
         }
     }
 
-    pub fn is_nullable(&self) -> bool { matches!(self, Type::Nullable(_)) }
+    pub fn is_nullable(&self) -> bool {
+        matches!(self, Type::Nullable(_))
+    }
 
     pub fn strip_low_cardinality(&self) -> &Type {
         match self {

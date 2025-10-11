@@ -201,7 +201,9 @@ impl Hash for Value {
 impl Eq for Value {}
 
 impl Value {
-    pub fn string(value: impl Into<String>) -> Self { Value::String(value.into().into_bytes()) }
+    pub fn string(value: impl Into<String>) -> Self {
+        Value::String(value.into().into_bytes())
+    }
 
     /// # Errors
     /// Returns an error if the value is an unsigned integer.
@@ -262,13 +264,17 @@ impl Value {
     ///
     /// # Errors
     /// Returns an error if the conversion fails.
-    pub fn to_value<T: FromSql>(self, type_: &Type) -> Result<T> { T::from_sql(type_, self) }
+    pub fn to_value<T: FromSql>(self, type_: &Type) -> Result<T> {
+        T::from_sql(type_, self)
+    }
 
     /// Converts a [`Value`] to a `T` type by calling [`ToSql::to_sql`] on `T`.
     ///
     /// # Errors
     /// Returns an error if the conversion fails.
-    pub fn from_value<T: ToSql>(value: T) -> Result<Self> { value.to_sql(None) }
+    pub fn from_value<T: ToSql>(value: T) -> Result<Self> {
+        value.to_sql(None)
+    }
 
     /// Guesses a [`Type`] from the value, may not correspond to actual column type in `ClickHouse`
     pub fn guess_type(&self) -> Type {

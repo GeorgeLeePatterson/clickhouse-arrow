@@ -145,7 +145,9 @@ impl From<Vec<SocketAddr>> for Destination {
 
 // From implementations for common destination types
 impl From<SocketAddr> for Destination {
-    fn from(addr: SocketAddr) -> Self { Destination { inner: DestinationInner::SocketAddr(addr) } }
+    fn from(addr: SocketAddr) -> Self {
+        Destination { inner: DestinationInner::SocketAddr(addr) }
+    }
 }
 
 impl From<(String, u16)> for Destination {
@@ -215,7 +217,9 @@ mod tests {
     use super::*;
 
     // Helper to create Destination variants
-    fn socket_addr() -> SocketAddr { SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000) }
+    fn socket_addr() -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9000)
+    }
 
     #[tokio::test]
     async fn test_resolve_socket_addrs() {

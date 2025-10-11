@@ -25,35 +25,35 @@ pub(crate) enum QueryKind {
 
 #[derive(Debug)]
 pub(crate) struct OpenTelemetry<'a> {
-    trace_id:    Uuid,
-    span_id:     u64,
-    tracestate:  &'a str,
+    trace_id: Uuid,
+    span_id: u64,
+    tracestate: &'a str,
     trace_flags: u8,
 }
 
 #[derive(Debug)]
 pub(crate) struct ClientInfo<'a> {
-    pub kind:                        QueryKind,
-    pub initial_user:                &'a str,
-    pub initial_query_id:            &'a str,
-    pub initial_address:             &'a str,
+    pub kind: QueryKind,
+    pub initial_user: &'a str,
+    pub initial_query_id: &'a str,
+    pub initial_address: &'a str,
     // interface = TCP = 1
-    pub os_user:                     &'a str,
-    pub client_hostname:             &'a str,
-    pub client_name:                 &'a str,
-    pub client_version_major:        u64,
-    pub client_version_minor:        u64,
+    pub os_user: &'a str,
+    pub client_hostname: &'a str,
+    pub client_name: &'a str,
+    pub client_version_major: u64,
+    pub client_version_minor: u64,
     pub client_tcp_protocol_version: u64,
     // DBMS_MIN_PROTOCOL_VERSION_WITH_INITIAL_QUERY_START_TIME
-    pub query_start_time:            u64,
+    pub query_start_time: u64,
     // if DBMS_MIN_REVISION_WITH_QUOTA_KEY_IN_CLIENT_INFO
-    pub quota_key:                   &'a str,
+    pub quota_key: &'a str,
     // if DBMS_MIN_PROTOCOL_VERSION_WITH_DISTRIBUTED_DEPTH
-    pub distributed_depth:           u64,
+    pub distributed_depth: u64,
     // if DBMS_MIN_REVISION_WITH_VERSION_PATCH
-    pub client_version_patch:        u64,
+    pub client_version_patch: u64,
     // if DBMS_MIN_REVISION_WITH_OPENTELEMETRY
-    pub open_telemetry:              Option<OpenTelemetry<'a>>,
+    pub open_telemetry: Option<OpenTelemetry<'a>>,
 }
 
 impl Default for ClientInfo<'_> {

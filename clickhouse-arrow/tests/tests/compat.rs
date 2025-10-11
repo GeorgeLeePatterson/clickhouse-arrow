@@ -40,10 +40,13 @@ pub async fn test_arrow_compat(ch: Arc<ClickHouseContainer>) {
         Field::new("id", DataType::Int32, false),
         Field::new("name", DataType::Utf8, false),
     ]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
-        Arc::new(Int32Array::from(ids.clone())) as ArrayRef,
-        Arc::new(StringArray::from(names.clone())) as ArrayRef,
-    ])
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(ids.clone())) as ArrayRef,
+            Arc::new(StringArray::from(names.clone())) as ArrayRef,
+        ],
+    )
     .unwrap();
 
     // Create schema

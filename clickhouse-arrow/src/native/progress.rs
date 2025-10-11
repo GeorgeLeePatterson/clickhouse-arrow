@@ -4,13 +4,13 @@
 /// See <https://clickhouse.com/codebrowser/ClickHouse/src/IO/Progress.h.html>
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
-    pub read_rows:           u64,
-    pub read_bytes:          u64,
-    pub total_rows_to_read:  u64,
+    pub read_rows: u64,
+    pub read_bytes: u64,
+    pub total_rows_to_read: u64,
     pub total_bytes_to_read: Option<u64>,
-    pub written_rows:        Option<u64>,
-    pub written_bytes:       Option<u64>,
-    pub elapsed_ns:          Option<u64>,
+    pub written_rows: Option<u64>,
+    pub written_bytes: Option<u64>,
+    pub elapsed_ns: Option<u64>,
 }
 
 impl std::ops::Add for Progress {
@@ -24,13 +24,13 @@ impl std::ops::Add for Progress {
             (None, None) => None,
         };
         Self::Output {
-            read_rows:           self.read_rows + rhs.read_rows,
-            read_bytes:          self.read_bytes + rhs.read_bytes,
-            total_rows_to_read:  self.total_rows_to_read + rhs.total_rows_to_read,
+            read_rows: self.read_rows + rhs.read_rows,
+            read_bytes: self.read_bytes + rhs.read_bytes,
+            total_rows_to_read: self.total_rows_to_read + rhs.total_rows_to_read,
             total_bytes_to_read: sum_opt(self.total_bytes_to_read, rhs.total_bytes_to_read),
-            written_rows:        sum_opt(self.written_rows, rhs.written_rows),
-            written_bytes:       sum_opt(self.written_bytes, rhs.written_bytes),
-            elapsed_ns:          sum_opt(self.elapsed_ns, rhs.elapsed_ns),
+            written_rows: sum_opt(self.written_rows, rhs.written_rows),
+            written_bytes: sum_opt(self.written_bytes, rhs.written_bytes),
+            elapsed_ns: sum_opt(self.elapsed_ns, rhs.elapsed_ns),
         }
     }
 }
@@ -78,13 +78,13 @@ mod tests {
     #[test]
     fn test_progress_creation() {
         let progress = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         assert_eq!(progress.read_rows, 100);
@@ -99,13 +99,13 @@ mod tests {
     #[test]
     fn test_progress_clone_copy() {
         let progress = Progress {
-            read_rows:           123,
-            read_bytes:          456,
-            total_rows_to_read:  789,
+            read_rows: 123,
+            read_bytes: 456,
+            total_rows_to_read: 789,
             total_bytes_to_read: Some(1011),
-            written_rows:        Some(121),
-            written_bytes:       Some(314),
-            elapsed_ns:          Some(1516),
+            written_rows: Some(121),
+            written_bytes: Some(314),
+            elapsed_ns: Some(1516),
         };
 
         let cloned = progress;
@@ -118,13 +118,13 @@ mod tests {
     #[test]
     fn test_progress_debug() {
         let progress = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         let debug_str = format!("{progress:?}");
@@ -136,23 +136,23 @@ mod tests {
     #[test]
     fn test_progress_add_all_some() {
         let progress1 = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         let progress2 = Progress {
-            read_rows:           200,
-            read_bytes:          2048,
-            total_rows_to_read:  2000,
+            read_rows: 200,
+            read_bytes: 2048,
+            total_rows_to_read: 2000,
             total_bytes_to_read: Some(20480),
-            written_rows:        Some(100),
-            written_bytes:       Some(1024),
-            elapsed_ns:          Some(2_000_000),
+            written_rows: Some(100),
+            written_bytes: Some(1024),
+            elapsed_ns: Some(2_000_000),
         };
 
         let result = progress1 + progress2;
@@ -169,23 +169,23 @@ mod tests {
     #[test]
     fn test_progress_add_mixed_options() {
         let progress1 = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       None,
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: None,
+            elapsed_ns: Some(1_000_000),
         };
 
         let progress2 = Progress {
-            read_rows:           200,
-            read_bytes:          2048,
-            total_rows_to_read:  2000,
+            read_rows: 200,
+            read_bytes: 2048,
+            total_rows_to_read: 2000,
             total_bytes_to_read: None,
-            written_rows:        None,
-            written_bytes:       Some(1024),
-            elapsed_ns:          None,
+            written_rows: None,
+            written_bytes: Some(1024),
+            elapsed_ns: None,
         };
 
         let result = progress1 + progress2;
@@ -202,23 +202,23 @@ mod tests {
     #[test]
     fn test_progress_add_all_none() {
         let progress1 = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: None,
-            written_rows:        None,
-            written_bytes:       None,
-            elapsed_ns:          None,
+            written_rows: None,
+            written_bytes: None,
+            elapsed_ns: None,
         };
 
         let progress2 = Progress {
-            read_rows:           200,
-            read_bytes:          2048,
-            total_rows_to_read:  2000,
+            read_rows: 200,
+            read_bytes: 2048,
+            total_rows_to_read: 2000,
             total_bytes_to_read: None,
-            written_rows:        None,
-            written_bytes:       None,
-            elapsed_ns:          None,
+            written_rows: None,
+            written_bytes: None,
+            elapsed_ns: None,
         };
 
         let result = progress1 + progress2;
@@ -235,13 +235,13 @@ mod tests {
     #[test]
     fn test_progress_display() {
         let progress = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         let display_str = format!("{progress}");
@@ -263,13 +263,13 @@ mod tests {
     #[test]
     fn test_progress_display_with_nones() {
         let progress = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: None,
-            written_rows:        None,
-            written_bytes:       None,
-            elapsed_ns:          None,
+            written_rows: None,
+            written_bytes: None,
+            elapsed_ns: None,
         };
 
         let display_str = format!("{progress}");
@@ -283,33 +283,33 @@ mod tests {
     #[test]
     fn test_progress_equality() {
         let progress1 = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         let progress2 = Progress {
-            read_rows:           100,
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 100,
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         let progress3 = Progress {
-            read_rows:           200, // Different value
-            read_bytes:          1024,
-            total_rows_to_read:  1000,
+            read_rows: 200, // Different value
+            read_bytes: 1024,
+            total_rows_to_read: 1000,
             total_bytes_to_read: Some(10240),
-            written_rows:        Some(50),
-            written_bytes:       Some(512),
-            elapsed_ns:          Some(1_000_000),
+            written_rows: Some(50),
+            written_bytes: Some(512),
+            elapsed_ns: Some(1_000_000),
         };
 
         assert_eq!(progress1, progress2);

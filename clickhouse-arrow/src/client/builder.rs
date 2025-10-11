@@ -47,10 +47,10 @@ use crate::{ArrowFormat, ClientOptions, Error, NativeFormat, Result};
 #[derive(Default, Debug, Clone)]
 pub struct ClientBuilder {
     destination: Option<Destination>,
-    options:     ClientOptions,
-    settings:    Option<Settings>,
-    context:     Option<ConnectionContext>,
-    verified:    bool,
+    options: ClientOptions,
+    settings: Option<Settings>,
+    context: Option<ConnectionContext>,
+    verified: bool,
 }
 
 impl ClientBuilder {
@@ -75,10 +75,10 @@ impl ClientBuilder {
     pub fn new() -> Self {
         ClientBuilder {
             destination: None,
-            options:     ClientOptions::default(),
-            settings:    None,
-            context:     None,
-            verified:    false,
+            options: ClientOptions::default(),
+            settings: None,
+            context: None,
+            verified: false,
         }
     }
 
@@ -102,7 +102,9 @@ impl ClientBuilder {
     ///     println!("Destination: {:?}", dest);
     /// }
     /// ```
-    pub fn destination(&self) -> Option<&Destination> { self.destination.as_ref() }
+    pub fn destination(&self) -> Option<&Destination> {
+        self.destination.as_ref()
+    }
 
     /// Retrieves the current connection options.
     ///
@@ -124,7 +126,9 @@ impl ClientBuilder {
     /// let options = builder.options();
     /// println!("Username: {}", options.username);
     /// ```
-    pub fn options(&self) -> &ClientOptions { &self.options }
+    pub fn options(&self) -> &ClientOptions {
+        &self.options
+    }
 
     /// Retrieves the configured session settings, if set.
     ///
@@ -149,7 +153,9 @@ impl ClientBuilder {
     ///     assert_eq!(config_settings, &settings)
     /// }
     /// ```
-    pub fn settings(&self) -> Option<&Settings> { self.settings.as_ref() }
+    pub fn settings(&self) -> Option<&Settings> {
+        self.settings.as_ref()
+    }
 
     /// Checks whether the builder's destination has been verified.
     ///
@@ -173,7 +179,9 @@ impl ClientBuilder {
     /// let verified_builder = builder.verify().await.unwrap();
     /// println!("Verified: {}", verified_builder.verified()); // true
     /// ```
-    pub fn verified(&self) -> bool { self.verified }
+    pub fn verified(&self) -> bool {
+        self.verified
+    }
 
     /// Sets the `ClickHouse` server address using a socket address.
     ///
@@ -198,7 +206,9 @@ impl ClientBuilder {
     ///     .with_socket_addr(addr);
     /// ```
     #[must_use]
-    pub fn with_socket_addr(self, addr: SocketAddr) -> Self { self.with_destination(addr) }
+    pub fn with_socket_addr(self, addr: SocketAddr) -> Self {
+        self.with_destination(addr)
+    }
 
     /// Sets the `ClickHouse` server address using a hostname and port.
     ///
@@ -994,7 +1004,9 @@ mod tests {
 
     use super::*;
 
-    fn default_builder() -> ClientBuilder { ClientBuilder::new() }
+    fn default_builder() -> ClientBuilder {
+        ClientBuilder::new()
+    }
 
     #[test]
     fn test_accessors_empty() {

@@ -494,10 +494,10 @@ async fn roundtrip_map() {
     let values = &[
         Value::Map(vec![], vec![]),
         Value::Map(vec![Value::UInt32(1)], vec![Value::UInt16(2)]),
-        Value::Map(vec![Value::UInt32(5), Value::UInt32(3)], vec![
-            Value::UInt16(6),
-            Value::UInt16(4),
-        ]),
+        Value::Map(
+            vec![Value::UInt32(5), Value::UInt32(3)],
+            vec![Value::UInt16(6), Value::UInt16(4)],
+        ),
     ];
     assert_eq!(
         &values[..],
@@ -779,24 +779,21 @@ fn roundtrip_sized_int_types_sync() {
     let test_cases = vec![
         (Type::Int8, vec![Value::Int8(-128), Value::Int8(0), Value::Int8(127)]),
         (Type::Int16, vec![Value::Int16(-32768), Value::Int16(0), Value::Int16(32767)]),
-        (Type::Int32, vec![
-            Value::Int32(-2_147_483_648),
-            Value::Int32(0),
-            Value::Int32(2_147_483_647),
-        ]),
+        (
+            Type::Int32,
+            vec![Value::Int32(-2_147_483_648), Value::Int32(0), Value::Int32(2_147_483_647)],
+        ),
         (Type::Int64, vec![Value::Int64(i64::MIN), Value::Int64(0), Value::Int64(i64::MAX)]),
         (Type::UInt8, vec![Value::UInt8(0), Value::UInt8(128), Value::UInt8(255)]),
         (Type::UInt16, vec![Value::UInt16(0), Value::UInt16(32768), Value::UInt16(65535)]),
-        (Type::UInt32, vec![
-            Value::UInt32(0),
-            Value::UInt32(2_147_483_648),
-            Value::UInt32(u32::MAX),
-        ]),
-        (Type::UInt64, vec![
-            Value::UInt64(0),
-            Value::UInt64(u64::from(u32::MAX) + 1),
-            Value::UInt64(u64::MAX),
-        ]),
+        (
+            Type::UInt32,
+            vec![Value::UInt32(0), Value::UInt32(2_147_483_648), Value::UInt32(u32::MAX)],
+        ),
+        (
+            Type::UInt64,
+            vec![Value::UInt64(0), Value::UInt64(u64::from(u32::MAX) + 1), Value::UInt64(u64::MAX)],
+        ),
     ];
 
     for (type_, values) in test_cases {
@@ -825,22 +822,28 @@ fn roundtrip_sized_large_int_types_sync() {
 #[test]
 fn roundtrip_sized_float_types_sync() {
     let test_cases = vec![
-        (Type::Float32, vec![
-            Value::Float32(0.0),
-            Value::Float32(3.15),
-            Value::Float32(-1.0),
-            Value::Float32(f32::NAN),
-            Value::Float32(f32::INFINITY),
-            Value::Float32(f32::NEG_INFINITY),
-        ]),
-        (Type::Float64, vec![
-            Value::Float64(0.0),
-            Value::Float64(3.15),
-            Value::Float64(-1.0),
-            Value::Float64(f64::NAN),
-            Value::Float64(f64::INFINITY),
-            Value::Float64(f64::NEG_INFINITY),
-        ]),
+        (
+            Type::Float32,
+            vec![
+                Value::Float32(0.0),
+                Value::Float32(3.15),
+                Value::Float32(-1.0),
+                Value::Float32(f32::NAN),
+                Value::Float32(f32::INFINITY),
+                Value::Float32(f32::NEG_INFINITY),
+            ],
+        ),
+        (
+            Type::Float64,
+            vec![
+                Value::Float64(0.0),
+                Value::Float64(3.15),
+                Value::Float64(-1.0),
+                Value::Float64(f64::NAN),
+                Value::Float64(f64::INFINITY),
+                Value::Float64(f64::NEG_INFINITY),
+            ],
+        ),
     ];
 
     for (type_, values) in test_cases {
@@ -853,25 +856,30 @@ fn roundtrip_sized_float_types_sync() {
 #[test]
 fn roundtrip_sized_decimal_types_sync() {
     let test_cases = vec![
-        (Type::Decimal32(2), vec![
-            Value::Decimal32(2, -12345),
-            Value::Decimal32(2, 0),
-            Value::Decimal32(2, 12345),
-        ]),
-        (Type::Decimal64(4), vec![
-            Value::Decimal64(4, -123_456_789),
-            Value::Decimal64(4, 0),
-            Value::Decimal64(4, 123_456_789),
-        ]),
-        (Type::Decimal128(6), vec![
-            Value::Decimal128(6, -123_456_789_012_345),
-            Value::Decimal128(6, 0),
-            Value::Decimal128(6, 123_456_789_012_345),
-        ]),
-        (Type::Decimal256(8), vec![
-            Value::Decimal256(8, i256([0u8; 32])),
-            Value::Decimal256(8, i256([1u8; 32])),
-        ]),
+        (
+            Type::Decimal32(2),
+            vec![Value::Decimal32(2, -12345), Value::Decimal32(2, 0), Value::Decimal32(2, 12345)],
+        ),
+        (
+            Type::Decimal64(4),
+            vec![
+                Value::Decimal64(4, -123_456_789),
+                Value::Decimal64(4, 0),
+                Value::Decimal64(4, 123_456_789),
+            ],
+        ),
+        (
+            Type::Decimal128(6),
+            vec![
+                Value::Decimal128(6, -123_456_789_012_345),
+                Value::Decimal128(6, 0),
+                Value::Decimal128(6, 123_456_789_012_345),
+            ],
+        ),
+        (
+            Type::Decimal256(8),
+            vec![Value::Decimal256(8, i256([0u8; 32])), Value::Decimal256(8, i256([1u8; 32]))],
+        ),
     ];
 
     for (type_, values) in test_cases {
@@ -888,14 +896,17 @@ fn roundtrip_sized_date_time_types_sync() {
         (Type::Date, vec![Value::Date(Date(0)), Value::Date(Date(18262))]), /* 1970-01-01 to
                                                                              * 2020-01-01 */
         (Type::Date32, vec![Value::Date32(Date32(0)), Value::Date32(Date32(-719_163))]), /* 1900-01-01 */
-        (Type::DateTime(UTC), vec![
-            Value::DateTime(DateTime(UTC, 0)),
-            Value::DateTime(DateTime(UTC, 1_577_836_800)),
-        ]), /* 1970-01-01 to 2020-01-01 */
-        (Type::DateTime64(3, UTC), vec![
-            Value::DateTime64(DynDateTime64(UTC, 0, 3)),
-            Value::DateTime64(DynDateTime64(UTC, 1_577_836_800_000, 3)),
-        ]),
+        (
+            Type::DateTime(UTC),
+            vec![Value::DateTime(DateTime(UTC, 0)), Value::DateTime(DateTime(UTC, 1_577_836_800))],
+        ), /* 1970-01-01 to 2020-01-01 */
+        (
+            Type::DateTime64(3, UTC),
+            vec![
+                Value::DateTime64(DynDateTime64(UTC, 0, 3)),
+                Value::DateTime64(DynDateTime64(UTC, 1_577_836_800_000, 3)),
+            ],
+        ),
     ];
 
     for (type_, values) in test_cases {
@@ -909,15 +920,21 @@ fn roundtrip_sized_date_time_types_sync() {
 fn roundtrip_sized_network_types_sync() {
     use crate::{Ipv4, Ipv6};
     let test_cases = vec![
-        (Type::Ipv4, vec![
-            Value::Ipv4(Ipv4(Ipv4Addr::UNSPECIFIED)),
-            Value::Ipv4(Ipv4(Ipv4Addr::new(192, 168, 1, 1))),
-            Value::Ipv4(Ipv4(Ipv4Addr::BROADCAST)),
-        ]),
-        (Type::Ipv6, vec![
-            Value::Ipv6(Ipv6(Ipv6Addr::UNSPECIFIED)),
-            Value::Ipv6(Ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
-        ]),
+        (
+            Type::Ipv4,
+            vec![
+                Value::Ipv4(Ipv4(Ipv4Addr::UNSPECIFIED)),
+                Value::Ipv4(Ipv4(Ipv4Addr::new(192, 168, 1, 1))),
+                Value::Ipv4(Ipv4(Ipv4Addr::BROADCAST)),
+            ],
+        ),
+        (
+            Type::Ipv6,
+            vec![
+                Value::Ipv6(Ipv6(Ipv6Addr::UNSPECIFIED)),
+                Value::Ipv6(Ipv6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
+            ],
+        ),
     ];
 
     for (type_, values) in test_cases {
@@ -949,16 +966,22 @@ fn roundtrip_sized_enum_types_sync() {
     ];
 
     let test_cases = vec![
-        (Type::Enum8(enum8_values.clone()), vec![
-            Value::Enum8("red".to_string(), 1),
-            Value::Enum8("green".to_string(), 2),
-            Value::Enum8("blue".to_string(), 3),
-        ]),
-        (Type::Enum16(enum16_values.clone()), vec![
-            Value::Enum16("small".to_string(), 100),
-            Value::Enum16("medium".to_string(), 200),
-            Value::Enum16("large".to_string(), 300),
-        ]),
+        (
+            Type::Enum8(enum8_values.clone()),
+            vec![
+                Value::Enum8("red".to_string(), 1),
+                Value::Enum8("green".to_string(), 2),
+                Value::Enum8("blue".to_string(), 3),
+            ],
+        ),
+        (
+            Type::Enum16(enum16_values.clone()),
+            vec![
+                Value::Enum16("small".to_string(), 100),
+                Value::Enum16("medium".to_string(), 200),
+                Value::Enum16("large".to_string(), 300),
+            ],
+        ),
     ];
 
     for (type_, values) in test_cases {
