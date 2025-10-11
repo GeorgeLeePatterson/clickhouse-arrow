@@ -452,7 +452,7 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
 
     async fn read_table_columns(reader: &mut R) -> Result<TableColumns> {
         Ok(TableColumns {
-            name:        reader.read_utf8_string().await?,
+            name: reader.read_utf8_string().await?,
             description: reader.read_utf8_string().await?,
         })
     }

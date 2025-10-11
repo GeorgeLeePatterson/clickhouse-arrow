@@ -40,7 +40,7 @@ impl LowCardinalityKeyBuilder {
 }
 
 pub(crate) struct LowCardinalityBuilder {
-    pub(crate) key_builder:   LowCardinalityKeyBuilder,
+    pub(crate) key_builder: LowCardinalityKeyBuilder,
     pub(crate) value_builder: Box<TypedBuilder>,
 }
 

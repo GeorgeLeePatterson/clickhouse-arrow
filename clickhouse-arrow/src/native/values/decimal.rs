@@ -2,7 +2,9 @@ use rust_decimal::Decimal;
 
 use crate::{Error, FromSql, Result, ToSql, Type, Value, unexpected_type};
 
-fn count_digits_i128(n: i128) -> u32 { if n == 0 { 1 } else { n.abs().ilog10() + 1 } }
+fn count_digits_i128(n: i128) -> u32 {
+    if n == 0 { 1 } else { n.abs().ilog10() + 1 }
+}
 
 impl FromSql for Decimal {
     #[expect(clippy::cast_possible_truncation)]

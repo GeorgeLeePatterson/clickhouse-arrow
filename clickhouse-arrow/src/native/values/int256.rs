@@ -10,11 +10,15 @@ use crate::{FromSql, Result, ToSql, Type, Value, unexpected_type};
 pub struct i256(pub [u8; 32]);
 
 impl From<i256> for u256 {
-    fn from(i: i256) -> Self { u256(i.0) }
+    fn from(i: i256) -> Self {
+        u256(i.0)
+    }
 }
 
 impl ToSql for i256 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Int256(self)) }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
+        Ok(Value::Int256(self))
+    }
 }
 
 impl FromSql for i256 {
@@ -165,7 +169,9 @@ impl std::ops::Mul<i256> for i256 {
 pub struct u256(pub [u8; 32]);
 
 impl ToSql for u256 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt256(self)) }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
+        Ok(Value::UInt256(self))
+    }
 }
 
 impl FromSql for u256 {
@@ -181,7 +187,9 @@ impl FromSql for u256 {
 }
 
 impl From<u256> for i256 {
-    fn from(u: u256) -> Self { i256(u.0) }
+    fn from(u: u256) -> Self {
+        i256(u.0)
+    }
 }
 
 impl From<u256> for (u128, u128) {

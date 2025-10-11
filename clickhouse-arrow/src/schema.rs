@@ -87,15 +87,15 @@ impl std::fmt::Display for ClickHouseEngine {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CreateOptions {
-    pub engine:                String,
-    pub order_by:              Vec<String>,
-    pub primary_keys:          Vec<String>,
-    pub partition_by:          Option<String>,
-    pub sampling:              Option<String>,
-    pub settings:              Settings,
-    pub ttl:                   Option<String>,
-    pub schema_conversions:    Option<SchemaConversions>,
-    pub defaults:              Option<HashMap<String, String>>,
+    pub engine: String,
+    pub order_by: Vec<String>,
+    pub primary_keys: Vec<String>,
+    pub partition_by: Option<String>,
+    pub sampling: Option<String>,
+    pub settings: Settings,
+    pub ttl: Option<String>,
+    pub schema_conversions: Option<SchemaConversions>,
+    pub defaults: Option<HashMap<String, String>>,
     pub defaults_for_nullable: bool,
 }
 
@@ -284,7 +284,9 @@ impl CreateOptions {
     ///
     /// # Returns
     /// An optional reference to the `HashMap` of column names to default values.
-    pub fn defaults(&self) -> Option<&HashMap<String, String>> { self.defaults.as_ref() }
+    pub fn defaults(&self) -> Option<&HashMap<String, String>> {
+        self.defaults.as_ref()
+    }
 
     /// Returns the configured default values, if any.
     ///
@@ -621,7 +623,9 @@ pub trait ColumnDefine: Sized {
 impl<T: Row> ColumnDefine for T {
     type DefaultValue = crate::Value;
 
-    fn definitions() -> Option<Vec<ColumnDefinition>> { Self::to_schema() }
+    fn definitions() -> Option<Vec<ColumnDefinition>> {
+        Self::to_schema()
+    }
 
     fn runtime_definitions(
         &self,
@@ -650,14 +654,16 @@ impl<T: Row> ColumnDefine for T {
 /// Helper struct to encapsulate schema creation logic for Arrow schemas.
 pub(crate) struct RecordBatchDefinition {
     pub(crate) arrow_options: Option<ArrowOptions>,
-    pub(crate) schema:        SchemaRef,
-    pub(crate) defaults:      Option<HashMap<String, String>>,
+    pub(crate) schema: SchemaRef,
+    pub(crate) defaults: Option<HashMap<String, String>>,
 }
 
 impl ColumnDefine for RecordBatchDefinition {
     type DefaultValue = String;
 
-    fn definitions() -> Option<Vec<ColumnDefinition<String>>> { None }
+    fn definitions() -> Option<Vec<ColumnDefinition<String>>> {
+        None
+    }
 
     fn runtime_definitions(
         &self,
@@ -757,9 +763,10 @@ mod tests {
     #[test]
     fn test_create_options_with_setting() {
         let options = CreateOptions::new("MergeTree").with_setting("index_granularity", 4096);
-        assert_eq!(options.settings.encode_to_strings(), vec![
-            "index_granularity = 4096".to_string()
-        ]);
+        assert_eq!(
+            options.settings.encode_to_strings(),
+            vec!["index_granularity = 4096".to_string()]
+        );
     }
 
     #[test]

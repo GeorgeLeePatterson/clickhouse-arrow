@@ -19,10 +19,14 @@ impl Hash for Point {
 impl std::ops::Index<u8> for Point {
     type Output = f64;
 
-    fn index(&self, index: u8) -> &Self::Output { &self.0[index as usize] }
+    fn index(&self, index: u8) -> &Self::Output {
+        &self.0[index as usize]
+    }
 }
 impl AsRef<[f64; 2]> for Point {
-    fn as_ref(&self) -> &[f64; 2] { &self.0 }
+    fn as_ref(&self) -> &[f64; 2] {
+        &self.0
+    }
 }
 
 /// Polygon without holes.
@@ -50,7 +54,9 @@ pub struct MultiPolygon(pub Vec<Polygon>);
 macro_rules! to_from_sql {
     ($name:ident) => {
         impl ToSql for $name {
-            fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::$name(self)) }
+            fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
+                Ok(Value::$name(self))
+            }
         }
 
         impl FromSql for $name {
@@ -97,19 +103,27 @@ mod nav_types_conversions {
     }
     // Points and coords
     impl From<Point> for geo_types::Coord {
-        fn from(source: Point) -> Self { Self { x: source[0], y: source[1] } }
+        fn from(source: Point) -> Self {
+            Self { x: source[0], y: source[1] }
+        }
     }
     impl From<geo_types::Coord> for Point {
-        fn from(source: geo_types::Coord) -> Self { Self([source.x, source.y]) }
+        fn from(source: geo_types::Coord) -> Self {
+            Self([source.x, source.y])
+        }
     }
     to_from_sql!(geo_types::Coord, Point);
 
     // Points and points
     impl From<Point> for geo_types::Point {
-        fn from(source: Point) -> Self { geo_types::Point(source.into()) }
+        fn from(source: Point) -> Self {
+            geo_types::Point(source.into())
+        }
     }
     impl From<geo_types::Point> for Point {
-        fn from(source: geo_types::Point) -> Self { source.0.into() }
+        fn from(source: geo_types::Point) -> Self {
+            source.0.into()
+        }
     }
     to_from_sql!(geo_types::Point, Point);
     // Rings and Linestrings
@@ -127,7 +141,9 @@ mod nav_types_conversions {
     // Rings and polygons (with no holes)
     // A Polygon -> Ring conversion is not provided, as the polygon might have holes.
     impl From<Ring> for geo_types::Polygon {
-        fn from(source: Ring) -> Self { geo_types::Polygon::new(source.0.into(), vec![]) }
+        fn from(source: Ring) -> Self {
+            geo_types::Polygon::new(source.0.into(), vec![])
+        }
     }
     // Polygons and polygons
     impl From<geo_types::Polygon> for Polygon {

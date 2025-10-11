@@ -45,9 +45,13 @@ impl TraceContext {
 }
 
 impl From<NonZeroU64> for TraceContext {
-    fn from(id: NonZeroU64) -> Self { Self(Some(id)) }
+    fn from(id: NonZeroU64) -> Self {
+        Self(Some(id))
+    }
 }
 
 impl From<Option<NonZeroU64>> for TraceContext {
-    fn from(id: Option<NonZeroU64>) -> Self { Self(id) }
+    fn from(id: Option<NonZeroU64>) -> Self {
+        Self(id)
+    }
 }

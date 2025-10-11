@@ -9,9 +9,13 @@ pub struct UnitValue<T: FromSql + ToSql>(pub T);
 impl<T: FromSql + ToSql> Row for UnitValue<T> {
     const COLUMN_COUNT: Option<usize> = Some(1);
 
-    fn column_names() -> Option<Vec<Cow<'static, str>>> { None }
+    fn column_names() -> Option<Vec<Cow<'static, str>>> {
+        None
+    }
 
-    fn to_schema() -> Option<Vec<(String, Type, Option<Value>)>> { None }
+    fn to_schema() -> Option<Vec<(String, Type, Option<Value>)>> {
+        None
+    }
 
     fn deserialize_row(map: Vec<(&str, &Type, Value)>) -> Result<Self> {
         if map.is_empty() {

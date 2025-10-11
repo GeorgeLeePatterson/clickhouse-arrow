@@ -56,8 +56,8 @@ pub fn with_bound(
     bound: &[&syn::Path],
 ) -> syn::Generics {
     struct FindTyParams<'ast> {
-        all_type_params:       HashSet<syn::Ident>,
-        relevant_type_params:  HashSet<syn::Ident>,
+        all_type_params: HashSet<syn::Ident>,
+        relevant_type_params: HashSet<syn::Ident>,
         associated_type_usage: Vec<&'ast syn::TypePath>,
     }
 
@@ -198,17 +198,17 @@ pub fn with_bound(
         .chain(associated_type_usage.into_iter().cloned())
         .map(|bounded_ty| {
             syn::WherePredicate::Type(syn::PredicateType {
-                lifetimes:   None,
-                bounded_ty:  syn::Type::Path(bounded_ty),
+                lifetimes: None,
+                bounded_ty: syn::Type::Path(bounded_ty),
                 colon_token: <syn::token::Colon>::default(),
-                bounds:      bound
+                bounds: bound
                     .iter()
                     .map(|bound| {
                         syn::TypeParamBound::Trait(syn::TraitBound {
                             paren_token: None,
-                            modifier:    syn::TraitBoundModifier::None,
-                            lifetimes:   None,
-                            path:        (*bound).clone(),
+                            modifier: syn::TraitBoundModifier::None,
+                            lifetimes: None,
+                            path: (*bound).clone(),
                         })
                     })
                     .collect(),

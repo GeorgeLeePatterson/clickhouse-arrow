@@ -7,19 +7,23 @@ use crate::Error;
 /// Represents a server error mapped to internal severity
 #[derive(Debug, Clone)]
 pub struct ServerError {
-    pub error:       Severity,
-    pub code:        i32,
-    pub name:        String,
-    pub message:     String,
+    pub error: Severity,
+    pub code: i32,
+    pub name: String,
+    pub message: String,
     pub stack_trace: String,
 }
 
 impl ServerError {
-    pub(crate) fn is_fatal(&self) -> bool { matches!(self.error, Severity::Server(_)) }
+    pub(crate) fn is_fatal(&self) -> bool {
+        matches!(self.error, Severity::Server(_))
+    }
 }
 
 impl From<ServerError> for Error {
-    fn from(error: ServerError) -> Self { Error::ServerException(error) }
+    fn from(error: ServerError) -> Self {
+        Error::ServerException(error)
+    }
 }
 
 impl std::fmt::Display for ServerError {
@@ -41,10 +45,10 @@ impl std::fmt::Display for ServerError {
 /// Helper function to match server exception to server error
 pub(super) fn map_exception_to_error(exception: ServerException) -> ServerError {
     ServerError {
-        error:       map_error_code(exception.code),
-        code:        exception.code,
-        name:        exception.name,
-        message:     exception.message,
+        error: map_error_code(exception.code),
+        code: exception.code,
+        name: exception.name,
+        message: exception.message,
         stack_trace: exception.stack_trace,
     }
 }
