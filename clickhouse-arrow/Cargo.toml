@@ -52,7 +52,7 @@ test-utils = [
 # DEPENDENCIES
 
 [dependencies]
-arrow = { version = "55", features = [
+arrow = { version = "56", features = [
     "prettyprint",
     "ipc_compression",
     "chrono-tz",
