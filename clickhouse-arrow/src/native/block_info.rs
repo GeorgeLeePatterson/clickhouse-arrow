@@ -46,6 +46,7 @@ impl BlockInfo {
         Ok(())
     }
 
+    #[allow(dead_code)] // TODO: remove once synchronous block path is fully retired
     pub(crate) fn read<R: ClickHouseBytesRead>(reader: &mut R) -> Result<Self> {
         let mut new = Self::default();
         loop {

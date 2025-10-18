@@ -99,12 +99,12 @@ pub async fn test_round_trip_large_data(
     let mut strings = Vec::new();
     for i in 0..65500 {
         ids.push(i);
-        dts.push(Some(i as i64));
+        dts.push(Some(i64::from(i)));
         let s = format!("string_{}", i % 100);
         strings.push(Some(s));
     }
     let batch = RecordBatch::try_new(
-        schema.clone(),
+        Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(ids)),
             Arc::new(TimestampMillisecondArray::from(dts)),

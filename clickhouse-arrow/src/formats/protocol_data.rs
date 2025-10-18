@@ -60,6 +60,7 @@ pub(crate) trait ProtocolData<Return, Deser: Default> {
         state: &mut DeserializerState<Deser>,
     ) -> impl Future<Output = Result<Return>> + Send;
 
+    #[allow(dead_code)] // TODO: remove once synchronous ProtocolData path is fully retired
     fn read<R: ClickHouseBytesRead + 'static>(
         _reader: &mut R,
         _revision: u64,
