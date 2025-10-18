@@ -159,9 +159,8 @@ pub(super) use deser_bulk;
 
 macro_rules! deser_bulk_async {
     ($builder:expr, $reader:expr, $rows:expr, $nulls:expr, $buf:expr, $type:ty) => {{
-        use $crate::arrow::deserialize::primitive::primitive_bulk;
         if $rows > 0 {
-            let byte_count = primitive_bulk!(tokio; $reader, $rows, $buf, $type);
+            let byte_count = $crate::arrow::deserialize::primitive::primitive_bulk!(tokio; $reader, $rows, $buf, $type);
             let values: &[$type] = bytemuck::cast_slice(&$buf[..byte_count]);
             if $nulls.is_empty() {
                 $builder.append_slice(values);
@@ -177,9 +176,8 @@ macro_rules! deser_bulk_async {
         }
     }};
     (raw; $builder:expr, $reader:expr, $rows:expr, $nulls:expr, $buf:expr, $t1:ty => $t2:ty) => {{
-        use $crate::arrow::deserialize::primitive::primitive_bulk;
         if $rows > 0 {
-            let byte_count = primitive_bulk!(tokio; $reader, $rows, $buf, $t1);
+            let byte_count = $crate::arrow::deserialize::primitive::primitive_bulk!(tokio; $reader, $rows, $buf, $t1);
             let values: &[$t1] = bytemuck::cast_slice::<u8, $t1>(&$buf[..byte_count]);
             #[allow(clippy::cast_lossless)]
             #[allow(clippy::cast_possible_wrap)]
