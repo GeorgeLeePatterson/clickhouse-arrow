@@ -630,7 +630,8 @@ write_primitive_values!(write_decimal32_values, scalar i32::default(), write_i32
             )));
         }
         Ok::<_, Error>(v as i32) // Truncate to 9 digits
-    })
+    }),
+    (Decimal32Array, |v: i32| Ok::<_, Error>(v)),
 ]);
 write_primitive_values!(write_decimal64_values, scalar i64::default(), write_i64_le, [
     (Decimal128Array, |v: i128| {
@@ -640,7 +641,8 @@ write_primitive_values!(write_decimal64_values, scalar i64::default(), write_i64
             )));
         }
         Ok::<_, Error>(v as i64) // Truncate to 18 digits
-    })
+    }),
+    (Decimal64Array, |v: i64| Ok::<_, Error>(v)),
 ]);
 write_primitive_values!(write_decimal128_values, scalar i128::default(), write_i128_le, [
     (Decimal128Array, |v: i128| Ok::<_, Error>(v)) // Up to 38 digits
@@ -670,7 +672,8 @@ put_primitive_values!(put_decimal32_values, scalar i32::default(), put_i32_le, [
             )));
         }
         Ok::<_, Error>(v as i32) // Truncate to 9 digits
-    })
+    }),
+    (Decimal32Array, |v: i32| Ok::<_, Error>(v)),
 ]);
 put_primitive_values!(put_decimal64_values, scalar i64::default(), put_i64_le, [
     (Decimal128Array, |v: i128| {
@@ -680,7 +683,8 @@ put_primitive_values!(put_decimal64_values, scalar i64::default(), put_i64_le, [
             )));
         }
         Ok::<_, Error>(v as i64) // Truncate to 18 digits
-    })
+    }),
+    (Decimal64Array, |v: i64| Ok::<_, Error>(v)),
 ]);
 put_primitive_values!(put_decimal128_values, scalar i128::default(), put_i128_le, [
     (Decimal128Array, |v: i128| Ok::<_, Error>(v)) // Up to 38 digits
