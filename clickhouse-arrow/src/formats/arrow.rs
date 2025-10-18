@@ -6,7 +6,7 @@ use super::DeserializerState;
 use super::protocol_data::{EmptyBlock, ProtocolData};
 use crate::Type;
 use crate::arrow::ArrowDeserializerState;
-use crate::compression::{compress_data_sync, decompress_data_async};
+use crate::compression::{DecompressionReader, compress_data_sync};
 use crate::connection::ClientMetadata;
 use crate::io::{ClickHouseRead, ClickHouseWrite};
 use crate::native::protocol::CompressionMethod;
@@ -72,10 +72,8 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
         if let CompressionMethod::None = metadata.compression {
             RecordBatch::read_async(reader, revision, arrow_options, state).await
         } else {
-            let mut buffer =
-                BytesMut::from_iter(decompress_data_async(reader, metadata.compression).await?);
-            // TODO: Spawn onto an executor "state.executor"
-            RecordBatch::read(&mut buffer, revision, arrow_options, state)
+            let mut decompressor = DecompressionReader::new(metadata.compression, reader).await?;
+            RecordBatch::read_async(&mut decompressor, revision, arrow_options, state).await
         }
         .inspect_err(|error| error!(?error, "deserializing arrow record batch"))
         .map(RecordBatch::into_option)

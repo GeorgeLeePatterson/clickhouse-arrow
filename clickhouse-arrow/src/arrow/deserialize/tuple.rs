@@ -77,6 +77,7 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
     Ok(Arc::new(StructArray::new(fields.clone(), arrays, null_buffer)))
 }
 
+#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
 pub(super) fn deserialize<R: ClickHouseBytesRead>(
     builders: &mut [TypedBuilder],
     reader: &mut R,

@@ -92,6 +92,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> ClickHouseWrite for T {
     }
 }
 
+#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
 pub(crate) trait ClickHouseBytesRead: bytes::Buf {
     fn try_get_var_uint(&mut self) -> Result<u64>;
 

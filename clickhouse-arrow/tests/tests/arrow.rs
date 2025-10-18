@@ -32,6 +32,21 @@ pub async fn test_round_trip_zstd(ch: Arc<ClickHouseContainer>) {
     test_round_trip(ch, Some(CompressionMethod::ZSTD)).await;
 }
 
+/// # Panics
+pub async fn test_round_trip_none_large_data(ch: Arc<ClickHouseContainer>) {
+    test_round_trip_large_data(ch, Some(CompressionMethod::None)).await;
+}
+
+/// # Panics
+pub async fn test_round_trip_lz4_large_data(ch: Arc<ClickHouseContainer>) {
+    test_round_trip_large_data(ch, Some(CompressionMethod::LZ4)).await;
+}
+
+/// # Panics
+pub async fn test_round_trip_zstd_large_data(ch: Arc<ClickHouseContainer>) {
+    test_round_trip_large_data(ch, Some(CompressionMethod::ZSTD)).await;
+}
+
 /// Test arrow e2e using `ClientBuilder`.
 ///
 /// NOTES:
@@ -48,6 +63,52 @@ pub async fn test_round_trip(ch: Arc<ClickHouseContainer>, compression: Option<C
 
     // Create test RecordBatch
     let batch = test_record_batch();
+
+    // Create schema
+    let (db, table) =
+        create_schema(&client, schema, &options).await.expect("Schema creation failed");
+
+    // Round trip
+    round_trip(&format!("{db}.{table}"), &client, batch).await.expect("Round trip failed");
+
+    // Drop schema
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+
+    client.shutdown().await.unwrap();
+    eprintln!("Client shutdown successfully");
+}
+
+/// # Panics
+pub async fn test_round_trip_large_data(
+    ch: Arc<ClickHouseContainer>,
+    compression: Option<CompressionMethod>,
+) {
+    let (client, options) = bootstrap(ch.as_ref(), compression).await;
+
+    // simple schema
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("datetime_col", DataType::Timestamp(TimeUnit::Millisecond, None), true),
+        Field::new("string_col", DataType::Utf8, true),
+    ]));
+
+    // test batch with at least 65409 rows
+    // and big enough for separate compression blocks
+    let mut ids = Vec::new();
+    let mut dts = Vec::new();
+    let mut strings = Vec::new();
+    for i in 0..65500 {
+        ids.push(i);
+        dts.push(Some(i64::from(i)));
+        let s = format!("string_{}", i % 100);
+        strings.push(Some(s));
+    }
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(ids)),
+        Arc::new(TimestampMillisecondArray::from(dts)),
+        Arc::new(StringArray::from(strings)),
+    ])
+    .expect("Failed to create RecordBatch");
 
     // Create schema
     let (db, table) =

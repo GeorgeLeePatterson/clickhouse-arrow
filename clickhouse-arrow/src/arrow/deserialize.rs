@@ -238,6 +238,7 @@ pub(crate) trait ClickHouseArrowDeserializer {
         rbuffer: &mut Vec<u8>,
     ) -> Result<ArrayRef>;
 
+    #[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
     fn deserialize_arrow<R: ClickHouseBytesRead>(
         &self,
         builder: &mut TypedBuilder,
@@ -391,6 +392,7 @@ impl ClickHouseArrowDeserializer for Type {
     }
 
     #[expect(clippy::too_many_lines)]
+    #[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
     fn deserialize_arrow<R: ClickHouseBytesRead>(
         &self,
         builder: &mut TypedBuilder,

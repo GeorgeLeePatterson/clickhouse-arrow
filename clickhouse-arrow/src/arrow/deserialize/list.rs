@@ -208,6 +208,7 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
 
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_possible_wrap)]
+#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
 pub(super) fn deserialize<R: ClickHouseBytesRead>(
     builder: &mut TypedListBuilder,
     reader: &mut R,

@@ -224,7 +224,10 @@ pub(crate) fn arrow_to_ch_type(
         DataType::Float32 => Type::Float32,
         DataType::Float64 => Type::Float64,
         DataType::Decimal32(_, s) => Type::Decimal32(*s as usize),
-        DataType::Decimal64(_, s) => Type::Decimal64(*s as usize),
+        DataType::Decimal64(p, s) => match *p {
+            p if p <= 9 => Type::Decimal32(*s as usize),
+            _ => Type::Decimal64(*s as usize),
+        },
         DataType::Decimal128(p, s) => match *p {
             p if p <= 9 => Type::Decimal32(*s as usize),
             p if p <= 18 => Type::Decimal64(*s as usize),

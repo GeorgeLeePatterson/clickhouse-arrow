@@ -84,6 +84,7 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     inner.deserialize_arrow_async(builder, reader, data_type, rows, &nulls, rbuffer).await
 }
 
+#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
 pub(crate) fn deserialize<R: ClickHouseBytesRead>(
     inner: &Type,
     builder: &mut TypedBuilder,
