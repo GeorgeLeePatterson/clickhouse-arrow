@@ -65,7 +65,7 @@ chrono-tz = "0.10"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 indexmap = { version = "2" }
 lz4_flex = "0.11"
-opentelemetry-semantic-conventions = { version = "0.30", features = [
+opentelemetry-semantic-conventions = { version = "0.31", features = [
     "default",
     "semconv_experimental",
 ] }
