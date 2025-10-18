@@ -363,6 +363,7 @@ impl Type {
         .boxed()
     }
 
+    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
     pub(crate) fn deserialize_column_sync(
         &self,
         reader: &mut impl ClickHouseBytesRead,
@@ -925,6 +926,7 @@ pub(crate) trait Deserializer {
         state: &mut DeserializerState,
     ) -> impl Future<Output = Result<Vec<Value>>>;
 
+    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
     fn read_sync(
         type_: &Type,
         reader: &mut impl ClickHouseBytesRead,

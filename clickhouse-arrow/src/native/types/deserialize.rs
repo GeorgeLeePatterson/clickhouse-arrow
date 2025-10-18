@@ -20,6 +20,7 @@ pub(crate) trait ClickHouseNativeDeserializer {
         state: &'a mut DeserializerState,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
+    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
     fn deserialize_prefix<R: ClickHouseBytesRead>(&self, reader: &mut R) -> Result<()>;
 }
 
@@ -98,6 +99,7 @@ impl ClickHouseNativeDeserializer for Type {
         .boxed()
     }
 
+    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
     fn deserialize_prefix<R: ClickHouseBytesRead>(&self, reader: &mut R) -> Result<()> {
         match self {
             Type::Array(inner) | Type::Nullable(inner) => inner.deserialize_prefix(reader)?,
