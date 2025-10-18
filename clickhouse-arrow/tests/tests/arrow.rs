@@ -103,14 +103,11 @@ pub async fn test_round_trip_large_data(
         let s = format!("string_{}", i % 100);
         strings.push(Some(s));
     }
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int32Array::from(ids)),
-            Arc::new(TimestampMillisecondArray::from(dts)),
-            Arc::new(StringArray::from(strings)),
-        ],
-    )
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(ids)),
+        Arc::new(TimestampMillisecondArray::from(dts)),
+        Arc::new(StringArray::from(strings)),
+    ])
     .expect("Failed to create RecordBatch");
 
     // Create schema
@@ -552,10 +549,10 @@ pub async fn test_nullable_array_serialization(ch: Arc<ClickHouseContainer>) {
 
     let nullable_array = builder.finish();
 
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(id_array), Arc::new(nullable_array)],
-    )
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(id_array),
+        Arc::new(nullable_array),
+    ])
     .expect("Failed to create RecordBatch");
 
     // Create unique table name
