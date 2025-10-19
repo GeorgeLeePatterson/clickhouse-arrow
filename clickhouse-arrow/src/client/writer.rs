@@ -100,8 +100,9 @@ impl<W: ClickHouseWrite> Writer<W> {
 
         if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS {
             if let Some(query_params) = params.params {
-                // Convert query parameters to Settings format and encode them
-                Settings::from(query_params).encode(writer, revision).await?;
+                // Encode query parameters directly (not as Settings)
+                tracing::debug!("Sending {} query parameters", query_params.len());
+                query_params.encode(writer, revision).await?;
             }
             writer.write_string("").await?; // end of params
         }
