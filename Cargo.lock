@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "clickhouse-arrow"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "clickhouse-arrow-derive"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "proc-macro2",
  "quote",
