@@ -77,6 +77,10 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
                 Self::read_table_columns(reader).await.map(ServerPacket::TableColumns)
             }
             ServerPacketId::EndOfStream => Ok(ServerPacket::EndOfStream),
+            // When query parameters are used, ClickHouse may send ProfileEvents before the header
+            ServerPacketId::ProfileEvents => Self::read_profile_events(reader, revision, metadata)
+                .await
+                .map(ServerPacket::ProfileEvents),
             // Errors
             ServerPacketId::Exception => {
                 Self::read_exception(reader).await.map(ServerPacket::Exception)

@@ -1,6 +1,7 @@
 pub mod arrow;
 pub mod compat;
 pub mod native;
+pub mod params;
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
