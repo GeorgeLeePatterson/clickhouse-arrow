@@ -1042,7 +1042,7 @@ mod tests {
         );
 
         // Setup: Create FieldRef instances for the schema
-        let fields = vec![
+        let fields = [
             Field::new("string_field", DataType::Utf8, false),
             Field::new("binary_field", DataType::Binary, false),
             Field::new("nullable_string_field", DataType::Utf8, true),
