@@ -42,9 +42,6 @@ unused_results = "warn"
 unused_qualifications = "warn"
 variant_size_differences = "warn"
 
-# Running collection of lints I find quite absurd, but alas it is pedantic
-# naive_bytecount = "allow"
-
 [profile.release-with-debug]
 inherits = "release"
 debug = "full"
