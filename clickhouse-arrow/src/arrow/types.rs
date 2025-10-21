@@ -1042,7 +1042,8 @@ mod tests {
         );
 
         // Setup: Create FieldRef instances for the schema
-        let fields = [Field::new("string_field", DataType::Utf8, false),
+        let fields = [
+            Field::new("string_field", DataType::Utf8, false),
             Field::new("binary_field", DataType::Binary, false),
             Field::new("nullable_string_field", DataType::Utf8, true),
             Field::new(
@@ -1056,7 +1057,8 @@ mod tests {
                 true,
             ),
             Field::new("date_field", DataType::Date32, false),
-            Field::new("int_field", DataType::Int32, false)];
+            Field::new("int_field", DataType::Int32, false),
+        ];
 
         // Setup: Define SchemaConversions with enum mappings
         let mut conversions = HashMap::new();
