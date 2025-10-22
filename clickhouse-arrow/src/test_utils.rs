@@ -1216,11 +1216,11 @@ pub mod arrow_tests {
         fn test_create_test_schema() {
             // Test with strings_as_strings = true
             let schema = create_test_schema(true);
-            assert!(schema.fields().len() > 0);
+            assert!(!schema.fields().is_empty());
 
             // Test with strings_as_strings = false
             let schema_binary = create_test_schema(false);
-            assert!(schema_binary.fields().len() > 0);
+            assert!(!schema_binary.fields().is_empty());
         }
 
         #[test]

@@ -3,15 +3,6 @@
 //! This module provides shared functionality for performance testing,
 //! including concurrent insert helpers, client setup, and formatting utilities.
 
-#![allow(
-    unused_results,
-    clippy::uninlined_format_args,
-    clippy::cast_precision_loss,
-    clippy::doc_markdown,
-    clippy::manual_is_multiple_of,
-    clippy::manual_div_ceil
-)]
-
 use clickhouse_arrow::prelude::*;
 use clickhouse_arrow::test_utils::ClickHouseContainer;
 use clickhouse_arrow::test_utils::arrow_tests::{self, BatchConfig};
@@ -53,7 +44,7 @@ pub(crate) fn format_number(n: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
 
     for (i, ch) in chars.iter().enumerate() {
-        if i > 0 && (chars.len() - i) % 3 == 0 {
+        if i > 0 && (chars.len() - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(*ch);
@@ -65,6 +56,7 @@ pub(crate) fn format_number(n: usize) -> String {
 /// Calculate bytes per row for a given batch configuration
 ///
 /// Uses a 100K row sample to estimate memory usage per row.
+#[allow(clippy::cast_precision_loss)]
 #[allow(dead_code)] // Used by large_scale and dynamic_tune examples
 pub(crate) fn calculate_bytes_per_row(config: &BatchConfig) -> f64 {
     let test_batch = arrow_tests::create_test_batch_with_config(100_000, config);
@@ -101,10 +93,10 @@ pub(crate) async fn setup_benchmark_client(
 /// Insert data concurrently across multiple batches
 ///
 /// This function:
-/// - Splits total_rows into batches of batch_size
-/// - Generates unique IDs across batches if config.unique_id is true
+/// - Splits `total_rows` into batches of `batch_size`
+/// - Generates unique IDs across batches if `config.unique_id` is true
 /// - Inserts batches concurrently with specified worker count
-/// - Handles the last batch being smaller than batch_size
+/// - Handles the last batch being smaller than `batch_size`
 #[allow(dead_code)] // Used by large_scale and dynamic_tune examples
 pub(crate) async fn insert_concurrent(
     client: ArrowClient,
@@ -115,7 +107,7 @@ pub(crate) async fn insert_concurrent(
     config: &BatchConfig,
 ) {
     let query = format!("INSERT INTO {table} FORMAT NATIVE");
-    let num_batches = (total_rows + batch_size - 1) / batch_size;
+    let num_batches = total_rows.div_ceil(batch_size);
     let config = *config; // Copy config for move into async blocks
 
     let _results: Vec<_> = stream::iter(0..num_batches)
@@ -140,7 +132,7 @@ pub(crate) async fn insert_concurrent(
                 let mut stream = c
                     .insert(q.as_str(), batch, None)
                     .await
-                    .inspect_err(|e| eprintln!("Insert error on batch {}\n{e:?}", batch_idx))
+                    .inspect_err(|e| eprintln!("Insert error on batch {batch_idx}\n{e:?}"))
                     .unwrap();
 
                 // Consume the stream to complete the insert
@@ -250,16 +242,16 @@ pub(crate) fn print_params_table(title: &str, params: &[(&str, String)]) {
     use comfy_table::{Attribute, Cell, Table};
 
     let mut table = Table::new();
-    table
+    let _ = table
         .load_preset(UTF8_FULL)
         .set_header(vec![Cell::new(title).add_attribute(Attribute::Bold)]);
 
     // Add each parameter as a row with key and value
     for (key, value) in params {
-        table.add_row(vec![format!("{}:  {}", key, value)]);
+        let _ = table.add_row(vec![format!("{}:  {}", key, value)]);
     }
 
-    eprintln!("{}", table);
+    eprintln!("{table}");
 }
 
 /// Print compact schema summary, showing only non-zero column types

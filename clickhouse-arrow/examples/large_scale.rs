@@ -1,17 +1,4 @@
 #![expect(unused_crate_dependencies)]
-#![allow(
-    unused_results,
-    clippy::uninlined_format_args,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::doc_markdown,
-    clippy::manual_is_multiple_of,
-    clippy::unused_enumerate_index,
-    clippy::manual_div_ceil,
-    clippy::default_constructed_unit_structs,
-    clippy::too_many_lines
-)]
 mod common;
 
 use std::time::Instant;
@@ -52,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::any::Any + Send>> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
 async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     let total_start = Instant::now();
     let db = common::DB_NAME;
@@ -94,14 +85,14 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     let bytes_per_row = calculate_bytes_per_row(&config);
 
     eprintln!("RecordBatch Memory Analysis (100K row sample):");
-    eprintln!("  Bytes per row: {:.2} bytes/row", bytes_per_row);
+    eprintln!("  Bytes per row: {bytes_per_row:.2} bytes/row");
     eprintln!();
 
     eprintln!("Benchmark Parameters:");
-    eprintln!("  Row counts:    {:?}", row_counts);
-    eprintln!("  Worker counts: {:?}", worker_counts);
-    eprintln!("  Batch sizes:   {:?}", batch_sizes);
-    eprintln!("  Iterations:    {} (outlier-stripped average)", iters);
+    eprintln!("  Row counts:    {row_counts:?}");
+    eprintln!("  Worker counts: {worker_counts:?}");
+    eprintln!("  Batch sizes:   {batch_sizes:?}");
+    eprintln!("  Iterations:    {iters} (outlier-stripped average)");
     eprintln!();
 
     let mut all_results = Vec::new();
@@ -122,7 +113,7 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
 
             // Run tests for each worker count
             for workers in &worker_counts {
-                let num_batches = (*total_rows + batch_size - 1) / batch_size;
+                let num_batches = (*total_rows).div_ceil(*batch_size);
 
                 eprintln!(
                     "    --- {} workers ({} batches, {:.2} batches/worker) ---",
@@ -141,7 +132,7 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
                 let mut durations = Vec::with_capacity(iters);
 
                 for iter in 1..=iters {
-                    eprintln!("      Iteration {}/{}", iter, iters);
+                    eprintln!("      Iteration {iter}/{iters}");
 
                     // Time the insert only
                     let start = Instant::now();
@@ -251,7 +242,7 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     eprintln!();
     eprintln!("SUMMARY RESULTS (sorted by avg throughput)");
     let mut table = Table::new();
-    table.load_preset(UTF8_FULL).set_header(vec![
+    let _ = table.load_preset(UTF8_FULL).set_header(vec![
         "Workers",
         "Batch Size",
         "Rows",
@@ -265,7 +256,7 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     ]);
 
     for result in &all_results {
-        table.add_row(vec![
+        let _ = table.add_row(vec![
             result.workers.to_string(),
             format_number(result.batch_size),
             format_number(result.rows),
@@ -279,7 +270,7 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
         ]);
     }
 
-    eprintln!("{}", table);
+    eprintln!("{table}");
 
     // Calculate and show average count and drop times
     let avg_count_time =
@@ -287,8 +278,8 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     let avg_drop_time =
         all_results.iter().map(|r| r.drop_time_secs).sum::<f64>() / all_results.len() as f64;
     eprintln!();
-    eprintln!("Average count(*) time: {:.3}s", avg_count_time);
-    eprintln!("Average drop time:     {:.3}s", avg_drop_time);
+    eprintln!("Average count(*) time: {avg_count_time:.3}s");
+    eprintln!("Average drop time:     {avg_drop_time:.3}s");
 
     // Show best result
     let best = all_results
@@ -314,7 +305,7 @@ async fn run(ch: &'static ClickHouseContainer) -> Result<()> {
     eprintln!();
     eprintln!("📊 Test Schema:");
     print_schema_summary(&config);
-    eprintln!("  RecordBatch: {:.2} bytes/row", bytes_per_row);
+    eprintln!("  RecordBatch: {bytes_per_row:.2} bytes/row");
 
     // Warning for variable-length types
     if config.utf8 > 0 || config.binary > 0 {

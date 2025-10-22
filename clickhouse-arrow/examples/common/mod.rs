@@ -1,5 +1,3 @@
-#![allow(clippy::uninlined_format_args)]
-
 pub(crate) mod scale_utils;
 
 use std::panic::AssertUnwindSafe;
@@ -42,9 +40,9 @@ pub(crate) fn print_banner(text: &str, width: Option<usize>) {
 
     let middle = format!("║{}{}{}║", " ".repeat(left_padding), text, " ".repeat(right_padding));
 
-    eprintln!("{}", top);
-    eprintln!("{}", middle);
-    eprintln!("{}", bottom);
+    eprintln!("{top}");
+    eprintln!("{middle}");
+    eprintln!("{bottom}");
 }
 
 pub(crate) fn init(directives: Option<&[(&str, &str)]>) {
