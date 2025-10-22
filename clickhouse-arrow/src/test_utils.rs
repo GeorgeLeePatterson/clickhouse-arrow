@@ -1141,6 +1141,141 @@ pub mod arrow_tests {
                 assert_eq!(id, idx as i64);
             }
         }
+
+        #[test]
+        fn test_create_test_schema_fixed_types() {
+            let schema = create_test_schema_fixed_types();
+            assert_eq!(schema.fields().len(), 4); // id, int, value, ts
+
+            assert_eq!(schema.field(0).name(), "id");
+            assert_eq!(schema.field(1).name(), "int");
+            assert_eq!(schema.field(2).name(), "value");
+            assert_eq!(schema.field(3).name(), "ts");
+        }
+
+        #[test]
+        fn test_create_test_batch_fixed_types() {
+            let batch = create_test_batch_fixed_types(50);
+            assert_eq!(batch.num_rows(), 50);
+            assert_eq!(batch.num_columns(), 4);
+
+            // Verify schema
+            assert_eq!(batch.schema().field(0).name(), "id");
+            assert_eq!(batch.schema().field(1).name(), "int");
+        }
+
+        #[test]
+        fn test_create_test_batch_with_config_offset() {
+            let config = BatchConfig {
+                int32: 2,
+                float64: 1,
+                include_id: true,
+                unique_id: true, // Required for offset to work
+                ..Default::default()
+            };
+
+            let batch = create_test_batch_with_config_offset(100, &config, Some(0));
+            assert_eq!(batch.num_rows(), 100);
+            assert_eq!(batch.num_columns(), 4); // id + 2*int32 + 1*float64
+
+            // Test with offset
+            let batch_offset = create_test_batch_with_config_offset(50, &config, Some(100));
+            assert_eq!(batch_offset.num_rows(), 50);
+
+            // Verify IDs start at offset
+            let id_array = batch_offset.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+            assert_eq!(id_array.value(0), 100);
+            assert_eq!(id_array.value(49), 149);
+        }
+
+        #[test]
+        fn test_create_test_batch_generic() {
+            let batch = create_test_batch_generic(100);
+            assert_eq!(batch.num_rows(), 100);
+            // Generic batch uses default_fixed config
+            assert!(batch.num_columns() >= 4); // At least id, int32, float64, timestamp
+        }
+
+        #[test]
+        fn test_create_test_batch_with_config() {
+            let config = BatchConfig {
+                int32: 1,
+                float64: 2,
+                utf8: 1,
+                utf8_len: 20,
+                include_id: true,
+                ..Default::default()
+            };
+
+            let batch = create_test_batch_with_config(100, &config);
+            assert_eq!(batch.num_rows(), 100);
+            assert_eq!(batch.num_columns(), 5); // id + 1*int32 + 2*float64 + 1*utf8
+        }
+
+        #[test]
+        fn test_create_test_schema() {
+            // Test with strings_as_strings = true
+            let schema = create_test_schema(true);
+            assert!(schema.fields().len() > 0);
+
+            // Test with strings_as_strings = false
+            let schema_binary = create_test_schema(false);
+            assert!(schema_binary.fields().len() > 0);
+        }
+
+        #[test]
+        fn test_create_test_batch() {
+            // Test with strings_as_strings = true
+            let batch = create_test_batch(50, true);
+            assert_eq!(batch.num_rows(), 50);
+
+            // Test with strings_as_strings = false
+            let batch_binary = create_test_batch(50, false);
+            assert_eq!(batch_binary.num_rows(), 50);
+        }
+
+        #[test]
+        fn test_batch_config_from_env_defaults() {
+            // Test with no env vars set - should use default_fixed
+            let config = BatchConfig::from_env();
+            assert_eq!(config.int32, 2);
+            assert_eq!(config.float64, 1);
+            assert_eq!(config.timestamp, 1);
+        }
+
+        #[test]
+        fn test_batch_config_all_numeric_types() {
+            let config = BatchConfig {
+                int8: 1,
+                int16: 1,
+                int32: 1,
+                int64: 1,
+                uint8: 1,
+                uint16: 1,
+                uint32: 1,
+                uint64: 1,
+                float32: 1,
+                float64: 1,
+                bool: 1,
+                timestamp: 1,
+                include_id: true,
+                ..Default::default()
+            };
+
+            let batch = create_test_batch_with_config(50, &config);
+            assert_eq!(batch.num_rows(), 50);
+            assert_eq!(batch.num_columns(), 13); // id + 12 types
+        }
+
+        #[test]
+        fn test_batch_config_binary_types() {
+            let config =
+                BatchConfig { binary: 2, binary_len: 32, include_id: false, ..Default::default() };
+
+            let batch = create_test_batch_with_config(25, &config);
+            assert_eq!(batch.num_rows(), 25);
+            assert_eq!(batch.num_columns(), 2); // 2 binary columns
+        }
     }
 }
 
@@ -1188,5 +1323,16 @@ mod container_tests {
         let builder = ClickHouseContainerBuilder::new().with_tmpfs().with_config("test.xml");
         assert_eq!(builder.config, Some("test.xml".to_string()));
         assert!(builder.tmpfs);
+    }
+
+    #[tokio::test]
+    async fn test_get_or_create_benchmark_container() {
+        // Test with no config
+        let container1 = get_or_create_benchmark_container(None).await;
+        assert!(container1.http_port > 0);
+
+        // Test with same config - should return same instance (static)
+        let container2 = get_or_create_benchmark_container(None).await;
+        assert_eq!(container1.http_port, container2.http_port);
     }
 }
