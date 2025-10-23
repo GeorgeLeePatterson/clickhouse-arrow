@@ -99,6 +99,10 @@ cargo audit
 - Integration tests use Docker containers (via testcontainers)
 - All tests must pass before merging
 - Aim for high test coverage (currently at 90%+)
+- If the testcontainers are killed mid job then you may need to clean them up. The following kills all clickhouse containers so use with care:
+  ```bash
+  docker rm -f $(docker ps -aq --filter "ancestor=clickhouse/clickhouse-server")
+  ```
 
 ## Architecture Overview
 

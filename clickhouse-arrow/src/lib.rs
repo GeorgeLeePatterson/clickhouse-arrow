@@ -184,6 +184,8 @@
 //!   `enum_i16` for `CreateOptions` during schema creation.
 //! - **Impact**: The default behavior will ignore enums when starting from arrow.
 
+#![allow(unused_crate_dependencies)]
+
 pub mod arrow;
 mod client;
 mod compression;
@@ -201,7 +203,7 @@ mod schema;
 mod settings;
 pub mod spawn;
 pub mod telemetry;
-#[cfg(feature = "test-utils")]
+#[cfg(any(feature = "test-utils", feature = "tmpfs-size"))]
 pub mod test_utils;
 
 #[cfg(feature = "derive")]

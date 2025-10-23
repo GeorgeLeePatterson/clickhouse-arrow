@@ -153,10 +153,16 @@ impl<T: ClientFormat> Connection<T> {
         #[cfg(feature = "inner_pool")]
         let mut state = vec![ArcSwap::from(state)];
 
-        // Currently "inner_pool" = 2 connections. But this can support up to 4 (possibly more with
-        // u64 load_counter)
+        // Inner pool: Spawn additional connections for improved concurrency.
+        // Default is 4, max is 16. User can configure via fast_mode_size option.
         #[cfg(feature = "inner_pool")]
-        for _ in 0..options.ext.fast_mode_size.map_or(2, |s| s.clamp(2, 4)) {
+        let inner_pool_size = options
+            .ext
+            .fast_mode_size
+            .map_or(load::DEFAULT_MAX_CONNECTIONS, |s| s.clamp(2, load::ABSOLUTE_MAX_CONNECTIONS));
+
+        #[cfg(feature = "inner_pool")]
+        for _ in 0..inner_pool_size.saturating_sub(1) {
             let events = Arc::clone(&events);
             state.push(ArcSwap::from(Arc::new(
                 Self::connect_inner(&addrs, &mut io_task, events, &options, metadata).await?,
@@ -169,10 +175,8 @@ impl<T: ClientFormat> Connection<T> {
             options: Arc::new(options),
             metadata,
             state,
-            // Currently only using 2 connections
-            // TODO: Provide inner pool configuration option
             #[cfg(feature = "inner_pool")]
-            load_balancer: Arc::new(load::AtomicLoad::new(2)),
+            load_balancer: Arc::new(load::AtomicLoad::new(inner_pool_size)),
         })
     }
 
@@ -495,55 +499,193 @@ impl<T: ClientFormat> Drop for Connection<T> {
 mod load {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    pub(super) const DEFAULT_MAX_CONNECTIONS: u8 = 4;
+    pub(super) const ABSOLUTE_MAX_CONNECTIONS: u8 = 16;
+
+    /// Array-based load balancer for distributing operations across multiple connections.
+    ///
+    /// Each connection has a dedicated 64-bit atomic counter tracking its current load.
+    /// This prevents the overflow issues inherent in bit-packed approaches and allows
+    /// scaling up to 16 concurrent connections.
     #[derive(Debug)]
     pub(super) struct AtomicLoad {
-        load_counter:    AtomicUsize,
+        load_counters:   Box<[AtomicUsize]>,
         max_connections: u8,
     }
 
     impl AtomicLoad {
-        /// Try and create the load balancer.
+        /// Create a new load balancer with the specified maximum connections.
         ///
         /// # Panics
-        /// - Currently only 4 connections are supported. Errors if max > 4.
+        /// - If `max_connections` is 0
+        /// - If `max_connections` exceeds 16
         pub(super) fn new(max_connections: u8) -> Self {
-            assert!(max_connections <= 4, "Max 4 connections supported");
-            assert!(max_connections > 0, "At leat 1 connection required");
-            Self { load_counter: AtomicUsize::new(0), max_connections }
+            assert!(max_connections > 0, "At least 1 connection required");
+            assert!(
+                max_connections <= ABSOLUTE_MAX_CONNECTIONS,
+                "Max {ABSOLUTE_MAX_CONNECTIONS} connections supported"
+            );
+
+            let load_counters = (0..max_connections)
+                .map(|_| AtomicUsize::new(0))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+
+            Self { load_counters, max_connections }
         }
 
-        /// Assign a connection index, incrementing load by weight
-        /// If key is Some, use key % `max_connections` (deterministic)
-        /// If key is None, use least-loaded connection
-        /// Returns connection index
+        /// Assign a connection index, incrementing its load by the specified weight.
+        ///
+        /// If `key` is Some, uses deterministic assignment (key % `max_connections`).
+        /// If `key` is None, selects the least-loaded connection.
+        ///
+        /// Returns the selected connection index.
         pub(super) fn assign(&self, key: Option<usize>, weight: usize) -> usize {
             let idx = if let Some(k) = key {
-                k % usize::from(self.max_connections) // Deterministic assignment
+                k % usize::from(self.max_connections)
             } else {
                 // Select least-loaded connection
-                let load = self.load_counter.load(Ordering::Acquire);
-                usize::from(
-                    (0..self.max_connections)
-                        .min_by_key(|&i| (load >> (i * 8)) & 0xFF)
-                        .unwrap_or(0),
-                )
+                (0..self.max_connections)
+                    .min_by_key(|&i| self.load_counters[usize::from(i)].load(Ordering::Acquire))
+                    .unwrap_or(0)
+                    .into()
             };
-            if weight == 0 {
-                return idx;
-            }
 
-            // Increment load
-            let _ = self.load_counter.fetch_add(weight << (idx * 8), Ordering::SeqCst);
+            if weight > 0 {
+                let _ = self.load_counters[idx].fetch_add(weight, Ordering::SeqCst);
+            }
             idx
         }
 
-        /// Finish an operation, decrementing load by weight for index
+        /// Decrement load by weight for the connection at the specified index.
         pub(crate) fn finish(&self, weight: usize, idx: usize) {
-            if weight == 0 {
+            if weight == 0 || idx >= self.load_counters.len() {
                 return;
             }
+            let _ = self.load_counters[idx].fetch_sub(weight, Ordering::SeqCst);
+        }
+    }
 
-            let _ = self.load_counter.fetch_sub(weight << (idx * 8), Ordering::SeqCst);
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_atomic_load_supports_16_connections() {
+            let load = AtomicLoad::new(16);
+
+            // Assign 1000 tasks across 16 connections
+            let assignments: Vec<_> = (0..1000).map(|_| load.assign(None, 1)).collect();
+
+            // Verify reasonable distribution (should be ~62-63 per connection)
+            for i in 0..16 {
+                let count = assignments.iter().filter(|&&idx| idx == i).count();
+                assert!(
+                    (50..=75).contains(&count),
+                    "Connection {i} got {count} assignments (expected ~62)"
+                );
+            }
+        }
+
+        #[test]
+        fn test_no_overflow_with_heavy_inserts() {
+            let load = AtomicLoad::new(4);
+
+            // Simulate 1000 concurrent InsertMany operations (weight=7)
+            for _ in 0..1000 {
+                let idx = load.assign(None, 7);
+                // Immediately finish to prevent unbounded growth
+                load.finish(7, idx);
+            }
+
+            // All counters should be back to 0
+            for i in 0..4 {
+                assert_eq!(load.load_counters[i].load(Ordering::Acquire), 0);
+            }
+        }
+
+        #[test]
+        fn test_deterministic_assignment_by_key() {
+            let load = AtomicLoad::new(8);
+
+            // Same key should always go to same connection
+            let key = 12345;
+            let idx1 = load.assign(Some(key), 1);
+            let idx2 = load.assign(Some(key), 1);
+            let idx3 = load.assign(Some(key), 1);
+
+            assert_eq!(idx1, idx2);
+            assert_eq!(idx2, idx3);
+            assert_eq!(idx1, key % 8);
+        }
+
+        #[test]
+        fn test_least_loaded_selection() {
+            let load = AtomicLoad::new(4);
+
+            // Manually set load: [100, 50, 200, 75]
+            load.load_counters[0].store(100, Ordering::Release);
+            load.load_counters[1].store(50, Ordering::Release);
+            load.load_counters[2].store(200, Ordering::Release);
+            load.load_counters[3].store(75, Ordering::Release);
+
+            // Next assignment should go to connection 1 (load=50)
+            let idx = load.assign(None, 1);
+            assert_eq!(idx, 1);
+        }
+
+        #[test]
+        #[should_panic(expected = "Max 16 connections")]
+        fn test_rejects_too_many_connections() { drop(AtomicLoad::new(17)); }
+
+        #[test]
+        #[should_panic(expected = "At least 1 connection")]
+        fn test_rejects_zero_connections() { drop(AtomicLoad::new(0)); }
+
+        #[test]
+        fn test_zero_weight_returns_index_without_increment() {
+            let load = AtomicLoad::new(4);
+
+            let idx = load.assign(None, 0);
+            assert!(idx < 4);
+
+            // All counters should still be 0
+            for i in 0..4 {
+                assert_eq!(load.load_counters[i].load(Ordering::Acquire), 0);
+            }
+        }
+
+        #[test]
+        fn test_finish_with_invalid_index() {
+            let load = AtomicLoad::new(4);
+
+            // Assign some load
+            let idx = load.assign(None, 10);
+            load.load_counters[idx].store(10, Ordering::Release);
+
+            // Finish with out-of-bounds index should not panic
+            load.finish(5, 999);
+
+            // Original load should be unchanged
+            assert_eq!(load.load_counters[idx].load(Ordering::Acquire), 10);
+        }
+
+        #[test]
+        fn test_finish_with_zero_weight() {
+            let load = AtomicLoad::new(4);
+
+            // Assign some load
+            let idx = load.assign(None, 10);
+            load.load_counters[idx].store(10, Ordering::Release);
+
+            // Finish with zero weight should not modify counters
+            load.finish(0, idx);
+
+            // Load should be unchanged
+            assert_eq!(load.load_counters[idx].load(Ordering::Acquire), 10);
+
+            // Also test zero weight with invalid index (covers both branches)
+            load.finish(0, 999);
         }
     }
 }
