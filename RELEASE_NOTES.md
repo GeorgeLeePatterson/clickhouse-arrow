@@ -1,20 +1,28 @@
-## [0.1.7] - 2025-10-19
+## [0.2.0] - 2025-11-04
 
 ### Bug Fixes
 
-- Use DecompressionReader instead of a decompress_data_async ([#54](https://github.com/georgeleepatterson/clickhouse-arrow/issues/54)) ([30fa4d7](https://github.com/georgeleepatterson/clickhouse-arrow/commit/30fa4d7fb6df0c8db36fccc562dd255f5a4a1480))
-- Remove unused macro imports for nightly Rust compatibility ([#68](https://github.com/georgeleepatterson/clickhouse-arrow/issues/68)) ([7de75bd](https://github.com/georgeleepatterson/clickhouse-arrow/commit/7de75bda44113a9f54072dd1528e529e0d214068))
+- Resolve stack overflow and implement query parameters ([#52](https://github.com/georgeleepatterson/clickhouse-arrow/issues/52)) ([#71](https://github.com/georgeleepatterson/clickhouse-arrow/issues/71)) ([5f57e1e](https://github.com/georgeleepatterson/clickhouse-arrow/commit/5f57e1e637546ae568840fee6464e02201ca526a))
+
+### Features
+
+- Increase connection limit to 16, fix overflow bug ([#77](https://github.com/georgeleepatterson/clickhouse-arrow/issues/77)) ([013c06d](https://github.com/georgeleepatterson/clickhouse-arrow/commit/013c06dcb0de23e2ce7d8ea3364dd667b451f6c0))
+- Add performance benchmark suite with tmpfs support ([#78](https://github.com/georgeleepatterson/clickhouse-arrow/issues/78)) ([58d543f](https://github.com/georgeleepatterson/clickhouse-arrow/commit/58d543f6e8f0b6125bfaa1643879cea2763f3388))
 
 ### Miscellaneous Tasks
 
-- Skip auto-approve for dependabot runs ([ceb49bb](https://github.com/georgeleepatterson/clickhouse-arrow/commit/ceb49bb86b594b4ca8c1b715e5cd42b78d7c446f))
-- Refresh opentelemetry + ureq ([#66](https://github.com/georgeleepatterson/clickhouse-arrow/issues/66)) ([2b456d2](https://github.com/georgeleepatterson/clickhouse-arrow/commit/2b456d24c64210b2f1346b529b0f8900bcb32b61))
-- Refresh GitHub Actions ([#69](https://github.com/georgeleepatterson/clickhouse-arrow/issues/69)) ([7809870](https://github.com/georgeleepatterson/clickhouse-arrow/commit/7809870ae4bc3d412070e9afac5e468b20472ecf))
+- Patches justfile ([b1835a8](https://github.com/georgeleepatterson/clickhouse-arrow/commit/b1835a8767b6c0cc69b4376caf0988e858b9492e))
+- Patches justfile release ([b988d65](https://github.com/georgeleepatterson/clickhouse-arrow/commit/b988d65da58ed5b864a270e8f475fe9fbc20d786))
 
 ### Build
 
-- Upgrade arrow to 56 ([#65](https://github.com/georgeleepatterson/clickhouse-arrow/issues/65)) ([309a7a3](https://github.com/georgeleepatterson/clickhouse-arrow/commit/309a7a3da1ba84525dbf8cbfb5af45d2532b3e1e))
-- Bump the patch-updates group across 1 directory with 13 updates ([#63](https://github.com/georgeleepatterson/clickhouse-arrow/issues/63)) ([fe5e4b2](https://github.com/georgeleepatterson/clickhouse-arrow/commit/fe5e4b2626bc5d2a1f28487628dccfdc81c73688))
-- Bump indexmap from 2.10.0 to 2.11.4 ([#51](https://github.com/georgeleepatterson/clickhouse-arrow/issues/51)) ([c9f4006](https://github.com/georgeleepatterson/clickhouse-arrow/commit/c9f40060a12f48ceedfc4911df252b8485e326b8))
+- Bump the patch-updates group across 1 directory with 4 updates ([#80](https://github.com/georgeleepatterson/clickhouse-arrow/issues/80)) ([930c384](https://github.com/georgeleepatterson/clickhouse-arrow/commit/930c38435ae12d72847fe6349419550c9b717164))
+- Bump rust_decimal from 1.37.2 to 1.39.0 ([#76](https://github.com/georgeleepatterson/clickhouse-arrow/issues/76)) ([bb5dd61](https://github.com/georgeleepatterson/clickhouse-arrow/commit/bb5dd61476ed18868d2adb7dbb76a37544eab603))
+- Bump bytemuck from 1.23.2 to 1.24.0 ([#75](https://github.com/georgeleepatterson/clickhouse-arrow/issues/75)) ([6e28ab2](https://github.com/georgeleepatterson/clickhouse-arrow/commit/6e28ab2c1424bfdf893ec8638bcc5d4ff32b5a67))
+- Bump clickhouse from 0.13.3 to 0.14.0 ([#74](https://github.com/georgeleepatterson/clickhouse-arrow/issues/74)) ([046eb1f](https://github.com/georgeleepatterson/clickhouse-arrow/commit/046eb1fa171ee96bba3308f0509ad12793de9f1c))
+- Bump tokio from 1.47.1 to 1.48.0 ([#73](https://github.com/georgeleepatterson/clickhouse-arrow/issues/73)) ([0e638f3](https://github.com/georgeleepatterson/clickhouse-arrow/commit/0e638f34c1ac58d6a03c2bbfd014f02127ef9638))
+- Patches bug where version missing in changelog ([b989a4e](https://github.com/georgeleepatterson/clickhouse-arrow/commit/b989a4e42fbad63ba67a7e3c06b6397dba25e9ba))
 
+### Notable Contributions
 
+@nazq - Special thanks to the contributions from @nazq. Most of the features added in this release come from those contributions. `0.2.0` is a jump up in quality and capabilities as a result.

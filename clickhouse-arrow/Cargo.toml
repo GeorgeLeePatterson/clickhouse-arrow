@@ -97,7 +97,7 @@ zstd = "0.13"
 # Optional
 arc-swap = { version = "1", optional = true }
 bb8 = { version = "0.9", optional = true }
-clickhouse-arrow-derive = { version = "0.1.0", optional = true, path = "../clickhouse-arrow-derive" }
+clickhouse-arrow-derive = { version = "0.2.0", optional = true, path = "../clickhouse-arrow-derive" }
 geo-types = { version = "0.7", optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
