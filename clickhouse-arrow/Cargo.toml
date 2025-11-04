@@ -48,6 +48,9 @@ test-utils = [
     "dep:testcontainers",
     "dep:tracing-subscriber",
 ]
+# Sized tmpfs support is available via git dependency until PR #853 is merged
+# See: https://github.com/testcontainers/testcontainers-rs/pull/853
+tmpfs-size = ["test-utils"]  
 
 # DEPENDENCIES
 
@@ -99,12 +102,13 @@ geo-types = { version = "0.7", optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-testcontainers = { version = "0.25", optional = true }
+testcontainers = { version = "0.25.2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async_tokio", "html_reports"] }
+comfy-table = "7"
 clickhouse = { version = "0.14" }
 tokio = { version = "1", features = ["full"] }
 
