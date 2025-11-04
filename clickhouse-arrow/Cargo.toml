@@ -102,9 +102,7 @@ geo-types = { version = "0.7", optional = true }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-# Sized tmpfs support - using PR branch until merged upstream
-testcontainers = { git = "https://github.com/nazq/testcontainers-rs", branch = "feat/tmpfs-mount-size-config", optional = true }
-# After PR #853 is merged, switch to: testcontainers = { version = "0.26", optional = true }
+testcontainers = { version = "0.25.2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
 
