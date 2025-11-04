@@ -40,7 +40,10 @@ pub async fn test_params_basic_string_identifier(ch: Arc<ClickHouseContainer>) {
             Some(query_id),
         )
         .await
-        .expect("Creating database with params should succeed (params sent but maybe not used in query)");
+        .expect(
+            "Creating database with params should succeed (params sent but maybe not used in \
+             query)",
+        );
 
     // Cleanup
     client
@@ -114,7 +117,10 @@ pub async fn test_params_integer(ch: Arc<ClickHouseContainer>) {
     ]);
     client
         .execute_params(
-            format!("SELECT * FROM {db_name}.{table_name} WHERE id >= {{min_id:Int32}} AND value >= {{min_value:Int64}}"),
+            format!(
+                "SELECT * FROM {db_name}.{table_name} WHERE id >= {{min_id:Int32}} AND value >= \
+                 {{min_value:Int64}}"
+            ),
             Some(params),
             Some(query_id),
         )
@@ -122,8 +128,8 @@ pub async fn test_params_integer(ch: Arc<ClickHouseContainer>) {
         .expect("Querying with multiple integer params should succeed");
 
     // Cleanup
-    client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
-    client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
 
     header(query_id, "Integer parameter test completed");
 }
@@ -167,7 +173,10 @@ pub async fn test_params_string(ch: Arc<ClickHouseContainer>) {
     // Insert test data (parameters don't work in INSERT VALUES)
     client
         .execute(
-            format!("INSERT INTO {db_name}.{table_name} VALUES (1, 'test_value'), (2, 'other_value'), (3, 'test_value')"),
+            format!(
+                "INSERT INTO {db_name}.{table_name} VALUES (1, 'test_value'), (2, 'other_value'), \
+                 (3, 'test_value')"
+            ),
             Some(query_id),
         )
         .await
@@ -196,15 +205,15 @@ pub async fn test_params_string(ch: Arc<ClickHouseContainer>) {
         .expect("Querying with LIKE and string params should succeed");
 
     // Cleanup
-    client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
-    client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
 
     header(query_id, "String parameter test completed");
 }
 
 /// Test array parameter usage in IN clauses (the original feature request from issue #52)
 ///
-/// Array parameters are passed as string representations like "[1,2,3]" and cast by ClickHouse
+/// Array parameters are passed as string representations like "[1,2,3]" and cast by `ClickHouse`
 ///
 /// # Panics
 pub async fn test_params_array_int32(ch: Arc<ClickHouseContainer>) {
@@ -243,7 +252,10 @@ pub async fn test_params_array_int32(ch: Arc<ClickHouseContainer>) {
     // Insert test data
     client
         .execute(
-            format!("INSERT INTO {db_name}.{table_name} VALUES (1, 'one'), (2, 'two'), (3, 'three'), (4, 'four'), (5, 'five')"),
+            format!(
+                "INSERT INTO {db_name}.{table_name} VALUES (1, 'one'), (2, 'two'), (3, 'three'), \
+                 (4, 'four'), (5, 'five')"
+            ),
             Some(query_id),
         )
         .await
@@ -275,8 +287,8 @@ pub async fn test_params_array_int32(ch: Arc<ClickHouseContainer>) {
         .expect("Querying with different array params should succeed");
 
     // Cleanup
-    client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
-    client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
 
     header(query_id, "Array parameter test completed");
 }
@@ -312,7 +324,8 @@ pub async fn test_params_mixed_types(ch: Arc<ClickHouseContainer>) {
     client
         .execute(
             format!(
-                "CREATE TABLE {db_name}.{table_name} (id Int32, name String, value Float64, active UInt8) ENGINE = Memory"
+                "CREATE TABLE {db_name}.{table_name} (id Int32, name String, value Float64, \
+                 active UInt8) ENGINE = Memory"
             ),
             Some(query_id),
         )
@@ -323,7 +336,8 @@ pub async fn test_params_mixed_types(ch: Arc<ClickHouseContainer>) {
     client
         .execute(
             format!(
-                "INSERT INTO {db_name}.{table_name} VALUES (100, 'test', 3.14, 1), (101, 'other', 2.71, 0), (102, 'test', 1.41, 1)"
+                "INSERT INTO {db_name}.{table_name} VALUES (100, 'test', 3.14, 1), (101, 'other', \
+                 2.71, 0), (102, 'test', 1.41, 1)"
             ),
             Some(query_id),
         )
@@ -338,7 +352,8 @@ pub async fn test_params_mixed_types(ch: Arc<ClickHouseContainer>) {
     client
         .execute_params(
             format!(
-                "SELECT * FROM {db_name}.{table_name} WHERE id = {{filter_id:Int32}} AND active = {{filter_active:UInt8}}"
+                "SELECT * FROM {db_name}.{table_name} WHERE id = {{filter_id:Int32}} AND active = \
+                 {{filter_active:UInt8}}"
             ),
             Some(params),
             Some(query_id),
@@ -354,7 +369,8 @@ pub async fn test_params_mixed_types(ch: Arc<ClickHouseContainer>) {
     client
         .execute_params(
             format!(
-                "SELECT * FROM {db_name}.{table_name} WHERE name = {{filter_name:String}} AND value >= {{min_value:Float64}}"
+                "SELECT * FROM {db_name}.{table_name} WHERE name = {{filter_name:String}} AND \
+                 value >= {{min_value:Float64}}"
             ),
             Some(params),
             Some(query_id),
@@ -363,8 +379,8 @@ pub async fn test_params_mixed_types(ch: Arc<ClickHouseContainer>) {
         .expect("Querying with string and float params should succeed");
 
     // Cleanup
-    client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
-    client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP TABLE {db_name}.{table_name}"), Some(query_id)).await.ok();
+    let _ = client.execute(format!("DROP DATABASE {db_name}"), Some(query_id)).await.ok();
 
     header(query_id, "Mixed parameter types test completed");
 }

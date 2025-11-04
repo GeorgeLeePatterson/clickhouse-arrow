@@ -101,25 +101,19 @@ impl Eq for SettingValue {}
 macro_rules! setting_value {
     ($ty:ident, $inner:ty) => {
         impl From<$inner> for SettingValue {
-            fn from(value: $inner) -> Self {
-                SettingValue::$ty(value)
-            }
+            fn from(value: $inner) -> Self { SettingValue::$ty(value) }
         }
     };
     ($ty:ident, $inner:ty, $override:ty) => {
         impl From<$override> for SettingValue {
             #[allow(clippy::cast_lossless)]
             #[allow(clippy::cast_possible_wrap)]
-            fn from(value: $override) -> Self {
-                SettingValue::$ty(value as $inner)
-            }
+            fn from(value: $override) -> Self { SettingValue::$ty(value as $inner) }
         }
     };
     ($ty:ident, $inner:ty, $v:tt =>  { $override:expr }) => {
         impl From<$inner> for SettingValue {
-            fn from($v: $inner) -> Self {
-                SettingValue::$ty($override)
-            }
+            fn from($v: $inner) -> Self { SettingValue::$ty($override) }
         }
     };
 }
@@ -145,22 +139,14 @@ macro_rules! setting_value_array {
     ($ty:ty) => {
         impl From<Vec<$ty>> for SettingValue {
             fn from(value: Vec<$ty>) -> Self {
-                let formatted = value
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let formatted = value.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
                 SettingValue::String(format!("[{formatted}]"))
             }
         }
 
         impl From<&[$ty]> for SettingValue {
             fn from(value: &[$ty]) -> Self {
-                let formatted = value
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let formatted = value.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
                 SettingValue::String(format!("[{formatted}]"))
             }
         }
@@ -255,10 +241,10 @@ impl fmt::Display for SettingValue {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Setting {
-    key: String,
-    value: SettingValue,
+    key:       String,
+    value:     SettingValue,
     important: bool,
-    custom: bool,
+    custom:    bool,
 }
 
 impl Setting {
@@ -401,7 +387,12 @@ impl Setting {
 
 impl<T: Into<String>, U: Into<SettingValue>> From<(T, U)> for Setting {
     fn from(value: (T, U)) -> Self {
-        Setting { key: value.0.into(), value: value.1.into(), important: false, custom: false }
+        Setting {
+            key:       value.0.into(),
+            value:     value.1.into(),
+            important: false,
+            custom:    false,
+        }
     }
 }
 
@@ -587,9 +578,7 @@ impl Settings {
     }
 
     /// Internal helper to find a specific settings
-    pub(crate) fn get(&self, key: &str) -> Option<&Setting> {
-        self.0.iter().find(|s| s.key == key)
-    }
+    pub(crate) fn get(&self, key: &str) -> Option<&Setting> { self.0.iter().find(|s| s.key == key) }
 }
 
 impl<T, K, S> From<T> for Settings
@@ -603,10 +592,10 @@ where
             value
                 .into_iter()
                 .map(|(k, v)| Setting {
-                    key: k.into(),
-                    value: v.into(),
+                    key:       k.into(),
+                    value:     v.into(),
                     important: false,
-                    custom: false,
+                    custom:    false,
                 })
                 .collect(),
         )
@@ -629,9 +618,7 @@ where
 impl std::ops::Deref for Settings {
     type Target = [Setting];
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+    fn deref(&self) -> &Self::Target { &self.0 }
 }
 
 #[cfg(feature = "serde")]
@@ -1051,13 +1038,10 @@ mod tests {
         ]);
 
         let kv_pairs = settings.encode_to_key_value_strings();
-        assert_eq!(
-            kv_pairs,
-            vec![
-                ("max_threads".to_string(), "8".to_string()),
-                ("default_format".to_string(), "JSON".to_string()),
-            ]
-        );
+        assert_eq!(kv_pairs, vec![
+            ("max_threads".to_string(), "8".to_string()),
+            ("default_format".to_string(), "JSON".to_string()),
+        ]);
     }
 
     #[test]
@@ -1416,10 +1400,7 @@ mod tests {
 
         // Test &[T] conversions
         let arr = [1_i32, 2_i32, 3_i32];
-        assert_eq!(
-            SettingValue::from(&arr[..]),
-            SettingValue::String("[1,2,3]".to_string())
-        );
+        assert_eq!(SettingValue::from(&arr[..]), SettingValue::String("[1,2,3]".to_string()));
 
         // Test empty array
         assert_eq!(SettingValue::from(Vec::<i32>::new()), SettingValue::String("[]".to_string()));
@@ -1428,8 +1409,8 @@ mod tests {
     #[test]
     fn test_setting_value_from_float_arrays() {
         assert_eq!(
-            SettingValue::from(vec![1.5_f64, 2.5_f64, 3.14_f64]),
-            SettingValue::String("[1.5,2.5,3.14]".to_string())
+            SettingValue::from(vec![1.5_f64, 2.5_f64, 3.15_f64]),
+            SettingValue::String("[1.5,2.5,3.15]".to_string())
         );
         assert_eq!(
             SettingValue::from(vec![1.5_f32, 2.5_f32]),
@@ -1438,10 +1419,7 @@ mod tests {
 
         // Test &[T] conversion
         let arr = [1.5_f64, 2.5_f64];
-        assert_eq!(
-            SettingValue::from(&arr[..]),
-            SettingValue::String("[1.5,2.5]".to_string())
-        );
+        assert_eq!(SettingValue::from(&arr[..]), SettingValue::String("[1.5,2.5]".to_string()));
     }
 
     #[test]
@@ -1460,10 +1438,7 @@ mod tests {
 
         // Test &[&str]
         let arr = ["a", "b", "c"];
-        assert_eq!(
-            SettingValue::from(&arr[..]),
-            SettingValue::String("['a','b','c']".to_string())
-        );
+        assert_eq!(SettingValue::from(&arr[..]), SettingValue::String("['a','b','c']".to_string()));
 
         // Test string with quotes (should be escaped)
         assert_eq!(
