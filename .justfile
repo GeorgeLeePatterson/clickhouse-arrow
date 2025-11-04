@@ -1,5 +1,6 @@
 LOG := env('RUST_LOG', '')
 ARROW_DEBUG := env('CLICKHOUSE_NATIVE_DEBUG_ARROW', '')
+DISABLE_CLEANUP := env('DISABLE_CLEANUP', '')
 
 # List of features
 # features := ["inner_pool", "pool", "serde", "derive", "cloud", "rust_decimal"]
@@ -27,18 +28,18 @@ test-integration test_name:
 
 coverage:
     cargo llvm-cov --html \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*" \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-dir coverage -F test-utils --open
 
 # --- COVERAGE ---
 coverage-json:
     cargo llvm-cov --json \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*" \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-path coverage/cov.json -F test-utils
 
 coverage-lcov:
     cargo llvm-cov --lcov \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*" \
+     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-path coverage/lcov.info -F test-utils
 
 # --- DOCS ---
@@ -51,27 +52,27 @@ clear-benches:
     rm -rf target/criterion/*
 
 bench:
-    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release -F test-utils && \
-     open ../target/criterion/report/index.html
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} DISABLE_CLEANUP={{ DISABLE_CLEANUP }} cargo bench \
+    --profile=release -F test-utils && open ../target/criterion/report/index.html
 
 bench-lto:
-    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench --profile=release-lto -F test-utils && \
-     open ../target/criterion/report/index.html
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} DISABLE_CLEANUP={{ DISABLE_CLEANUP }} cargo bench \
+    --profile=release-lto -F test-utils && open ../target/criterion/report/index.html
 
 bench-lto-update:
     cd clickhouse-arrow && \
-     cargo bench --profile=release-lto -F test-utils --bench "scalar" && \
-     cargo bench --profile=release-lto -F test-utils --bench "insert"
+     DISABLE_CLEANUP={{ DISABLE_CLEANUP }} cargo bench --profile=release-lto -F test-utils --bench "scalar" && \
+     DISABLE_CLEANUP={{ DISABLE_CLEANUP }} cargo bench --profile=release-lto -F test-utils --bench "insert"
 
 bench-one bench:
-    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} DISABLE_CLEANUP={{ DISABLE_CLEANUP }} cargo bench \
      --profile=release \
      -F test-utils \
      --bench "{{ bench }}" && \
      open ../target/criterion/report/index.html
 
 bench-one-lto bench:
-    cd clickhouse-arrow && RUST_LOG={{ LOG }} cargo bench \
+    cd clickhouse-arrow && RUST_LOG={{ LOG }} DISABLE_CLEANUP={{ DISABLE_CLEANUP }} cargo bench \
      --profile=release-lto \
      -F test-utils \
      --bench "{{ bench }}" && \
