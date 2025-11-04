@@ -110,8 +110,8 @@ ureq = { version = "3", features = ["rustls", "gzip", "json"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async_tokio", "html_reports"] }
-clickhouse = { version = "0.13" }
 comfy-table = "7"
+clickhouse = { version = "0.14" }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
