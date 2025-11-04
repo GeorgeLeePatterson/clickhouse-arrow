@@ -112,7 +112,7 @@ jobs:
   # Summary job that branch protection can depend on
   ci-success:
     name: CI Success
-    needs: [changes, coverage]
+    needs: [changes, check, coverage]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -124,7 +124,7 @@ jobs:
             exit 0
           fi
 
-          if [[ "${{ needs.coverage.result }}" != "success" ]]; then
+          if [[ "${{ needs.check.result }}" != "success" ]] || [[ "${{ needs.coverage.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi
