@@ -3,16 +3,31 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       skip_publish:
-        description: 'Create release only'
+        description: "Create release only"
+        default: false
+        required: false
+        type: boolean
+      skip_derive:
+        description: "Skip publishing clickhouse-arrow-derive"
+        default: false
+        required: false
+        type: boolean
+      skip_crate:
+        description: "Skip publishing clickhouse-arrow"
+        default: false
+        required: false
+        type: boolean
+      verify_derive:
+        description: "Verify (--dry-run) clickhouse-arrow-derive"
         default: false
         required: false
         type: boolean
       version:
-        description: 'Version to release (e.g., 0.1.5)'
+        description: "Version to release (e.g., 0.1.5)"
         required: false
         type: string
 
@@ -22,7 +37,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUSTFLAGS: '-C debuginfo=line-tables-only -C incremental=false'
+  RUSTFLAGS: "-C debuginfo=line-tables-only -C incremental=false"
 
 jobs:
   release:
@@ -69,18 +84,24 @@ jobs:
           cargo test test_version_matches_cargo --features test-utils
 
       - name: Verify publish
-        if: ${{ inputs.skip_publish == false }}
+        if: ${{ inputs.skip_publish == false && inputs.verify_derive == true }}
         run: |
           cargo publish --dry-run -p clickhouse-arrow-derive --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish --dry-run -p clickhouse-arrow --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Publish to crates.io
-        if: ${{ inputs.skip_publish == false }}
+      - name: Publish clickhouse-arrow-derive to crates.io
+        if: ${{ inputs.skip_publish == false && inputs.skip_derive == false }}
         run: |
           cargo publish -p clickhouse-arrow-derive --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           sleep 30  # Wait for crates.io to index
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish clickhouse-arrow to crates.io
+        if: ${{ inputs.skip_publish == false && inputs.skip_crate == false }}
+        run: |
           cargo publish -p clickhouse-arrow --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
