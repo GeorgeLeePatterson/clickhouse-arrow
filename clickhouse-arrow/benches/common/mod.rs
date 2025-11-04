@@ -122,7 +122,8 @@ pub(crate) fn insert_rs(
             b.to_async(rt).iter_batched(
                 || batch.to_vec(), // Setup: clone the rows for each iteration
                 |rows| async move {
-                    let mut insert = client.insert(table).unwrap();
+                    let mut insert: clickhouse::insert::Insert<ClickHouseRsRow> =
+                        client.insert(table).await.unwrap();
                     for row in rows {
                         insert.write(&row).await.unwrap();
                     }
