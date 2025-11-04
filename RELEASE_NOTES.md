@@ -23,4 +23,6 @@
 - Bump tokio from 1.47.1 to 1.48.0 ([#73](https://github.com/georgeleepatterson/clickhouse-arrow/issues/73)) ([0e638f3](https://github.com/georgeleepatterson/clickhouse-arrow/commit/0e638f34c1ac58d6a03c2bbfd014f02127ef9638))
 - Patches bug where version missing in changelog ([b989a4e](https://github.com/georgeleepatterson/clickhouse-arrow/commit/b989a4e42fbad63ba67a7e3c06b6397dba25e9ba))
 
+### Notable Contributions
 
+@nazq - Special thanks to the contributions from @nazq. Most of the features added in this release come from those contributions. `0.2.0` is a jump up in quality and capabilities as a result.
