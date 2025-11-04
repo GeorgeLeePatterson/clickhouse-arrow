@@ -218,10 +218,10 @@ type BlockReadingFuture<'a, R> =
 /// let bytes_read = decompressor.read(&mut buffer).await.unwrap();
 /// ```
 pub(crate) struct DecompressionReader<'a, R: ClickHouseRead + 'static> {
-    mode: CompressionMethod,
-    inner: Option<&'a mut R>,
-    decompressed: Vec<u8>,
-    position: usize,
+    mode:                 CompressionMethod,
+    inner:                Option<&'a mut R>,
+    decompressed:         Vec<u8>,
+    position:             usize,
     block_reading_future: Option<BlockReadingFuture<'a, R>>,
 }
 

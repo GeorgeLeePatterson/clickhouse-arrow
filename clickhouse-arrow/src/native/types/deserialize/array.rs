@@ -20,17 +20,11 @@ pub(crate) struct ArrayDeserializer;
 impl ArrayDeserializerGeneric for ArrayDeserializer {
     type Item = Value;
 
-    fn inner_type(type_: &Type) -> Result<&Type> {
-        type_.unwrap_array()
-    }
+    fn inner_type(type_: &Type) -> Result<&Type> { type_.unwrap_array() }
 
-    fn inner_value(items: Vec<Self::Item>) -> Value {
-        Value::Array(items)
-    }
+    fn inner_value(items: Vec<Self::Item>) -> Value { Value::Array(items) }
 
-    fn item_mapping(value: Value) -> Value {
-        value
-    }
+    fn item_mapping(value: Value) -> Value { value }
 }
 
 impl<T: ArrayDeserializerGeneric + 'static> Deserializer for T {

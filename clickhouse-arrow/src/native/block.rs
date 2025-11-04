@@ -18,14 +18,14 @@ use crate::{Error, Result, Row, Type};
 /// A chunk of data in columnar form.
 pub struct Block {
     /// Metadata about the block
-    pub info: BlockInfo,
+    pub info:         BlockInfo,
     /// The number of rows contained in the block
-    pub rows: u64,
+    pub rows:         u64,
     /// The type of each column by name, in order.
     pub column_types: Vec<(String, Type)>,
     /// The data of each column by name, in order. All `Value` should correspond to the associated
     /// type in `column_types`.
-    pub column_data: Vec<Value>,
+    pub column_data:  Vec<Value>,
 }
 
 // Iterator type for `take_iter_rows`

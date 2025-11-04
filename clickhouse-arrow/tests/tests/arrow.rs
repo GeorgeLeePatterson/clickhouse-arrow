@@ -549,10 +549,10 @@ pub async fn test_nullable_array_serialization(ch: Arc<ClickHouseContainer>) {
 
     let nullable_array = builder.finish();
 
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(id_array), Arc::new(nullable_array)],
-    )
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(id_array),
+        Arc::new(nullable_array),
+    ])
     .expect("Failed to create RecordBatch");
 
     // Create unique table name

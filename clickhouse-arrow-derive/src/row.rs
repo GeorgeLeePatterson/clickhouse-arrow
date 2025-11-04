@@ -45,12 +45,10 @@ fn build_generics(cont: &Container) -> syn::Generics {
 
     match cont.attrs.bound() {
         Some(predicates) => bound::with_where_predicates(&generics, predicates),
-        None => bound::with_bound(
-            cont,
-            &generics,
-            needs_serialize_bound,
-            &[&parse_quote!(::clickhouse_arrow::FromSql), &parse_quote!(::clickhouse_arrow::ToSql)],
-        ),
+        None => bound::with_bound(cont, &generics, needs_serialize_bound, &[
+            &parse_quote!(::clickhouse_arrow::FromSql),
+            &parse_quote!(::clickhouse_arrow::ToSql),
+        ]),
     }
 }
 
@@ -383,9 +381,7 @@ fn deserialize_struct(params: &Parameters, fields: &[Field], cattrs: &attr::Cont
     }
 }
 
-fn field_i(i: usize) -> Ident {
-    Ident::new(&format!("__field{}", i), Span::call_site())
-}
+fn field_i(i: usize) -> Ident { Ident::new(&format!("__field{}", i), Span::call_site()) }
 
 fn deserialize_map(
     struct_path: &TokenStream,

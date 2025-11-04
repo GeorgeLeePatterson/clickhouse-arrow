@@ -6,81 +6,55 @@ use indexmap::IndexMap;
 use super::*;
 
 impl ToSql for u8 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::UInt8(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt8(self)) }
 }
 
 impl ToSql for bool {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::UInt8(u8::from(self)))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt8(u8::from(self))) }
 }
 
 impl ToSql for u16 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::UInt16(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt16(self)) }
 }
 
 impl ToSql for u32 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::UInt32(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt32(self)) }
 }
 
 impl ToSql for u64 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::UInt64(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt64(self)) }
 }
 
 impl ToSql for u128 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::UInt128(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::UInt128(self)) }
 }
 
 impl ToSql for i8 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Int8(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Int8(self)) }
 }
 
 impl ToSql for i16 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Int16(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Int16(self)) }
 }
 
 impl ToSql for i32 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Int32(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Int32(self)) }
 }
 
 impl ToSql for i64 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Int64(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Int64(self)) }
 }
 
 impl ToSql for i128 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Int128(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Int128(self)) }
 }
 
 impl ToSql for f32 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Float32(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Float32(self)) }
 }
 
 impl ToSql for f64 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Float64(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Float64(self)) }
 }
 
 impl ToSql for String {
@@ -176,21 +150,15 @@ impl<T: ToSql, const N: usize> ToSql for [T; N] {
 }
 
 impl<T: ToSql + Clone> ToSql for &T {
-    fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> {
-        self.clone().to_sql(type_hint)
-    }
+    fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> { self.clone().to_sql(type_hint) }
 }
 
 impl<T: ToSql + Clone> ToSql for &mut T {
-    fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> {
-        self.clone().to_sql(type_hint)
-    }
+    fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> { self.clone().to_sql(type_hint) }
 }
 
 impl<T: ToSql> ToSql for Box<T> {
-    fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> {
-        (*self).to_sql(type_hint)
-    }
+    fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> { (*self).to_sql(type_hint) }
 }
 
 macro_rules! tuple_impls {

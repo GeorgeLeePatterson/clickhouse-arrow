@@ -23,13 +23,13 @@ use crate::settings::Settings;
 
 #[derive(Debug)]
 pub(super) struct Query<'a> {
-    pub qid: Qid,
-    pub info: ClientInfo<'a>,
+    pub qid:      Qid,
+    pub info:     ClientInfo<'a>,
     pub settings: Option<Arc<Settings>>,
-    pub stage: QueryProcessingStage,
+    pub stage:    QueryProcessingStage,
     #[expect(clippy::struct_field_names)]
-    pub query: &'a str,
-    pub params: Option<QueryParams>,
+    pub query:    &'a str,
+    pub params:   Option<QueryParams>,
 }
 
 #[derive(Debug, Clone, Copy)]

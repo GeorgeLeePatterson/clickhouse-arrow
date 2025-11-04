@@ -14,13 +14,11 @@ use crate::io::{ClickHouseRead, ClickHouseWrite};
 pub(super) struct ChunkWriter<W: ClickHouseWrite> {
     buffer: Vec<u8>,
     #[pin]
-    inner: W,
+    inner:  W,
 }
 
 impl<W: ClickHouseWrite> ChunkWriter<W> {
-    pub(super) fn new(inner: W) -> Self {
-        Self { inner, buffer: Vec::new() }
-    }
+    pub(super) fn new(inner: W) -> Self { Self { inner, buffer: Vec::new() } }
 
     pub(super) async fn finish_chunk(&mut self) -> io::Result<()> {
         let len = self.buffer.len();
@@ -69,12 +67,12 @@ impl<W: ClickHouseWrite> AsyncWrite for ChunkWriter<W> {
 #[pin_project]
 pub(crate) struct ChunkReader<R> {
     #[pin]
-    inner: R,
-    state: ReaderState,
-    buffer: Vec<u8>,      // Internal buffer for excess chunk data
+    inner:       R,
+    state:       ReaderState,
+    buffer:      Vec<u8>, // Internal buffer for excess chunk data
     read_buffer: Vec<u8>, // Internal buffer for reading chunk data
-    buffer_pos: usize,    // Current position in the buffer
-    chunk_size: u32,      // Remaining bytes in the current chunk
+    buffer_pos:  usize,   // Current position in the buffer
+    chunk_size:  u32,     // Remaining bytes in the current chunk
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]

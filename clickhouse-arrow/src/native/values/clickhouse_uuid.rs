@@ -1,9 +1,7 @@
 use crate::{FromSql, Result, ToSql, Type, Uuid, Value, unexpected_type};
 
 impl ToSql for Uuid {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Uuid(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Uuid(self)) }
 }
 
 impl FromSql for Uuid {

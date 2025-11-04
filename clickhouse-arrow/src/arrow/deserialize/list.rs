@@ -387,10 +387,9 @@ mod tests {
         assert_eq!(list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<_>>(), vec![0, 2, 3, 5]);
-        assert_eq!(
-            list_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
-            vec![true, false, true]
-        );
+        assert_eq!(list_array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![
+            true, false, true
+        ]);
     }
 
     #[tokio::test]
@@ -602,10 +601,9 @@ mod tests {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -661,10 +659,9 @@ mod tests {
         assert_eq!(inner_list_array.len(), 5);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3, 5]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 2, 3, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 2, 3, 3, 5
+        ]);
         assert_eq!(
             inner_list_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
             vec![true, false, true, false, true] // 0=non-null, 1=null
@@ -720,10 +717,9 @@ mod tests {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![Some(1), None, Some(3), None, Some(5)]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -774,10 +770,9 @@ mod tests {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &StringArray::from(vec!["a", "b", "c", "d", "e"]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -894,10 +889,9 @@ mod tests {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &StringArray::from(vec![Some("a"), None, Some("c"), None, Some("e")]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -1176,10 +1170,9 @@ mod tests {
 
         assert_eq!(list_array.len(), rows);
 
-        assert_eq!(
-            list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 2, 4, 7, 8]
-        );
+        assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 2, 4, 7, 8
+        ]);
         assert_eq!(list_array.nulls(), None);
         let expected_keys = Int32Array::from(vec![
             Some(1),
@@ -1285,10 +1278,9 @@ mod tests_sync {
         assert_eq!(list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<_>>(), vec![0, 2, 3, 5]);
-        assert_eq!(
-            list_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
-            vec![true, false, true]
-        );
+        assert_eq!(list_array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![
+            true, false, true
+        ]);
     }
 
     #[test]
@@ -1439,10 +1431,9 @@ mod tests_sync {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -1486,10 +1477,9 @@ mod tests_sync {
         assert_eq!(inner_list_array.len(), 5);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3, 5]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 2, 3, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 2, 3, 3, 5
+        ]);
         assert_eq!(
             inner_list_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
             vec![true, false, true, false, true] // 0=non-null, 1=null
@@ -1533,10 +1523,9 @@ mod tests_sync {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![Some(1), None, Some(3), None, Some(5)]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -1575,10 +1564,9 @@ mod tests_sync {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &StringArray::from(vec!["a", "b", "c", "d", "e"]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -1670,10 +1658,9 @@ mod tests_sync {
         assert_eq!(inner_list_array.len(), 3);
         assert_eq!(values, &StringArray::from(vec![Some("a"), None, Some("c"), None, Some("e")]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3]);
-        assert_eq!(
-            inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 3, 5]
-        );
+        assert_eq!(inner_list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 3, 5
+        ]);
         assert_eq!(list_array.nulls(), None);
     }
 
@@ -1880,10 +1867,9 @@ mod tests_sync {
 
         assert_eq!(list_array.len(), rows);
 
-        assert_eq!(
-            list_array.offsets().iter().copied().collect::<Vec<i32>>(),
-            vec![0, 2, 2, 4, 7, 8]
-        );
+        assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![
+            0, 2, 2, 4, 7, 8
+        ]);
         assert_eq!(list_array.nulls(), None);
         let expected_keys = Int32Array::from(vec![
             Some(1),

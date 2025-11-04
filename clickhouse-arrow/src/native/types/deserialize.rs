@@ -552,9 +552,7 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 }
 
 /// Parse arguments into a Vec for types with variable numbers of args
-fn parse_variable_args(input: &str) -> Result<Vec<&str>> {
-    parse_args_iter(input)?.collect()
-}
+fn parse_variable_args(input: &str) -> Result<Vec<&str>> { parse_args_iter(input)?.collect() }
 
 fn parse_scale(from: &str) -> Result<usize> {
     from.parse().map_err(|_| Error::TypeParseError("couldn't parse scale".to_string()))
@@ -578,11 +576,11 @@ fn parse_args_iter(input: &str) -> Result<impl Iterator<Item = Result<&str, Erro
 }
 
 struct ArgsIterator<'a> {
-    input: &'a str,
+    input:      &'a str,
     last_start: usize,
-    in_parens: usize,
-    in_quotes: bool,
-    done: bool,
+    in_parens:  usize,
+    in_quotes:  bool,
+    done:       bool,
 }
 
 impl<'a> Iterator for ArgsIterator<'a> {

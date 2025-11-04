@@ -10,13 +10,9 @@ pub struct RawRow(Vec<Option<(String, Type, Value)>>);
 impl Row for RawRow {
     const COLUMN_COUNT: Option<usize> = None;
 
-    fn column_names() -> Option<Vec<Cow<'static, str>>> {
-        None
-    }
+    fn column_names() -> Option<Vec<Cow<'static, str>>> { None }
 
-    fn to_schema() -> Option<Vec<(String, Type, Option<Value>)>> {
-        None
-    }
+    fn to_schema() -> Option<Vec<(String, Type, Option<Value>)>> { None }
 
     fn deserialize_row(map: Vec<(&str, &Type, Value)>) -> Result<Self> {
         Ok(Self(
@@ -64,14 +60,10 @@ impl<T: RowIndex + ?Sized> RowIndex for &T {
 
 impl RawRow {
     /// Determines if the row contains no values.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.0.is_empty() }
 
     /// Returns the number of values in the row.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
+    pub fn len(&self) -> usize { self.0.len() }
 
     /// # Panics
     ///

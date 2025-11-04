@@ -116,13 +116,13 @@ pub async fn create_container(conf: Option<&str>) -> Arc<ClickHouseContainer> {
 }
 
 pub struct ClickHouseContainer {
-    pub endpoint: String,
+    pub endpoint:    String,
     pub native_port: u16,
-    pub http_port: u16,
-    pub url: String,
-    pub user: String,
-    pub password: String,
-    container: RwLock<Option<ContainerAsync<GenericImage>>>,
+    pub http_port:   u16,
+    pub url:         String,
+    pub user:        String,
+    pub password:    String,
+    container:       RwLock<Option<ContainerAsync<GenericImage>>>,
 }
 
 impl ClickHouseContainer {
@@ -177,21 +177,13 @@ impl ClickHouseContainer {
         Ok(ClickHouseContainer { endpoint, native_port, http_port, url, user, password, container })
     }
 
-    pub fn get_native_url(&self) -> &str {
-        &self.url
-    }
+    pub fn get_native_url(&self) -> &str { &self.url }
 
-    pub fn get_native_port(&self) -> u16 {
-        self.native_port
-    }
+    pub fn get_native_port(&self) -> u16 { self.native_port }
 
-    pub fn get_http_url(&self) -> String {
-        format!("http://{}:{}", self.endpoint, self.http_port)
-    }
+    pub fn get_http_url(&self) -> String { format!("http://{}:{}", self.endpoint, self.http_port) }
 
-    pub fn get_http_port(&self) -> u16 {
-        self.http_port
-    }
+    pub fn get_http_port(&self) -> u16 { self.http_port }
 
     /// # Errors
     pub async fn shutdown(&self) -> Result<(), TestcontainersError> {
@@ -306,20 +298,17 @@ pub mod arrow_tests {
             Arc::new(BinaryArray::from_iter_values((0..rows).map(|i| format!("name{i}"))))
                 as ArrayRef
         };
-        RecordBatch::try_new(
-            schema,
-            vec![
-                id_row,
-                name_row,
-                Arc::new(Float64Array::from((0..rows).map(|i| i as f64).collect::<Vec<_>>())),
-                Arc::new(
-                    TimestampMillisecondArray::from(
-                        (0..rows).map(|i| i as i64 * 1000).collect::<Vec<_>>(),
-                    )
-                    .with_timezone(Arc::from("UTC")),
-                ),
-            ],
-        )
+        RecordBatch::try_new(schema, vec![
+            id_row,
+            name_row,
+            Arc::new(Float64Array::from((0..rows).map(|i| i as f64).collect::<Vec<_>>())),
+            Arc::new(
+                TimestampMillisecondArray::from(
+                    (0..rows).map(|i| i as i64 * 1000).collect::<Vec<_>>(),
+                )
+                .with_timezone(Arc::from("UTC")),
+            ),
+        ])
         .unwrap()
     }
 }

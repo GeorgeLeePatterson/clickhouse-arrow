@@ -53,9 +53,7 @@ impl<'de> serde::Deserialize<'de> for Date {
 }
 
 impl ToSql for Date {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Date(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Date(self)) }
 }
 
 impl FromSql for Date {
@@ -92,9 +90,7 @@ pub struct Date32(pub i32);
 #[expect(clippy::cast_possible_truncation)]
 impl Date32 {
     /// Creates a `Date32` from days since 1900-01-01.
-    pub fn from_days(days: i32) -> Self {
-        Date32(days)
-    }
+    pub fn from_days(days: i32) -> Self { Date32(days) }
 
     /// Creates a `Date32` from milliseconds since 1970-01-01, adjusting to 1900-01-01 epoch.
     pub fn from_millis(ms: i64) -> Self {
@@ -126,9 +122,7 @@ impl<'de> serde::Deserialize<'de> for Date32 {
 }
 
 impl ToSql for Date32 {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::Date32(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::Date32(self)) }
 }
 
 impl FromSql for Date32 {
@@ -264,9 +258,7 @@ impl<'de> serde::Deserialize<'de> for DateTime {
 }
 
 impl ToSql for DateTime {
-    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
-        Ok(Value::DateTime(self))
-    }
+    fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> { Ok(Value::DateTime(self)) }
 }
 
 impl FromSql for DateTime {
@@ -282,9 +274,7 @@ impl FromSql for DateTime {
 }
 
 impl Default for DateTime {
-    fn default() -> Self {
-        Self(UTC, 0)
-    }
+    fn default() -> Self { Self(UTC, 0) }
 }
 
 impl TryFrom<DateTime> for chrono::DateTime<Tz> {
@@ -392,9 +382,7 @@ impl DynDateTime64 {
 }
 
 impl<const PRECISION: usize> From<DateTime64<PRECISION>> for DynDateTime64 {
-    fn from(value: DateTime64<PRECISION>) -> Self {
-        Self(value.0, value.1, PRECISION)
-    }
+    fn from(value: DateTime64<PRECISION>) -> Self { Self(value.0, value.1, PRECISION) }
 }
 
 #[cfg(feature = "serde")]
@@ -475,9 +463,7 @@ impl<const PRECISION: usize> FromSql for DateTime64<PRECISION> {
 }
 
 impl<const PRECISION: usize> Default for DateTime64<PRECISION> {
-    fn default() -> Self {
-        Self(UTC, 0)
-    }
+    fn default() -> Self { Self(UTC, 0) }
 }
 
 impl ToSql for chrono::DateTime<Utc> {
@@ -867,21 +853,15 @@ mod chrono_tests {
 
     #[test]
     #[should_panic(expected = "DateTime out of range for u32: -1")]
-    fn test_datetime_panic_secs() {
-        let _d = DateTime::from_seconds(-1, None);
-    }
+    fn test_datetime_panic_secs() { let _d = DateTime::from_seconds(-1, None); }
 
     #[test]
     #[should_panic(expected = "DateTime out of range for u32: -1")]
-    fn test_datetime_panic_millis() {
-        let _d = DateTime::from_millis(-1_000, None);
-    }
+    fn test_datetime_panic_millis() { let _d = DateTime::from_millis(-1_000, None); }
 
     #[test]
     #[should_panic(expected = "DateTime out of range for u32: -1")]
-    fn test_datetime_panic_micros() {
-        let _d = DateTime::from_micros(-1_000_000, None);
-    }
+    fn test_datetime_panic_micros() { let _d = DateTime::from_micros(-1_000_000, None); }
 
     #[test]
     fn test_datetime64() {

@@ -17,10 +17,10 @@ use crate::respan::respan;
 use crate::symbol::*;
 
 struct Attr<'c, T> {
-    cx: &'c Ctxt,
-    name: Symbol,
+    cx:     &'c Ctxt,
+    name:   Symbol,
     tokens: TokenStream,
-    value: Option<T>,
+    value:  Option<T>,
 }
 
 impl<'c, T> Attr<'c, T> {
@@ -54,35 +54,25 @@ impl<'c, T> Attr<'c, T> {
         }
     }
 
-    fn get(self) -> Option<T> {
-        self.value
-    }
+    fn get(self) -> Option<T> { self.value }
 }
 
 struct BoolAttr<'c>(Attr<'c, ()>);
 
 impl<'c> BoolAttr<'c> {
-    fn none(cx: &'c Ctxt, name: Symbol) -> Self {
-        BoolAttr(Attr::none(cx, name))
-    }
+    fn none(cx: &'c Ctxt, name: Symbol) -> Self { BoolAttr(Attr::none(cx, name)) }
 
-    fn set_true<A: ToTokens>(&mut self, obj: A) {
-        self.0.set(obj, ());
-    }
+    fn set_true<A: ToTokens>(&mut self, obj: A) { self.0.set(obj, ()); }
 
-    fn get(&self) -> bool {
-        self.0.value.is_some()
-    }
+    fn get(&self) -> bool { self.0.value.is_some() }
 }
 
 pub struct Name {
-    name: String,
+    name:    String,
     renamed: bool,
 }
 
-fn unraw(ident: &Ident) -> String {
-    ident.to_string().trim_start_matches("r#").to_owned()
-}
+fn unraw(ident: &Ident) -> String { ident.to_string().trim_start_matches("r#").to_owned() }
 
 impl Name {
     fn from_attrs(source_name: String, rename: Attr<String>) -> Name {
@@ -90,22 +80,20 @@ impl Name {
         Name { renamed: rename.is_some(), name: rename.unwrap_or_else(|| source_name.clone()) }
     }
 
-    pub fn name(&self) -> String {
-        self.name.clone()
-    }
+    pub fn name(&self) -> String { self.name.clone() }
 }
 
 pub struct Container {
     deny_unknown_fields: bool,
-    default: Default,
-    rename_all_rule: RenameRule,
-    bound: Option<Vec<syn::WherePredicate>>,
-    type_from: Option<syn::Type>,
-    type_try_from: Option<syn::Type>,
-    type_into: Option<syn::Type>,
+    default:             Default,
+    rename_all_rule:     RenameRule,
+    bound:               Option<Vec<syn::WherePredicate>>,
+    type_from:           Option<syn::Type>,
+    type_try_from:       Option<syn::Type>,
+    type_into:           Option<syn::Type>,
     // #[clickhouse_arrow(schema = "get_schema")]
-    schema: Option<syn::ExprPath>,
-    is_packed: bool,
+    schema:              Option<syn::ExprPath>,
+    is_packed:           bool,
 }
 
 impl Container {
@@ -284,53 +272,37 @@ impl Container {
         }
     }
 
-    pub fn rename_all_rule(&self) -> &RenameRule {
-        &self.rename_all_rule
-    }
+    pub fn rename_all_rule(&self) -> &RenameRule { &self.rename_all_rule }
 
-    pub fn deny_unknown_fields(&self) -> bool {
-        self.deny_unknown_fields
-    }
+    pub fn deny_unknown_fields(&self) -> bool { self.deny_unknown_fields }
 
-    pub fn default(&self) -> &Default {
-        &self.default
-    }
+    pub fn default(&self) -> &Default { &self.default }
 
     pub fn bound(&self) -> Option<&[syn::WherePredicate]> {
         self.bound.as_ref().map(|vec| &vec[..])
     }
 
-    pub fn type_from(&self) -> Option<&syn::Type> {
-        self.type_from.as_ref()
-    }
+    pub fn type_from(&self) -> Option<&syn::Type> { self.type_from.as_ref() }
 
-    pub fn type_try_from(&self) -> Option<&syn::Type> {
-        self.type_try_from.as_ref()
-    }
+    pub fn type_try_from(&self) -> Option<&syn::Type> { self.type_try_from.as_ref() }
 
-    pub fn type_into(&self) -> Option<&syn::Type> {
-        self.type_into.as_ref()
-    }
+    pub fn type_into(&self) -> Option<&syn::Type> { self.type_into.as_ref() }
 
-    pub fn schema(&self) -> Option<&syn::ExprPath> {
-        self.schema.as_ref()
-    }
+    pub fn schema(&self) -> Option<&syn::ExprPath> { self.schema.as_ref() }
 
-    pub fn is_packed(&self) -> bool {
-        self.is_packed
-    }
+    pub fn is_packed(&self) -> bool { self.is_packed }
 }
 
 pub struct Field {
-    name: Name,
-    skip_serializing: bool,
+    name:               Name,
+    skip_serializing:   bool,
     skip_deserializing: bool,
-    default: Default,
-    serialize_with: Option<syn::ExprPath>,
-    deserialize_with: Option<syn::ExprPath>,
-    bound: Option<Vec<syn::WherePredicate>>,
-    nested: bool,
-    flatten: bool,
+    default:            Default,
+    serialize_with:     Option<syn::ExprPath>,
+    deserialize_with:   Option<syn::ExprPath>,
+    bound:              Option<Vec<syn::WherePredicate>>,
+    nested:             bool,
+    flatten:            bool,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -463,21 +435,19 @@ impl Field {
         }
 
         Field {
-            name: Name::from_attrs(ident, rename),
-            skip_serializing: skip_serializing.get(),
+            name:               Name::from_attrs(ident, rename),
+            skip_serializing:   skip_serializing.get(),
             skip_deserializing: skip_deserializing.get(),
-            default: default.get().unwrap_or(Default::None),
-            serialize_with: serialize_with.get(),
-            deserialize_with: deserialize_with.get(),
-            bound: bound.get(),
-            nested: nested.get(),
-            flatten: flatten.get(),
+            default:            default.get().unwrap_or(Default::None),
+            serialize_with:     serialize_with.get(),
+            deserialize_with:   deserialize_with.get(),
+            bound:              bound.get(),
+            nested:             nested.get(),
+            flatten:            flatten.get(),
         }
     }
 
-    pub fn name(&self) -> &Name {
-        &self.name
-    }
+    pub fn name(&self) -> &Name { &self.name }
 
     pub fn rename_by_rules(&mut self, rules: &RenameRule) {
         if !self.name.renamed {
@@ -485,33 +455,19 @@ impl Field {
         }
     }
 
-    pub fn flatten(&self) -> bool {
-        self.flatten
-    }
+    pub fn flatten(&self) -> bool { self.flatten }
 
-    pub fn nested(&self) -> bool {
-        self.nested
-    }
+    pub fn nested(&self) -> bool { self.nested }
 
-    pub fn skip_serializing(&self) -> bool {
-        self.skip_serializing
-    }
+    pub fn skip_serializing(&self) -> bool { self.skip_serializing }
 
-    pub fn skip_deserializing(&self) -> bool {
-        self.skip_deserializing
-    }
+    pub fn skip_deserializing(&self) -> bool { self.skip_deserializing }
 
-    pub fn default(&self) -> &Default {
-        &self.default
-    }
+    pub fn default(&self) -> &Default { &self.default }
 
-    pub fn serialize_with(&self) -> Option<&syn::ExprPath> {
-        self.serialize_with.as_ref()
-    }
+    pub fn serialize_with(&self) -> Option<&syn::ExprPath> { self.serialize_with.as_ref() }
 
-    pub fn deserialize_with(&self) -> Option<&syn::ExprPath> {
-        self.deserialize_with.as_ref()
-    }
+    pub fn deserialize_with(&self) -> Option<&syn::ExprPath> { self.deserialize_with.as_ref() }
 
     pub fn bound(&self) -> Option<&[syn::WherePredicate]> {
         self.bound.as_ref().map(|vec| &vec[..])

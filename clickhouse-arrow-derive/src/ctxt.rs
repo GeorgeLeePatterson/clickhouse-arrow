@@ -20,9 +20,7 @@ impl Ctxt {
     /// Create a new context object.
     ///
     /// This object contains no errors, but will still trigger a panic if it is not `check`ed.
-    pub fn new() -> Self {
-        Ctxt { errors: RefCell::new(Some(Vec::new())) }
-    }
+    pub fn new() -> Self { Ctxt { errors: RefCell::new(Some(Vec::new())) } }
 
     /// Add an error to the context object with a tokenenizable object.
     ///

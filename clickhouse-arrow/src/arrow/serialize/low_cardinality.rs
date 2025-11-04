@@ -465,12 +465,8 @@ async fn write_string_values<W: ClickHouseWrite>(
     state: &mut SerializerState,
 ) -> Result<()> {
     // Helper functions for macro
-    fn bytes(v: &str) -> &[u8] {
-        v.as_bytes()
-    }
-    fn passthrough(v: &[u8]) -> &[u8] {
-        v
-    }
+    fn bytes(v: &str) -> &[u8] { v.as_bytes() }
+    fn passthrough(v: &[u8]) -> &[u8] { v }
 
     // Handle string-like array
     let mut dict = Vec::with_capacity(64.min(values.len()));
@@ -563,12 +559,8 @@ fn put_string_values<W: ClickHouseBytesWrite>(
     state: &mut SerializerState,
 ) -> Result<()> {
     // Helper functions for macro
-    fn bytes(v: &str) -> &[u8] {
-        v.as_bytes()
-    }
-    fn passthrough(v: &[u8]) -> &[u8] {
-        v
-    }
+    fn bytes(v: &str) -> &[u8] { v.as_bytes() }
+    fn passthrough(v: &[u8]) -> &[u8] { v }
 
     // Handle string-like array
     let mut dict = Vec::with_capacity(64.min(values.len()));

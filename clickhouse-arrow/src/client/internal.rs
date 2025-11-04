@@ -38,11 +38,11 @@ pub(crate) enum Operation<Data: Send + Sync> {
     Ping { response: oneshot::Sender<Result<()>> },
     #[strum(serialize = "Query")]
     Query {
-        query: String,
+        query:    String,
         settings: Option<Arc<Settings>>,
-        params: Option<QueryParams>,
+        params:   Option<QueryParams>,
         response: oneshot::Sender<Result<ResponseReceiver<Data>>>,
-        header: Option<oneshot::Sender<Vec<(String, Type)>>>,
+        header:   Option<oneshot::Sender<Vec<(String, Type)>>>,
     },
     #[strum(serialize = "Insert")]
     Insert { data: Data, response: oneshot::Sender<Result<()>> },
@@ -59,9 +59,7 @@ enum OperationTask {
 }
 
 impl Default for OperationTask {
-    fn default() -> Self {
-        Self::Chunk(ChunkBoundary::default())
-    }
+    fn default() -> Self { Self::Chunk(ChunkBoundary::default()) }
 }
 
 /// Track chunk boundaries. NOTE: Only relevant with chunked protocol for writing
@@ -89,30 +87,30 @@ pub(super) enum InsertState<T> {
 }
 
 pub(super) struct ExecutingQuery<T: Send + Sync> {
-    qid: Qid,
-    state: QueryState,
-    header: Option<Vec<(String, Type)>>,
+    qid:             Qid,
+    state:           QueryState,
+    header:          Option<Vec<(String, Type)>>,
     header_response: Option<oneshot::Sender<Vec<(String, Type)>>>,
-    response: ResponseSender<T>,
+    response:        ResponseSender<T>,
 }
 
 pub(super) struct PendingQuery<T: Send + Sync> {
-    qid: Qid,
-    query: String,
+    qid:      Qid,
+    query:    String,
     settings: Option<Arc<Settings>>,
-    params: Option<QueryParams>,
+    params:   Option<QueryParams>,
     response: oneshot::Sender<Result<ResponseReceiver<T>>>,
-    header: Option<oneshot::Sender<Vec<(String, Type)>>>,
+    header:   Option<oneshot::Sender<Vec<(String, Type)>>>,
 }
 
 pub(super) struct InternalConn<T: ClientFormat> {
-    cid: &'static str,
+    cid:          &'static str,
     server_hello: Arc<ServerHello>,
-    pending: VecDeque<PendingQuery<T::Data>>,
-    executing: Option<ExecutingQuery<T::Data>>,
-    events: Arc<broadcast::Sender<Event>>,
-    metadata: ClientMetadata,
-    state: DeserializerState<T::Deser>,
+    pending:      VecDeque<PendingQuery<T::Data>>,
+    executing:    Option<ExecutingQuery<T::Data>>,
+    events:       Arc<broadcast::Sender<Event>>,
+    metadata:     ClientMetadata,
+    state:        DeserializerState<T::Deser>,
 }
 
 impl<T: ClientFormat> InternalConn<T> {
@@ -527,17 +525,11 @@ impl<Data: Send + Sync + 'static> Operation<Data> {
     }
 
     // Helper functions to account for full weight across common operations
-    pub(crate) fn weight_query() -> u8 {
-        1
-    }
+    pub(crate) fn weight_query() -> u8 { 1 }
 
-    pub(crate) fn weight_insert() -> u8 {
-        5
-    }
+    pub(crate) fn weight_insert() -> u8 { 5 }
 
-    pub(crate) fn weight_insert_many() -> u8 {
-        6
-    }
+    pub(crate) fn weight_insert_many() -> u8 { 6 }
 }
 
 impl<Data: Send + Sync + 'static> std::fmt::Debug for Message<Data> {

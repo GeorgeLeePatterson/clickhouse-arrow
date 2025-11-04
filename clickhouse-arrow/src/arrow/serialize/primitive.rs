@@ -935,12 +935,11 @@ macro_rules! put_float_values {
 }
 
 write_float_values!(write_f32_values, f32, write_u32_le, [Float32Array, Float16Array]);
-write_float_values!(
-    write_f64_values,
-    f64,
-    write_u64_le,
-    [Float64Array, Float32Array, Float16Array]
-);
+write_float_values!(write_f64_values, f64, write_u64_le, [
+    Float64Array,
+    Float32Array,
+    Float16Array
+]);
 
 put_float_values!(put_f32_values, f32, put_u32_le, [Float32Array, Float16Array]);
 put_float_values!(put_f64_values, f64, put_u64_le, [Float64Array, Float32Array, Float16Array]);

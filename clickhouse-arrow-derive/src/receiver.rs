@@ -42,7 +42,7 @@ impl ReplaceReceiver<'_> {
         let span = path.segments[0].ident.span();
         *qself = Some(QSelf {
             lt_token: syn::token::Lt { spans: [span] },
-            ty: Box::new(Type::Path(self.self_ty(span))),
+            ty:       Box::new(Type::Path(self.self_ty(span))),
             position: 0,
             as_token: None,
             gt_token: syn::token::Gt { spans: [span] },

@@ -10,17 +10,11 @@ use crate::{FromSql, Result, ToSql, Type, Value, i256, unexpected_type};
 pub struct FixedPoint32<const SCALE: u64>(pub i32);
 
 impl<const SCALE: u64> FixedPoint32<SCALE> {
-    pub const fn modulus(&self) -> i32 {
-        10i32.pow(SCALE as u32)
-    }
+    pub const fn modulus(&self) -> i32 { 10i32.pow(SCALE as u32) }
 
-    pub fn integer(&self) -> i32 {
-        self.0 / 10i32.pow(SCALE as u32)
-    }
+    pub fn integer(&self) -> i32 { self.0 / 10i32.pow(SCALE as u32) }
 
-    pub fn fraction(&self) -> i32 {
-        self.0 % 10i32.pow(SCALE as u32)
-    }
+    pub fn fraction(&self) -> i32 { self.0 % 10i32.pow(SCALE as u32) }
 }
 
 impl<const SCALE: u64> ToSql for FixedPoint32<SCALE> {
@@ -71,17 +65,11 @@ impl<const SCALE: u64> FromSql for FixedPoint64<SCALE> {
 }
 
 impl<const SCALE: u64> FixedPoint64<SCALE> {
-    pub const fn modulus(&self) -> i64 {
-        10i64.pow(SCALE as u32)
-    }
+    pub const fn modulus(&self) -> i64 { 10i64.pow(SCALE as u32) }
 
-    pub fn integer(&self) -> i64 {
-        self.0 / 10i64.pow(SCALE as u32)
-    }
+    pub fn integer(&self) -> i64 { self.0 / 10i64.pow(SCALE as u32) }
 
-    pub fn fraction(&self) -> i64 {
-        self.0 % 10i64.pow(SCALE as u32)
-    }
+    pub fn fraction(&self) -> i64 { self.0 % 10i64.pow(SCALE as u32) }
 }
 
 impl<const SCALE: u64> From<FixedPoint64<SCALE>> for f64 {
@@ -114,17 +102,11 @@ impl<const SCALE: u64> FromSql for FixedPoint128<SCALE> {
 }
 
 impl<const SCALE: u64> FixedPoint128<SCALE> {
-    pub const fn modulus(&self) -> i128 {
-        10i128.pow(SCALE as u32)
-    }
+    pub const fn modulus(&self) -> i128 { 10i128.pow(SCALE as u32) }
 
-    pub fn integer(&self) -> i128 {
-        self.0 / 10i128.pow(SCALE as u32)
-    }
+    pub fn integer(&self) -> i128 { self.0 / 10i128.pow(SCALE as u32) }
 
-    pub fn fraction(&self) -> i128 {
-        self.0 % 10i128.pow(SCALE as u32)
-    }
+    pub fn fraction(&self) -> i128 { self.0 % 10i128.pow(SCALE as u32) }
 }
 
 impl<const SCALE: u64> From<FixedPoint128<SCALE>> for f64 {
@@ -162,9 +144,7 @@ impl<const SCALE: u64> FixedPoint256<SCALE> {
 
     /// Create a fixed-point number from a raw scaled integer value
     /// The value is assumed to already have the correct scaling applied
-    pub fn from_raw(value: i128) -> Self {
-        FixedPoint256(i256::from(value))
-    }
+    pub fn from_raw(value: i128) -> Self { FixedPoint256(i256::from(value)) }
 
     /// Create a fixed-point number from a value and decimal exponent
     /// e.g., (123, -2) represents 123 × 10^-2 = 1.23
@@ -276,14 +256,10 @@ impl<const SCALE: u64> From<i128> for FixedPoint256<SCALE> {
 }
 
 impl<const SCALE: u64> From<(i128, i32)> for FixedPoint256<SCALE> {
-    fn from(parts: (i128, i32)) -> Self {
-        Self::from_parts(parts.0, parts.1)
-    }
+    fn from(parts: (i128, i32)) -> Self { Self::from_parts(parts.0, parts.1) }
 }
 
 #[cfg(feature = "rust_decimal")]
 impl<const SCALE: u64> From<rust_decimal::Decimal> for FixedPoint256<SCALE> {
-    fn from(decimal: rust_decimal::Decimal) -> Self {
-        Self::from_decimal(decimal)
-    }
+    fn from(decimal: rust_decimal::Decimal) -> Self { Self::from_decimal(decimal) }
 }

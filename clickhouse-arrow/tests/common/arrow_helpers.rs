@@ -841,68 +841,65 @@ pub fn test_record_batch() -> RecordBatch {
         .unwrap(),
     );
 
-    RecordBatch::try_new(
-        test_schema(),
-        vec![
-            // Primitives
-            id as ArrayRef,
-            int8_col,
-            int16_col,
-            int32_col,
-            int64_col,
-            uint8_col,
-            uint16_col,
-            uint32_col,
-            uint64_col,
-            int128_col,
-            uint128_col, // 10
-            int256_col,
-            uint256_col,
-            float32_col,
-            float64_col,
-            // String
-            string_col,
-            fixed_string_col,
-            // Decimal
-            decimal32_col,
-            decimal64_col,
-            // Datetimes
-            date_col,
-            date32_col, // 20
-            datetime_col,
-            datetime_utc_col,
-            datetime_est_col,
-            datetime64_3_ny_col,
-            datetime64_6_tokyo_col,
-            datetime64_9_utc_col,
-            // Map and Tuple
-            map_array,
-            tuple_int32_string_col,
-            // Special
-            ipv4_col,
-            ipv6_col, // 30
-            uuid_col,
-            //
-            // TODO
-            // json_col,
-            // point_col,
-            //
-            // Enums
-            enum8_col,
-            enum8_int32_col,
-            enum16_col,
-            // LowCardinality
-            low_cardinality_string_col,
-            low_cardinality_nullable_string_col,
-            // Arrays
-            array_low_cardinality_string_col,
-            array_int32_col,
-            array_nullable_int32_col,
-            array_nullable_string_col, // 40
-            large_list_int32_col,
-            array_tuple_col,
-        ],
-    )
+    RecordBatch::try_new(test_schema(), vec![
+        // Primitives
+        id as ArrayRef,
+        int8_col,
+        int16_col,
+        int32_col,
+        int64_col,
+        uint8_col,
+        uint16_col,
+        uint32_col,
+        uint64_col,
+        int128_col,
+        uint128_col, // 10
+        int256_col,
+        uint256_col,
+        float32_col,
+        float64_col,
+        // String
+        string_col,
+        fixed_string_col,
+        // Decimal
+        decimal32_col,
+        decimal64_col,
+        // Datetimes
+        date_col,
+        date32_col, // 20
+        datetime_col,
+        datetime_utc_col,
+        datetime_est_col,
+        datetime64_3_ny_col,
+        datetime64_6_tokyo_col,
+        datetime64_9_utc_col,
+        // Map and Tuple
+        map_array,
+        tuple_int32_string_col,
+        // Special
+        ipv4_col,
+        ipv6_col, // 30
+        uuid_col,
+        //
+        // TODO
+        // json_col,
+        // point_col,
+        //
+        // Enums
+        enum8_col,
+        enum8_int32_col,
+        enum16_col,
+        // LowCardinality
+        low_cardinality_string_col,
+        low_cardinality_nullable_string_col,
+        // Arrays
+        array_low_cardinality_string_col,
+        array_int32_col,
+        array_nullable_int32_col,
+        array_nullable_string_col, // 40
+        large_list_int32_col,
+        array_tuple_col,
+    ])
     .expect("Failed to create RecordBatch")
 }
 
@@ -949,10 +946,9 @@ pub fn low_cardinality_nullable_record_batch() -> RecordBatch {
         .unwrap(),
     );
 
-    RecordBatch::try_new(
-        low_cardinality_nullable_schema(),
-        vec![low_cardinality_nullable_string_col],
-    )
+    RecordBatch::try_new(low_cardinality_nullable_schema(), vec![
+        low_cardinality_nullable_string_col,
+    ])
     .expect("Failed to create RecordBatch")
 }
 
@@ -971,34 +967,31 @@ pub fn low_cardinality_array_schema() -> Arc<Schema> {
 
 /// # Panics
 pub fn low_cardinality_array_record_batch() -> RecordBatch {
-    RecordBatch::try_new(
-        low_cardinality_array_schema(),
-        vec![Arc::new(
-            ListArray::try_new(
-                Arc::new(Field::new(
-                    "item",
-                    DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-                    true,
-                )),
-                OffsetBuffer::new(vec![0, 2, 2, 3, 4, 6].into()),
-                Arc::new(
-                    DictionaryArray::<Int32Type>::try_new(
-                        Int32Array::from(vec![
-                            Some(0),
-                            Some(1), // Row 1: ["low", "card"]
-                            Some(2), // Row 3: ["test"]
-                            None,    // Row 4: [null]
-                            Some(0),
-                            None, // Row 5: ["low", null]
-                        ]),
-                        Arc::new(StringArray::from(vec!["low", "card", "test"])),
-                    )
-                    .unwrap(),
-                ),
-                None,
-            )
-            .unwrap(),
-        )],
-    )
+    RecordBatch::try_new(low_cardinality_array_schema(), vec![Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new(
+                "item",
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                true,
+            )),
+            OffsetBuffer::new(vec![0, 2, 2, 3, 4, 6].into()),
+            Arc::new(
+                DictionaryArray::<Int32Type>::try_new(
+                    Int32Array::from(vec![
+                        Some(0),
+                        Some(1), // Row 1: ["low", "card"]
+                        Some(2), // Row 3: ["test"]
+                        None,    // Row 4: [null]
+                        Some(0),
+                        None, // Row 5: ["low", null]
+                    ]),
+                    Arc::new(StringArray::from(vec!["low", "card", "test"])),
+                )
+                .unwrap(),
+            ),
+            None,
+        )
+        .unwrap(),
+    )])
     .expect("Failed to create RecordBatch")
 }

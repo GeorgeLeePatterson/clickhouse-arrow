@@ -32,14 +32,10 @@ pub use crate::{ArrowClient, Client, ClientBuilder, CompressionMethod, NativeCli
 pub struct Secret(String);
 
 impl Secret {
-    pub fn new<P: AsRef<str>>(s: P) -> Self {
-        Self(s.as_ref().to_string())
-    }
+    pub fn new<P: AsRef<str>>(s: P) -> Self { Self(s.as_ref().to_string()) }
 
     #[must_use]
-    pub fn get(&self) -> &str {
-        &self.0
-    }
+    pub fn get(&self) -> &str { &self.0 }
 }
 
 impl std::fmt::Debug for Secret {
@@ -49,9 +45,7 @@ impl std::fmt::Debug for Secret {
 }
 
 impl<T: AsRef<str>> From<T> for Secret {
-    fn from(s: T) -> Self {
-        Self(s.as_ref().to_string())
-    }
+    fn from(s: T) -> Self { Self(s.as_ref().to_string()) }
 }
 
 /// Custom Deserialize implementation to prevent storing passwords
