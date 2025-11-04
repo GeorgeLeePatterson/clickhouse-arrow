@@ -252,7 +252,7 @@ prepare-release version:
 
     # Generate full changelog
     echo "Generating changelog..."
-    git cliff -o CHANGELOG.md
+    git cliff --tag v{{version}} -o CHANGELOG.md
 
     # Generate release notes for this version
     echo "Generating release notes..."
