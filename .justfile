@@ -232,6 +232,9 @@ prepare-release version:
     sed -i '' "s/pub(super) const VERSION_MINOR: u64 = [0-9]*;/pub(super) const VERSION_MINOR: u64 = $MINOR;/" clickhouse-arrow/src/constants.rs
     sed -i '' "s/pub(super) const VERSION_PATCH: u64 = [0-9]*;/pub(super) const VERSION_PATCH: u64 = $PATCH;/" clickhouse-arrow/src/constants.rs
 
+    # Update clickhouse-arrow-derive dependency version in clickhouse-arrow/Cargo.toml
+    sed -i '' "s/clickhouse-arrow-derive = { version = \"[^\"]*\"/clickhouse-arrow-derive = { version = \"{{version}}\"/" clickhouse-arrow/Cargo.toml
+
     # Update clickhouse-arrow version references in README files (if they exist)
     # Look for patterns like: clickhouse-arrow = "0.1.1" or clickhouse-arrow = { version = "0.1.1"
     for readme in README.md clickhouse-arrow/README.md; do
@@ -259,7 +262,7 @@ prepare-release version:
     git cliff --unreleased --tag v{{version}} --strip header -o RELEASE_NOTES.md
 
     # Stage all changes
-    git add Cargo.toml clickhouse-arrow/src/constants.rs Cargo.lock CHANGELOG.md RELEASE_NOTES.md
+    git add Cargo.toml clickhouse-arrow/Cargo.toml clickhouse-arrow/src/constants.rs Cargo.lock CHANGELOG.md RELEASE_NOTES.md
     # Also add README files if they were modified
     git add README.md clickhouse-arrow/README.md 2>/dev/null || true
 
