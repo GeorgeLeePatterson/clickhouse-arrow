@@ -54,7 +54,7 @@ use crate::native::protocol::DBMS_MIN_REVISION_WITH_SETTINGS_SERIALIZED_AS_STRIN
 use crate::{Error, Result};
 
 const SETTING_FLAG_IMPORTANT: u64 = 0x01;
-const SETTING_FLAG_CUSTOM: u64 = 0x02;
+pub(crate) const SETTING_FLAG_CUSTOM: u64 = 0x02;
 
 /// Supported value types for `ClickHouse` query settings.
 ///
@@ -133,6 +133,82 @@ setting_value!(String, &str, v => { v.to_string() });
 setting_value!(String, Box<str>, v => { v.to_string() });
 setting_value!(String, std::sync::Arc<str>, v => { v.to_string() });
 setting_value!(String, String);
+
+// Array conversions - serialize to field dump format for ClickHouse parameters
+macro_rules! setting_value_array {
+    ($ty:ty) => {
+        impl From<Vec<$ty>> for SettingValue {
+            fn from(value: Vec<$ty>) -> Self {
+                let formatted = value.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                SettingValue::String(format!("[{formatted}]"))
+            }
+        }
+
+        impl From<&[$ty]> for SettingValue {
+            fn from(value: &[$ty]) -> Self {
+                let formatted = value.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                SettingValue::String(format!("[{formatted}]"))
+            }
+        }
+    };
+}
+
+// Numeric array types
+setting_value_array!(i8);
+setting_value_array!(i16);
+setting_value_array!(i32);
+setting_value_array!(i64);
+setting_value_array!(u8);
+setting_value_array!(u16);
+setting_value_array!(u32);
+setting_value_array!(u64);
+setting_value_array!(f32);
+setting_value_array!(f64);
+
+// String array types - need special escaping
+impl From<Vec<String>> for SettingValue {
+    fn from(value: Vec<String>) -> Self {
+        let formatted = value
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(",");
+        SettingValue::String(format!("[{formatted}]"))
+    }
+}
+
+impl From<&[String]> for SettingValue {
+    fn from(value: &[String]) -> Self {
+        let formatted = value
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(",");
+        SettingValue::String(format!("[{formatted}]"))
+    }
+}
+
+impl From<Vec<&str>> for SettingValue {
+    fn from(value: Vec<&str>) -> Self {
+        let formatted = value
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(",");
+        SettingValue::String(format!("[{formatted}]"))
+    }
+}
+
+impl From<&[&str]> for SettingValue {
+    fn from(value: &[&str]) -> Self {
+        let formatted = value
+            .iter()
+            .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(",");
+        SettingValue::String(format!("[{formatted}]"))
+    }
+}
 
 impl fmt::Display for SettingValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -535,7 +611,7 @@ where
     where
         T: IntoIterator<Item = (K, S)>,
     {
-        iter.into_iter().collect()
+        Self::from(iter)
     }
 }
 
@@ -1281,5 +1357,117 @@ mod tests {
         assert_eq!(decoded_settings.0[2].value, SettingValue::String("custom_value".to_string()));
         assert!(!decoded_settings.0[2].important);
         assert!(decoded_settings.0[2].custom);
+    }
+
+    #[test]
+    fn test_from_iterator_no_stack_overflow() {
+        // This test verifies the fix for issue #52 - FromIterator was causing stack overflow
+        // by calling .collect() which called from_iter which called .collect() again
+
+        let data = vec![
+            ("param1", SettingValue::from("value1")),
+            ("param2", SettingValue::from(42_i32)),
+            ("param3", SettingValue::from(true)),
+        ];
+
+        // This used to cause stack overflow before the fix
+        let settings: Settings = data.into_iter().collect();
+
+        assert_eq!(settings.0.len(), 3);
+        assert_eq!(settings.0[0].key, "param1");
+        assert_eq!(settings.0[0].value, SettingValue::String("value1".to_string()));
+        assert_eq!(settings.0[1].key, "param2");
+        assert_eq!(settings.0[1].value, SettingValue::Int(42));
+        assert_eq!(settings.0[2].key, "param3");
+        assert_eq!(settings.0[2].value, SettingValue::Bool(true));
+    }
+
+    #[test]
+    fn test_setting_value_from_integer_arrays() {
+        // Test Vec<T> conversions
+        assert_eq!(
+            SettingValue::from(vec![1_i32, 2_i32, 3_i32]),
+            SettingValue::String("[1,2,3]".to_string())
+        );
+        assert_eq!(
+            SettingValue::from(vec![1_i64, 2_i64, 3_i64]),
+            SettingValue::String("[1,2,3]".to_string())
+        );
+        assert_eq!(
+            SettingValue::from(vec![1_u32, 2_u32, 3_u32]),
+            SettingValue::String("[1,2,3]".to_string())
+        );
+
+        // Test &[T] conversions
+        let arr = [1_i32, 2_i32, 3_i32];
+        assert_eq!(SettingValue::from(&arr[..]), SettingValue::String("[1,2,3]".to_string()));
+
+        // Test empty array
+        assert_eq!(SettingValue::from(Vec::<i32>::new()), SettingValue::String("[]".to_string()));
+    }
+
+    #[test]
+    fn test_setting_value_from_float_arrays() {
+        assert_eq!(
+            SettingValue::from(vec![1.5_f64, 2.5_f64, 3.15_f64]),
+            SettingValue::String("[1.5,2.5,3.15]".to_string())
+        );
+        assert_eq!(
+            SettingValue::from(vec![1.5_f32, 2.5_f32]),
+            SettingValue::String("[1.5,2.5]".to_string())
+        );
+
+        // Test &[T] conversion
+        let arr = [1.5_f64, 2.5_f64];
+        assert_eq!(SettingValue::from(&arr[..]), SettingValue::String("[1.5,2.5]".to_string()));
+    }
+
+    #[test]
+    fn test_setting_value_from_string_arrays() {
+        // Test Vec<String>
+        assert_eq!(
+            SettingValue::from(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+            SettingValue::String("['a','b','c']".to_string())
+        );
+
+        // Test Vec<&str>
+        assert_eq!(
+            SettingValue::from(vec!["a", "b", "c"]),
+            SettingValue::String("['a','b','c']".to_string())
+        );
+
+        // Test &[&str]
+        let arr = ["a", "b", "c"];
+        assert_eq!(SettingValue::from(&arr[..]), SettingValue::String("['a','b','c']".to_string()));
+
+        // Test string with quotes (should be escaped)
+        assert_eq!(
+            SettingValue::from(vec!["it's", "a", "test"]),
+            SettingValue::String("['it\\'s','a','test']".to_string())
+        );
+
+        // Test empty array
+        assert_eq!(
+            SettingValue::from(Vec::<String>::new()),
+            SettingValue::String("[]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_setting_value_array_edge_cases() {
+        // Single element
+        assert_eq!(SettingValue::from(vec![42_i32]), SettingValue::String("[42]".to_string()));
+
+        // Large numbers
+        assert_eq!(
+            SettingValue::from(vec![i64::MAX, i64::MIN]),
+            SettingValue::String(format!("[{},{}]", i64::MAX, i64::MIN))
+        );
+
+        // Multiple quotes in strings
+        assert_eq!(
+            SettingValue::from(vec!["'quoted'", "normal"]),
+            SettingValue::String("['\\'quoted\\'','normal']".to_string())
+        );
     }
 }

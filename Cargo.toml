@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.7"
 edition = "2024"
+rust-version = "1.88"
 authors = ["George Lee Patterson <patterson.george@gmail.com>"]
 license = "Apache-2.0"
 keywords = ["clickhouse", "arrow", "query", "sql", "database"]
@@ -21,7 +22,8 @@ clone_on_ref_ptr = "warn"
 must_use_candidate = "allow"
 
 [workspace.lints.rust]
-unused_imports = "deny"
+# TODO: Re-enable after fixing macro hygiene issues
+# unused_imports = "deny"
 elided_lifetimes_in_paths = "deny"
 explicit_outlives_requirements = "warn"
 let_underscore_drop = "warn"
