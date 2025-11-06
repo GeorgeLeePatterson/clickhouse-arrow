@@ -6,6 +6,9 @@ use super::CompressionMethod;
 use crate::native::protocol::ChunkedProtocolMode;
 use crate::prelude::Secret;
 
+/// Default database for queries
+pub const DEFAULT_DATABASE: &str = "default";
+
 /// Configuration options for a `ClickHouse` client connection and Arrow serialization.
 ///
 /// The `ClientOptions` struct defines the settings used to establish a connection
@@ -73,7 +76,7 @@ impl Default for ClientOptions {
         ClientOptions {
             username:         "default".to_string(),
             password:         Secret::new(""),
-            default_database: String::new(),
+            default_database: DEFAULT_DATABASE.to_string(),
             domain:           None,
             ipv4_only:        false,
             cafile:           None,
