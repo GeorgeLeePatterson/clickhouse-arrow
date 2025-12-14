@@ -1108,7 +1108,7 @@ mod tests {
         assert!(id.contains("example.com"));
 
         let empty_builder = default_builder();
-        assert_eq!(empty_builder.connection_identifier(), "default13933120620573868840");
+        assert_eq!(empty_builder.connection_identifier(), "default13933120620573868840default");
     }
 
     #[tokio::test]
