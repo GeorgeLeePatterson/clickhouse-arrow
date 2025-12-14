@@ -381,7 +381,7 @@ pub async fn round_trip(
 
     // Query and verify results
     let query_id = Qid::new();
-    header(query_id, format!("Querying table: {table_ref}"));
+    header(query_id, format!("Querying table (roundtrip select): {table_ref}"));
     let query = format!("SELECT * FROM {table_ref}");
     let queried_batches = client
         .query(&query, Some(query_id))
@@ -391,7 +391,13 @@ pub async fn round_trip(
         .into_iter()
         .collect::<ClickHouseResult<Vec<_>>>()?;
 
-    arrow::util::pretty::print_batches(&queried_batches)?;
+    // Truncate results, they can be huge
+    let truncated = queried_batches
+        .clone()
+        .into_iter()
+        .map(|r| r.slice(0, 100.min(r.num_rows())))
+        .collect::<Vec<_>>();
+    arrow::util::pretty::print_batches(&truncated)?;
 
     // Verify queried data matches inserted data
     header(query_id, "Verifying queried data");
@@ -592,7 +598,7 @@ pub async fn test_nullable_array_serialization(ch: Arc<ClickHouseContainer>) {
 
     // Query back the data to verify
     let query_id = Qid::new();
-    header(query_id, format!("Querying table: {table_name}"));
+    header(query_id, format!("Querying table (nullable array serialization): {table_name}"));
     let select_query = format!("SELECT * FROM {table_name} ORDER BY id");
 
     let queried_batches = client

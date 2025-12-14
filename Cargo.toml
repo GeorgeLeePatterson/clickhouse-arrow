@@ -87,3 +87,11 @@ debug = false
 debug-assertions = false
 strip = "debuginfo"
 incremental = false
+
+# Workaround for testcontainers incompatibility with bollard 0.19.5
+# bollard-stubs 1.49.3 made breaking changes to PortBinding type
+#
+# NOTE: No pending issue found yet
+# See: https://github.com/testcontainers/testcontainers-rs/issues/XXX
+[patch.crates-io]
+bollard = { git = "https://github.com/fussybeaver/bollard", tag = "v0.19.4" }
