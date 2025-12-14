@@ -540,9 +540,19 @@ fn eat_identifier(input: &str) -> (&str, &str) {
 ///
 /// `ClickHouse` tuples can be named (`Tuple(name Type, ...)`) or anonymous (`Tuple(Type, ...)`).
 /// This extracts just the type portion from named fields like `"s String"` → `"String"`.
+///
+/// Important: We must not strip parts of types that contain internal spaces, like
+/// `Map(String, Int32)` where the space after the comma is part of the type itself.
+/// A field name is always a simple identifier (no parentheses) followed by a space.
 fn strip_tuple_field_name(arg: &str) -> &str {
     let arg = arg.trim();
     if let Some(space_idx) = arg.find(' ') {
+        let before_space = &arg[..space_idx];
+        // If the part before the space contains '(', it's a type with arguments,
+        // not a field name. E.g., "Map(String, Int32)" - the space is inside the type.
+        if before_space.contains('(') {
+            return arg;
+        }
         let rest = arg[space_idx..].trim_start();
         if rest.chars().next().is_some_and(char::is_alphabetic) {
             return rest;
@@ -957,6 +967,14 @@ mod tests {
         // Edge cases
         assert_eq!(strip_tuple_field_name("  s String  "), "String"); // Extra whitespace
         assert_eq!(strip_tuple_field_name("field123 UInt32"), "UInt32"); // Name with numbers
+
+        // Types with internal spaces (must NOT be stripped) - regression test for Codex review
+        assert_eq!(strip_tuple_field_name("Map(String, Int32)"), "Map(String, Int32)");
+        assert_eq!(strip_tuple_field_name("Array(Nullable(String))"), "Array(Nullable(String))");
+        assert_eq!(strip_tuple_field_name("Tuple(String, Int32)"), "Tuple(String, Int32)");
+
+        // Named field with complex type containing spaces
+        assert_eq!(strip_tuple_field_name("my_map Map(String, Int32)"), "Map(String, Int32)");
     }
 
     /// Tests `Type::from_str` for named tuple fields (issue #85).
@@ -998,6 +1016,23 @@ mod tests {
         assert_eq!(
             Type::from_str("Tuple(String, i Int64)").unwrap(),
             Type::Tuple(vec![Type::String, Type::Int64])
+        );
+
+        // Anonymous tuples with types containing internal spaces - regression test for Codex review
+        // These must continue to parse correctly (they worked before the named tuple fix)
+        assert_eq!(
+            Type::from_str("Tuple(Map(String, Int32), Int32)").unwrap(),
+            Type::Tuple(vec![
+                Type::Map(Box::new(Type::String), Box::new(Type::Int32)),
+                Type::Int32
+            ])
+        );
+        assert_eq!(
+            Type::from_str("Tuple(Array(Nullable(String)), Map(String, Int64))").unwrap(),
+            Type::Tuple(vec![
+                Type::Array(Box::new(Type::Nullable(Box::new(Type::String)))),
+                Type::Map(Box::new(Type::String), Box::new(Type::Int64))
+            ])
         );
     }
 }
