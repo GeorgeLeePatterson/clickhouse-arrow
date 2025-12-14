@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2025-12-14
+
+### Bug Fixes
+
+- Patches bug with named tuple args ([#93](https://github.com/georgeleepatterson/clickhouse-arrow/issues/93)) ([4444187](https://github.com/georgeleepatterson/clickhouse-arrow/commit/44441875d66a6f8f627decbe8d4df9f9c5c7fcfa))
+
+### Miscellaneous Tasks
+
+- Adds skips to publish ([1b47166](https://github.com/georgeleepatterson/clickhouse-arrow/commit/1b4716615f9903b45efc402c91a6a3f4243a4f74))
+- Updates arrow, truncates some test output ([76d85a5](https://github.com/georgeleepatterson/clickhouse-arrow/commit/76d85a5bd6bf85f695a8772f42b0d4479aea170d))
+
 ## [0.2.0] - 2025-11-04
 
 ### Bug Fixes
@@ -20,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Patches justfile ([b1835a8](https://github.com/georgeleepatterson/clickhouse-arrow/commit/b1835a8767b6c0cc69b4376caf0988e858b9492e))
 - Patches justfile release ([b988d65](https://github.com/georgeleepatterson/clickhouse-arrow/commit/b988d65da58ed5b864a270e8f475fe9fbc20d786))
+- Prepare release v0.2.0 ([#82](https://github.com/georgeleepatterson/clickhouse-arrow/issues/82)) ([5d9ed18](https://github.com/georgeleepatterson/clickhouse-arrow/commit/5d9ed18aa6303cbcf8c488289f01c63826452faf))
+- Adds checks to success ([7549102](https://github.com/georgeleepatterson/clickhouse-arrow/commit/754910207413b8182b86b90745b9b424387e8157))
 
 ### Build
 
