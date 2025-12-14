@@ -229,6 +229,80 @@ pub async fn test_execute_queries(ch: Arc<ClickHouseContainer>) {
     client.shutdown().await.unwrap();
 }
 
+/// Test named tuple field parsing (issue #85)
+/// `ClickHouse` supports `Tuple(name1 Type1, name2 Type2)` syntax which was not being parsed
+/// correctly.
+///
+/// # Panics
+pub async fn test_named_tuple_schema(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap(ch.as_ref(), None).await;
+
+    // Create unique table name
+    let table_qid = Qid::new();
+    let table_name = format!("test_named_tuple_{table_qid}");
+
+    // Create table with named tuple fields - this is the syntax that was failing
+    let query_id = Qid::new();
+    header(query_id, format!("Creating table with named tuple: {table_name}"));
+
+    let create_table_query = format!(
+        "CREATE TABLE {table_name} (
+            id UInt32,
+            simple_tuple Tuple(s String, i Int64),
+            nested_tuple Tuple(name String, value Nullable(Int32), arr Array(String))
+        ) ENGINE = Memory"
+    );
+
+    client.execute(&create_table_query, Some(query_id)).await.expect("Failed to create table");
+
+    // Insert some data using ClickHouse SQL
+    let query_id = Qid::new();
+    header(query_id, format!("Inserting data into {table_name}"));
+    let insert_query = format!(
+        "INSERT INTO {table_name} VALUES
+         (1, ('hello', 42), ('test', 100, ['a', 'b'])),
+         (2, ('world', -1), ('example', NULL, ['x', 'y', 'z']))"
+    );
+    client.execute(&insert_query, Some(query_id)).await.expect("Failed to insert data");
+
+    // Query the schema - this is where the TypeParseError was occurring
+    let query_id = Qid::new();
+    header(query_id, format!("Querying table schema: {table_name}"));
+    let select_query = format!("SELECT * FROM {table_name} ORDER BY id");
+
+    let queried_batches = client
+        .query(&select_query, Some(query_id))
+        .await
+        .expect("Query failed - named tuple parsing may have failed")
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<ClickHouseResult<Vec<_>>>()
+        .expect("Failed to query data");
+
+    arrow::util::pretty::print_batches(&queried_batches).unwrap();
+
+    // Verify the data
+    assert_eq!(queried_batches.len(), 1, "Expected one batch");
+    let queried_batch = &queried_batches[0];
+    assert_eq!(queried_batch.num_rows(), 2, "Expected 2 rows");
+    assert_eq!(
+        queried_batch.num_columns(),
+        3,
+        "Expected 3 columns (id, simple_tuple, nested_tuple)"
+    );
+
+    // Clean up
+    let query_id = Qid::new();
+    header(query_id, format!("Dropping table: {table_name}"));
+    client
+        .execute(format!("DROP TABLE {table_name}"), Some(query_id))
+        .await
+        .expect("Failed to drop table");
+
+    client.shutdown().await.unwrap();
+}
+
 // Utility functions
 pub(super) async fn bootstrap(
     ch: &ClickHouseContainer,

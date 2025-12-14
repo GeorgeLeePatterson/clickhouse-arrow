@@ -449,8 +449,12 @@ impl FromStr for Type {
                 }
                 "Tuple" => {
                     let args = parse_variable_args(following)?;
-                    let inner: Vec<Type> =
-                        args.into_iter().map(Type::from_str).collect::<Result<_, _>>()?;
+                    let inner: Vec<Type> = args
+                        .into_iter()
+                        // Handle named tuple fields: "name Type" -> extract just "Type"
+                        .map(strip_tuple_field_name)
+                        .map(Type::from_str)
+                        .collect::<Result<_, _>>()?;
                     Type::Tuple(inner)
                 }
                 "Nullable" => {
@@ -530,6 +534,31 @@ fn eat_identifier(input: &str) -> (&str, &str) {
         return (&input[..i], &input[i..]);
     }
     (input, "")
+}
+
+/// Strips the field name from a named tuple argument.
+///
+/// `ClickHouse` tuples can be named (`Tuple(name Type, ...)`) or anonymous (`Tuple(Type, ...)`).
+/// This extracts just the type portion from named fields like `"s String"` → `"String"`.
+///
+/// Important: We must not strip parts of types that contain internal spaces, like
+/// `Map(String, Int32)` where the space after the comma is part of the type itself.
+/// A field name is always a simple identifier (no parentheses) followed by a space.
+fn strip_tuple_field_name(arg: &str) -> &str {
+    let arg = arg.trim();
+    if let Some(space_idx) = arg.find(' ') {
+        let before_space = &arg[..space_idx];
+        // If the part before the space contains '(', it's a type with arguments,
+        // not a field name. E.g., "Map(String, Int32)" - the space is inside the type.
+        if before_space.contains('(') {
+            return arg;
+        }
+        let rest = arg[space_idx..].trim_start();
+        if rest.chars().next().is_some_and(char::is_alphabetic) {
+            return rest;
+        }
+    }
+    arg
 }
 
 /// Parse arguments into a fixed-size array for types with a known number of args
@@ -916,5 +945,94 @@ mod tests {
         assert!(Type::from_str("Nested(String)").is_err()); // Unsupported Nested
         assert!(Type::from_str("Int8(").is_err()); // Unclosed paren
         assert!(Type::from_str("Tuple(String,)").is_err()); // Trailing comma
+    }
+
+    /// Tests `strip_tuple_field_name` helper function.
+    #[test]
+    fn test_strip_tuple_field_name() {
+        // Anonymous tuple fields (no name) - should return as-is
+        assert_eq!(strip_tuple_field_name("String"), "String");
+        assert_eq!(strip_tuple_field_name("Int64"), "Int64");
+        assert_eq!(strip_tuple_field_name("Nullable(Int32)"), "Nullable(Int32)");
+
+        // Named tuple fields - should strip the name
+        assert_eq!(strip_tuple_field_name("s String"), "String");
+        assert_eq!(strip_tuple_field_name("i Int64"), "Int64");
+        assert_eq!(strip_tuple_field_name("my_field Nullable(Int32)"), "Nullable(Int32)");
+        assert_eq!(
+            strip_tuple_field_name("status Enum8('active' = 1, 'inactive' = 2)"),
+            "Enum8('active' = 1, 'inactive' = 2)"
+        );
+
+        // Edge cases
+        assert_eq!(strip_tuple_field_name("  s String  "), "String"); // Extra whitespace
+        assert_eq!(strip_tuple_field_name("field123 UInt32"), "UInt32"); // Name with numbers
+
+        // Types with internal spaces (must NOT be stripped) - regression test for Codex review
+        assert_eq!(strip_tuple_field_name("Map(String, Int32)"), "Map(String, Int32)");
+        assert_eq!(strip_tuple_field_name("Array(Nullable(String))"), "Array(Nullable(String))");
+        assert_eq!(strip_tuple_field_name("Tuple(String, Int32)"), "Tuple(String, Int32)");
+
+        // Named field with complex type containing spaces
+        assert_eq!(strip_tuple_field_name("my_map Map(String, Int32)"), "Map(String, Int32)");
+    }
+
+    /// Tests `Type::from_str` for named tuple fields (issue #85).
+    #[test]
+    fn test_from_str_named_tuple() {
+        // Simple named tuple
+        assert_eq!(
+            Type::from_str("Tuple(s String, i Int64)").unwrap(),
+            Type::Tuple(vec![Type::String, Type::Int64])
+        );
+
+        // Named tuple with complex types
+        assert_eq!(
+            Type::from_str("Tuple(name String, value Nullable(Int32))").unwrap(),
+            Type::Tuple(vec![Type::String, Type::Nullable(Box::new(Type::Int32))])
+        );
+
+        // Named tuple with nested types
+        assert_eq!(
+            Type::from_str("Tuple(arr Array(String), map Map(String, Int32))").unwrap(),
+            Type::Tuple(vec![
+                Type::Array(Box::new(Type::String)),
+                Type::Map(Box::new(Type::String), Box::new(Type::Int32))
+            ])
+        );
+
+        // Named tuple with Enum
+        assert_eq!(
+            Type::from_str("Tuple(status Enum8('active' = 1, 'inactive' = 2), count Int64)")
+                .unwrap(),
+            Type::Tuple(vec![
+                Type::Enum8(vec![("active".into(), 1), ("inactive".into(), 2)]),
+                Type::Int64
+            ])
+        );
+
+        // Mixed: some fields named, some not (ClickHouse allows this)
+        // Actually, ClickHouse requires all or none to be named, but we handle it gracefully
+        assert_eq!(
+            Type::from_str("Tuple(String, i Int64)").unwrap(),
+            Type::Tuple(vec![Type::String, Type::Int64])
+        );
+
+        // Anonymous tuples with types containing internal spaces - regression test for Codex review
+        // These must continue to parse correctly (they worked before the named tuple fix)
+        assert_eq!(
+            Type::from_str("Tuple(Map(String, Int32), Int32)").unwrap(),
+            Type::Tuple(vec![
+                Type::Map(Box::new(Type::String), Box::new(Type::Int32)),
+                Type::Int32
+            ])
+        );
+        assert_eq!(
+            Type::from_str("Tuple(Array(Nullable(String)), Map(String, Int64))").unwrap(),
+            Type::Tuple(vec![
+                Type::Array(Box::new(Type::Nullable(Box::new(Type::String)))),
+                Type::Map(Box::new(Type::String), Box::new(Type::Int64))
+            ])
+        );
     }
 }
