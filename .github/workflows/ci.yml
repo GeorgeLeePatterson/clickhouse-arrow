@@ -27,7 +27,7 @@ jobs:
     outputs:
       code: ${{ steps.changes.outputs.code }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - uses: dorny/paths-filter@master
       id: changes
       with:
@@ -53,7 +53,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install Rust stable
       uses: dtolnay/rust-toolchain@stable
@@ -80,7 +80,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Login to Docker Hub
       if: github.event_name != 'pull_request' ||
