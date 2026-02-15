@@ -101,6 +101,10 @@ pub(crate) enum TypedBuilder {
     DateTimeMs(TimestampMillisecondBuilder),
     DateTimeMu(TimestampMicrosecondBuilder),
     DateTimeNano(TimestampNanosecondBuilder),
+    Time32(Time32SecondBuilder),
+    Time64Ms(Time32MillisecondBuilder),
+    Time64Mu(Time64MicrosecondBuilder),
+    Time64Nano(Time64NanosecondBuilder),
 
     // String and Binary types
     String(StringBuilder),
@@ -163,6 +167,43 @@ impl TypedBuilder {
                     .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()))
                     .collect::<Result<Vec<_>, _>>()?,
             ));
+        }
+
+        if let Type::Nested(fields) = type_ {
+            let DataType::Struct(arrow_fields) = data_type else {
+                return Err(Error::ArrowDeserialize(format!(
+                    "Unexpected datatype for nested: {data_type:?}",
+                )));
+            };
+            if fields.len() != arrow_fields.len() {
+                return Err(Error::ArrowDeserialize(format!(
+                    "Nested field length mismatch: {fields:?} != {arrow_fields:?}",
+                )));
+            }
+            let nested_tuple = fields
+                .iter()
+                .map(|(_, type_)| Type::Array(Box::new(type_.clone())))
+                .collect::<Vec<_>>();
+            return Ok(Self::Tuple(
+                nested_tuple
+                    .iter()
+                    .zip(arrow_fields.iter())
+                    .map(|(type_, field)| TypedBuilder::try_new(type_, field.data_type()))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
+
+        if let Type::SimpleAggregateFunction { types, .. } = type_ {
+            if let Some(inner) = types.first() {
+                return TypedBuilder::try_new(inner, data_type);
+            }
+            return Err(Error::ArrowDeserialize(
+                "SimpleAggregateFunction has no inner types".to_string(),
+            ));
+        }
+
+        if let Type::AggregateFunction { .. } = type_ {
+            return TypedBuilder::try_new(&Type::Binary, data_type);
         }
 
         if let Type::Map(key, value) = type_ {
@@ -230,6 +271,22 @@ impl TypedBuilder {
                 TimestampNanosecondBuilder::with_capacity(ROWS)
                     .with_timezone_opt(tz_some.then_some(Arc::from(tz.name())))
             ),
+            Type::Time => (
+                Time32,
+                Time32SecondBuilder::with_capacity(ROWS)
+            ),
+            Type::Time64(0..=3) => (
+                Time64Ms,
+                Time32MillisecondBuilder::with_capacity(ROWS)
+            ),
+            Type::Time64(4..=6) => (
+                Time64Mu,
+                Time64MicrosecondBuilder::with_capacity(ROWS)
+            ),
+            Type::Time64(7..=9) => (
+                Time64Nano,
+                Time64NanosecondBuilder::with_capacity(ROWS)
+            ),
             // String, Binary, UUID, IPv4, IPv6
             Type::String => (
                 String, StringBuilder::with_capacity(ROWS, ROWS * 64)
@@ -283,6 +340,10 @@ impl TypedBuilder {
             Type::Enum16(p) => (
                 Enum16,
                 StringDictionaryBuilder::<Int16Type>::with_capacity(ROWS, p.len(), ROWS * p.len() * 4)
+            ),
+            Type::BFloat16 => (
+                Float32,
+                PrimitiveBuilder::<Float32Type>::with_capacity(ROWS)
             ),
         }))
     }

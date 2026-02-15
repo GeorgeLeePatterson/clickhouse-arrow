@@ -86,6 +86,7 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
         Type::UInt256 => write_u256_values(values, writer).await?,
         Type::Float32 => write_f32_values(values, writer).await?,
         Type::Float64 => write_f64_values(values, writer).await?,
+        Type::BFloat16 => write_bfloat16_values(values, writer).await?,
         Type::Decimal32(_) => write_decimal32_values(values, writer).await?,
         Type::Decimal64(_) => write_decimal64_values(values, writer).await?,
         Type::Decimal128(_) => write_decimal128_values(values, writer).await?,
@@ -93,6 +94,17 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
         Type::Date => write_date_values(values, writer).await?,
         Type::Date32 => write_date32_values(values, writer).await?,
         Type::DateTime(_) => write_datetime_values(values, writer).await?,
+        Type::Time => write_time_values(values, writer).await?,
+        Type::Time64(p) => match p {
+            0..=3 => write_time64_ms_values(values, writer).await?,
+            4..=6 => write_time64_us_values(values, writer).await?,
+            7..=9 => write_time64_ns_values(values, writer).await?,
+            _ => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Unsupported precision for Time64: {p}"
+                )));
+            }
+        },
         Type::DateTime64(p, _) => match p {
             0 => write_datetime64_unknown_values(values, writer).await?,
             1..=3 => write_datetime64_3_values(values, writer).await?,
@@ -112,16 +124,16 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                 .downcast_ref::<FixedSizeBinaryArray>()
                 .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
 
+            static NULL_UUID: [u8; 16] = [0; 16];
+
             for i in 0..array.len() {
-                let value = if array.is_null(i) { &[0u8; 16] } else { array.value(i) };
-                if value.len() != 16 {
-                    return Err(Error::ArrowSerialize("UUID must be 16 bytes".into()));
+                if array.is_null(i) {
+                    writer.write_all(&NULL_UUID).await?;
+                } else {
+                    let bytes = uuid_slice_to_clickhouse(array.value(i))
+                        .ok_or_else(|| Error::ArrowSerialize("UUID must be 16 bytes".into()))?;
+                    writer.write_all(&bytes).await?;
                 }
-                let bytes: [u8; 16] = value.try_into().unwrap();
-                let low = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-                let high = u64::from_le_bytes(bytes[8..].try_into().unwrap());
-                writer.write_u64_le(high).await?; // High bits first
-                writer.write_u64_le(low).await?; // Low bits second
             }
         }
         _ => {
@@ -159,6 +171,7 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         Type::UInt256 => put_u256_values(values, writer)?,
         Type::Float32 => put_f32_values(values, writer)?,
         Type::Float64 => put_f64_values(values, writer)?,
+        Type::BFloat16 => put_bfloat16_values(values, writer)?,
         Type::Decimal32(_) => put_decimal32_values(values, writer)?,
         Type::Decimal64(_) => put_decimal64_values(values, writer)?,
         Type::Decimal128(_) => put_decimal128_values(values, writer)?,
@@ -166,6 +179,17 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         Type::Date => put_date_values(values, writer)?,
         Type::Date32 => put_date32_values(values, writer)?,
         Type::DateTime(_) => put_datetime_values(values, writer)?,
+        Type::Time => put_time_values(values, writer)?,
+        Type::Time64(p) => match p {
+            0..=3 => put_time64_ms_values(values, writer)?,
+            4..=6 => put_time64_us_values(values, writer)?,
+            7..=9 => put_time64_ns_values(values, writer)?,
+            _ => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Unsupported precision for Time64: {p}"
+                )));
+            }
+        },
         Type::DateTime64(p, _) => match p {
             0 => put_datetime64_unknown_values(values, writer)?,
             1..=3 => put_datetime64_3_values(values, writer)?,
@@ -185,16 +209,16 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
                 .downcast_ref::<FixedSizeBinaryArray>()
                 .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
 
+            static NULL_UUID: [u8; 16] = [0; 16];
+
             for i in 0..array.len() {
-                let value = if array.is_null(i) { &[0u8; 16] } else { array.value(i) };
-                if value.len() != 16 {
-                    return Err(Error::ArrowSerialize("UUID must be 16 bytes".into()));
+                if array.is_null(i) {
+                    writer.put_slice(&NULL_UUID);
+                } else {
+                    let bytes = uuid_slice_to_clickhouse(array.value(i))
+                        .ok_or_else(|| Error::ArrowSerialize("UUID must be 16 bytes".into()))?;
+                    writer.put_slice(&bytes);
                 }
-                let bytes: [u8; 16] = value.try_into().unwrap();
-                let low = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-                let high = u64::from_le_bytes(bytes[8..].try_into().unwrap());
-                writer.put_u64_le(high); // High bits first
-                writer.put_u64_le(low); // Low bits second
             }
         }
         _ => {
@@ -204,6 +228,166 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
 
     Ok(())
 }
+
+#[inline]
+fn uuid_slice_to_clickhouse(value: &[u8]) -> Option<[u8; 16]> {
+    if value.len() != 16 {
+        return None;
+    }
+
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&value[8..16]);
+    out[8..16].copy_from_slice(&value[..8]);
+    Some(out)
+}
+
+#[inline]
+fn f32_to_bfloat16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let lsb = (bits >> 16) & 1;
+    let rounded = bits.wrapping_add(0x7FFF + lsb);
+    (rounded >> 16) as u16
+}
+
+async fn write_bfloat16_values<W: ClickHouseWrite>(
+    column: &ArrayRef,
+    writer: &mut W,
+) -> Result<()> {
+    if let Some(array) = column.as_any().downcast_ref::<Float32Array>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { f32_to_bfloat16_bits(array.value(i)) };
+            writer.write_u16_le(value).await?;
+        }
+        return Ok(());
+    }
+
+    if let Some(array) = column.as_any().downcast_ref::<UInt16Array>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { array.value(i) };
+            writer.write_u16_le(value).await?;
+        }
+        return Ok(());
+    }
+
+    Err(Error::ArrowSerialize("Expected Float32Array or UInt16Array for BFloat16".into()))
+}
+
+fn put_bfloat16_values<W: ClickHouseBytesWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
+    if let Some(array) = column.as_any().downcast_ref::<Float32Array>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { f32_to_bfloat16_bits(array.value(i)) };
+            writer.put_u16_le(value);
+        }
+        return Ok(());
+    }
+
+    if let Some(array) = column.as_any().downcast_ref::<UInt16Array>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { array.value(i) };
+            writer.put_u16_le(value);
+        }
+        return Ok(());
+    }
+
+    Err(Error::ArrowSerialize("Expected Float32Array or UInt16Array for BFloat16".into()))
+}
+
+async fn write_time_values<W: ClickHouseWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
+    if let Some(array) = column.as_any().downcast_ref::<Time32SecondArray>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
+            writer.write_u32_le(value).await?;
+        }
+        return Ok(());
+    }
+
+    if let Some(array) = column.as_any().downcast_ref::<Int32Array>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
+            writer.write_u32_le(value).await?;
+        }
+        return Ok(());
+    }
+
+    Err(Error::ArrowSerialize("Expected Time32SecondArray or Int32Array for Time".into()))
+}
+
+fn put_time_values<W: ClickHouseBytesWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
+    if let Some(array) = column.as_any().downcast_ref::<Time32SecondArray>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
+            writer.put_u32_le(value);
+        }
+        return Ok(());
+    }
+
+    if let Some(array) = column.as_any().downcast_ref::<Int32Array>() {
+        for i in 0..array.len() {
+            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
+            writer.put_u32_le(value);
+        }
+        return Ok(());
+    }
+
+    Err(Error::ArrowSerialize("Expected Time32SecondArray or Int32Array for Time".into()))
+}
+
+macro_rules! write_time64_values_async {
+    ($name:ident, $arr_ty:ty) => {
+        async fn $name<W: ClickHouseWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
+            if let Some(array) = column.as_any().downcast_ref::<$arr_ty>() {
+                for i in 0..array.len() {
+                    let raw = if array.is_null(i) { 0 } else { array.value(i) };
+                    let value: i64 = raw.into();
+                    writer.write_i64_le(value).await?;
+                }
+                return Ok(());
+            }
+            if let Some(array) = column.as_any().downcast_ref::<Int64Array>() {
+                for i in 0..array.len() {
+                    let value: i64 = if array.is_null(i) { 0 } else { array.value(i) };
+                    writer.write_i64_le(value).await?;
+                }
+                return Ok(());
+            }
+            Err(Error::ArrowSerialize(
+                concat!("Expected ", stringify!($arr_ty), " or Int64Array for Time64").into(),
+            ))
+        }
+    };
+}
+
+macro_rules! write_time64_values_sync {
+    ($name:ident, $arr_ty:ty) => {
+        fn $name<W: ClickHouseBytesWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
+            if let Some(array) = column.as_any().downcast_ref::<$arr_ty>() {
+                for i in 0..array.len() {
+                    let raw = if array.is_null(i) { 0 } else { array.value(i) };
+                    let value: i64 = raw.into();
+                    writer.put_i64_le(value);
+                }
+                return Ok(());
+            }
+            if let Some(array) = column.as_any().downcast_ref::<Int64Array>() {
+                for i in 0..array.len() {
+                    let value: i64 = if array.is_null(i) { 0 } else { array.value(i) };
+                    writer.put_i64_le(value);
+                }
+                return Ok(());
+            }
+            Err(Error::ArrowSerialize(
+                concat!("Expected ", stringify!($arr_ty), " or Int64Array for Time64").into(),
+            ))
+        }
+    };
+}
+
+write_time64_values_async!(write_time64_ms_values, Time32MillisecondArray);
+write_time64_values_async!(write_time64_us_values, Time64MicrosecondArray);
+write_time64_values_async!(write_time64_ns_values, Time64NanosecondArray);
+write_time64_values_sync!(put_time64_ms_values, Time32MillisecondArray);
+write_time64_values_sync!(put_time64_us_values, Time64MicrosecondArray);
+write_time64_values_sync!(put_time64_ns_values, Time64NanosecondArray);
 
 /// Macro to generate serialization functions for primitive types.
 ///
@@ -935,11 +1119,12 @@ macro_rules! put_float_values {
 }
 
 write_float_values!(write_f32_values, f32, write_u32_le, [Float32Array, Float16Array]);
-write_float_values!(write_f64_values, f64, write_u64_le, [
-    Float64Array,
-    Float32Array,
-    Float16Array
-]);
+write_float_values!(
+    write_f64_values,
+    f64,
+    write_u64_le,
+    [Float64Array, Float32Array, Float16Array]
+);
 
 put_float_values!(put_f32_values, f32, put_u32_le, [Float32Array, Float16Array]);
 put_float_values!(put_f64_values, f64, put_u64_le, [Float64Array, Float32Array, Float16Array]);
@@ -1098,6 +1283,36 @@ mod tests {
             0, 0, 0, 0, 0, 0, 248, 63, // 1.5 (0x3FF8000000000000)
             0, 0, 0, 0, 0, 0, 0, 192, // -2.0 (0xC000000000000000)
             0, 0, 0, 0, 0, 0, 0, 0, // 0.0 (0x0000000000000000)
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_bfloat16() {
+        let column = Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef;
+        let field = Field::new("bf16", DataType::Float32, true);
+        let mut writer = MockWriter::new();
+        serialize_async(&Type::BFloat16, &mut writer, &column, field.data_type()).await.unwrap();
+        assert_eq!(
+            writer,
+            vec![
+                0x80, 0x3F, // 1.0 -> 0x3F80
+                0x20, 0xC0, // -2.5 -> 0xC020
+                0x00, 0x00, // null -> default
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_serialize_time64_microseconds() {
+        let column = Arc::new(Time64MicrosecondArray::from(vec![10_i64, 20_i64])) as ArrayRef;
+        let field = Field::new("t", DataType::Time64(TimeUnit::Microsecond), false);
+        let mut writer = MockWriter::new();
+        serialize_async(&Type::Time64(6), &mut writer, &column, field.data_type()).await.unwrap();
+
+        let expected = vec![
+            10, 0, 0, 0, 0, 0, 0, 0, //
+            20, 0, 0, 0, 0, 0, 0, 0, //
         ];
         assert_eq!(writer, expected);
     }
@@ -2016,6 +2231,35 @@ mod tests_sync {
             0, 0, 0, 0, 0, 0, 248, 63, // 1.5 (0x3FF8000000000000)
             0, 0, 0, 0, 0, 0, 0, 192, // -2.0 (0xC000000000000000)
             0, 0, 0, 0, 0, 0, 0, 0, // 0.0 (0x0000000000000000)
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[test]
+    fn test_serialize_bfloat16_sync() {
+        let column = Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef;
+        let field = Field::new("bf16", DataType::Float32, true);
+        let mut writer = MockWriter::new();
+        serialize(&Type::BFloat16, &mut writer, &column, field.data_type()).unwrap();
+        assert_eq!(
+            writer,
+            vec![
+                0x80, 0x3F, // 1.0 -> 0x3F80
+                0x20, 0xC0, // -2.5 -> 0xC020
+                0x00, 0x00, // null -> default
+            ]
+        );
+    }
+
+    #[test]
+    fn test_serialize_time64_microseconds_sync() {
+        let column = Arc::new(Time64MicrosecondArray::from(vec![10_i64, 20_i64])) as ArrayRef;
+        let field = Field::new("t", DataType::Time64(TimeUnit::Microsecond), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::Time64(6), &mut writer, &column, field.data_type()).unwrap();
+        let expected = vec![
+            10, 0, 0, 0, 0, 0, 0, 0, //
+            20, 0, 0, 0, 0, 0, 0, 0, //
         ];
         assert_eq!(writer, expected);
     }

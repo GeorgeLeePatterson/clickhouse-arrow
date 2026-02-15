@@ -37,7 +37,9 @@ pub use self::response::*;
 pub use self::tcp::Destination;
 use crate::arrow::utils::batch_to_rows;
 use crate::constants::*;
+use crate::explain::{ExplainFormat, ExplainResult, QueryOptions, explain_result_from_batches};
 use crate::formats::{ClientFormat, NativeFormat};
+use crate::limits::{LimitedResponse, QueryLimits};
 use crate::native::block::Block;
 use crate::native::protocol::{CompressionMethod, ProfileEvent};
 use crate::prelude::*;
@@ -80,8 +82,8 @@ pub struct ConnectionContext {
 /// Emitted clickhouse events from the underlying connection
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub event:     ClickHouseEvent,
-    pub qid:       Qid,
+    pub event: ClickHouseEvent,
+    pub qid: Qid,
     pub client_id: u16,
 }
 
@@ -134,9 +136,9 @@ pub enum ClickHouseEvent {
 #[derive(Clone, Debug)]
 pub struct Client<T: ClientFormat> {
     pub client_id: u16,
-    connection:    Arc<connection::Connection<T>>,
-    events:        Arc<broadcast::Sender<Event>>,
-    settings:      Option<Arc<Settings>>,
+    connection: Arc<connection::Connection<T>>,
+    events: Arc<broadcast::Sender<Event>>,
+    settings: Option<Arc<Settings>>,
 }
 
 impl<T: ClientFormat> Client<T> {
@@ -163,7 +165,9 @@ impl<T: ClientFormat> Client<T> {
     ///     .with_username("default")
     ///     .with_password("");
     /// ```
-    pub fn builder() -> ClientBuilder { ClientBuilder::new() }
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::new()
+    }
 
     /// Establishes a connection to a `ClickHouse` server over TCP, with optional TLS support.
     ///
@@ -277,7 +281,9 @@ impl<T: ClientFormat> Client<T> {
     /// let status = client.status();
     /// println!("Connection status: {status:?}");
     /// ```
-    pub fn status(&self) -> ConnectionStatus { self.connection.status() }
+    pub fn status(&self) -> ConnectionStatus {
+        self.connection.status()
+    }
 
     /// Subscribes to progress and profile events from `ClickHouse` queries.
     ///
@@ -310,7 +316,9 @@ impl<T: ClientFormat> Client<T> {
     /// // Execute a query to generate events
     /// client.query("SELECT * FROM large_table").await.unwrap();
     /// ```
-    pub fn subscribe_events(&self) -> broadcast::Receiver<Event> { self.events.subscribe() }
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
+        self.events.subscribe()
+    }
 
     /// Checks the health of the underlying `ClickHouse` connection.
     ///
@@ -1539,6 +1547,128 @@ impl Client<ArrowFormat> {
     ) -> Result<ClickHouseResponse<RecordBatch>> {
         let (query, qid) = record_query(qid, query.into(), self.client_id);
         Ok(ClickHouseResponse::new(Box::pin(self.query_raw(query, params, qid).await?)))
+    }
+
+    /// Executes a query with result limits.
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_limits(
+        &self,
+        query: impl Into<ParsedQuery>,
+        limits: QueryLimits,
+        qid: Option<Qid>,
+    ) -> Result<LimitedResponse<ClickHouseResponse<RecordBatch>>> {
+        self.query_with_limits_params(query, None, limits, qid).await
+    }
+
+    /// Executes a parameterized query with result limits.
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_limits_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        limits: QueryLimits,
+        qid: Option<Qid>,
+    ) -> Result<LimitedResponse<ClickHouseResponse<RecordBatch>>> {
+        let inner = self.query_params(query, params, qid).await?;
+        Ok(LimitedResponse::new(inner, limits))
+    }
+
+    /// Executes a query with unified options (`EXPLAIN`, limits).
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_options(
+        &self,
+        query: impl Into<ParsedQuery>,
+        options: QueryOptions,
+        qid: Option<Qid>,
+    ) -> Result<ClickHouseResponse<RecordBatch>> {
+        self.query_with_options_params(query, None, options, qid).await
+    }
+
+    /// Executes a parameterized query with unified options (`EXPLAIN`, limits).
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_options_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        options: QueryOptions,
+        qid: Option<Qid>,
+    ) -> Result<ClickHouseResponse<RecordBatch>> {
+        let parsed_query = query.into();
+        let qid = qid.unwrap_or_default();
+
+        let explain_receiver = options.explain.map(|explain_opts| {
+            let explain_query = format!("{} {}", explain_opts.build_prefix(), &*parsed_query);
+            let resolved_format = explain_opts.format.resolve(explain_opts.operation);
+            self.spawn_explain_query(explain_query, params.clone(), resolved_format)
+        });
+
+        if options.is_explain_only() {
+            let empty_stream = stream::empty();
+            return Ok(match explain_receiver {
+                Some(rx) => ClickHouseResponse::from_stream_with_explain(empty_stream, rx),
+                None => ClickHouseResponse::from_stream(empty_stream),
+            });
+        }
+
+        let (query_str, recorded_qid) = record_query(Some(qid), parsed_query, self.client_id);
+        let stream = self.query_raw(query_str, params, recorded_qid).await?;
+
+        let response = match (options.limits, explain_receiver) {
+            (Some(limits), Some(rx)) => ClickHouseResponse::from_stream_with_explain(
+                LimitedResponse::new(stream, limits),
+                rx,
+            ),
+            (Some(limits), None) => {
+                ClickHouseResponse::from_stream(LimitedResponse::new(stream, limits))
+            }
+            (None, Some(rx)) => ClickHouseResponse::from_stream_with_explain(stream, rx),
+            (None, None) => ClickHouseResponse::from_stream(stream),
+        };
+
+        Ok(response)
+    }
+
+    fn spawn_explain_query(
+        &self,
+        explain_query: String,
+        params: Option<QueryParams>,
+        resolved_format: ExplainFormat,
+    ) -> oneshot::Receiver<Result<ExplainResult>> {
+        let (tx, rx) = oneshot::channel();
+        let client = self.clone();
+        let explain_qid = Qid::new();
+
+        #[allow(clippy::disallowed_methods)]
+        drop(tokio::spawn(async move {
+            let result = async {
+                let mut stream =
+                    client.query_params(explain_query, params, Some(explain_qid)).await?;
+
+                let mut batches = Vec::new();
+                while let Some(batch_result) = stream.next().await {
+                    batches.push(batch_result?);
+                }
+
+                explain_result_from_batches(batches, resolved_format)
+            }
+            .await;
+
+            drop(tx.send(result));
+        }));
+
+        rx
     }
 
     /// Executes a `ClickHouse` query and streams rows as column-major values.

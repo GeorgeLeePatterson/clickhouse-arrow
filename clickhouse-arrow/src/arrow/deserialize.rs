@@ -33,9 +33,9 @@ use crate::{ArrowOptions, Error, Result, Type};
 #[derive(Default)]
 pub(crate) struct ArrowDeserializerState {
     pub(crate) builders: Vec<TypedBuilder>,
-    pub(crate) buffer:   Vec<u8>,
-    fields:              Vec<FieldRef>,
-    arrays:              Vec<ArrayRef>,
+    pub(crate) buffer: Vec<u8>,
+    fields: Vec<FieldRef>,
+    arrays: Vec<ArrayRef>,
 }
 
 impl ArrowDeserializerState {
@@ -321,7 +321,10 @@ impl ClickHouseArrowDeserializer for Type {
             | Type::Decimal32(_)
             | Type::Decimal64(_)
             | Type::Decimal128(_)
-            | Type::Decimal256(_) =>
+            | Type::Decimal256(_)
+            | Type::BFloat16
+            | Type::Time
+            | Type::Time64(_) =>
                 primitive::deserialize_async(self, builder, reader, rows, nulls, rbuffer).await?,
             // String/Binary
             Type::String
@@ -372,6 +375,39 @@ impl ClickHouseArrowDeserializer for Type {
             Type::Tuple(inner) => Box::pin(
                 tuple::deserialize_async(inner, builder, data_type, reader, rows, nulls, rbuffer)
             ).await?,
+            Type::Nested(fields) => {
+                let nested_tuple = fields
+                    .iter()
+                    .map(|(_, type_)| Type::Array(Box::new(type_.clone())))
+                    .collect::<Vec<_>>();
+                Box::pin(tuple::deserialize_async(
+                    &nested_tuple,
+                    builder,
+                    data_type,
+                    reader,
+                    rows,
+                    nulls,
+                    rbuffer,
+                ))
+                .await?
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    Box::pin(inner.deserialize_arrow_async(
+                        builder, reader, data_type, rows, nulls, rbuffer,
+                    ))
+                    .await?
+                } else {
+                    return Err(Error::ArrowDeserialize(
+                        "SimpleAggregateFunction has no inner type".to_string(),
+                    ));
+                }
+            }
+            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                return Err(Error::ArrowDeserialize(format!(
+                    "Arrow deserialization is not implemented for type '{self}'"
+                )));
+            }
             // Geo types
             Type::Polygon | Type::MultiPolygon | Type::Point | Type::Ring => {
                 // Geo types should be converted earlier, this is a fallback
@@ -410,6 +446,25 @@ impl ClickHouseArrowDeserializer for Type {
             return null::deserialize(inner, builder, reader, data_type, rows, rbuffer);
         }
 
+        if let Type::SimpleAggregateFunction { types, .. } = self {
+            if let Some(inner) = types.first() {
+                return inner.deserialize_arrow(builder, reader, data_type, rows, nulls, rbuffer);
+            }
+            return Err(Error::ArrowDeserialize(
+                "SimpleAggregateFunction has no inner type".to_string(),
+            ));
+        }
+
+        if matches!(
+            self.strip_null(),
+            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. }
+        ) {
+            return Err(Error::ArrowDeserialize(format!(
+                "Arrow deserialization is not implemented for type '{}'",
+                self
+            )));
+        }
+
         // Bulk primitive cases (add these first)
         deser!(() => builder => {
             B::Int8(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i8) },
@@ -433,7 +488,11 @@ impl ClickHouseArrowDeserializer for Type {
             B::DateTimeS(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) },
             B::DateTimeMs(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) },
             B::DateTimeMu(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) },
-            B::DateTimeNano(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) }}
+            B::DateTimeNano(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) },
+            B::Time32(b) => { deser_bulk!(raw; b, reader, rows, nulls, rbuffer, u32 => i32) },
+            B::Time64Ms(b) => { deser_bulk!(raw; b, reader, rows, nulls, rbuffer, i64 => i32) },
+            B::Time64Mu(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) },
+            B::Time64Nano(b) => { deser_bulk!(b, reader, rows, nulls, rbuffer, i64) }}
             _ => {()});
 
         // Variable length or special handling
@@ -532,6 +591,15 @@ impl ClickHouseArrowDeserializer for Type {
             (B::Tuple(bds), Type::Tuple(inner)) => {
                 tuple::deserialize(bds, reader, inner, data_type, rows, nulls, rbuffer)
             },
+            (B::Tuple(bds), Type::Nested(fields)) => {
+                {
+                    let nested_tuple = fields
+                        .iter()
+                        .map(|(_, type_)| Type::Array(Box::new(type_.clone())))
+                        .collect::<Vec<_>>();
+                    tuple::deserialize(bds, reader, &nested_tuple, data_type, rows, nulls, rbuffer)
+                }
+            },
             // Map
             (TypedBuilder::Map((kb, vb)), Type::Map(key, value)) => { map::deserialize(
                 (kb, vb),
@@ -568,7 +636,11 @@ impl ClickHouseArrowDeserializer for Type {
                     B::DateTimeS(b) => { Arc::new(b.finish()) as ArrayRef },
                     B::DateTimeMs(b) => { Arc::new(b.finish()) as ArrayRef },
                     B::DateTimeMu(b) => { Arc::new(b.finish()) as ArrayRef },
-                    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef }   ,
+                    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef },
+                    B::Time32(b) => { Arc::new(b.finish()) as ArrayRef },
+                    B::Time64Ms(b) => { Arc::new(b.finish()) as ArrayRef },
+                    B::Time64Mu(b) => { Arc::new(b.finish()) as ArrayRef },
+                    B::Time64Nano(b) => { Arc::new(b.finish()) as ArrayRef },
                     // String/Binary
                     B::String(b) => { Arc::new(b.finish()) as ArrayRef },
                     B::Object(b) => { Arc::new(b.finish()) as ArrayRef },
@@ -790,9 +862,10 @@ mod tests {
         assert_eq!(list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 2, 5]);
-        assert_eq!(list_array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![
-            true, false, true
-        ]);
+        assert_eq!(
+            list_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
+            vec![true, false, true]
+        );
     }
 
     /// Tests deserialization of `Map(String, Int32)` with non-nullable key-value pairs.
@@ -1063,9 +1136,10 @@ mod tests_sync {
         assert_eq!(list_array.len(), 3);
         assert_eq!(values, &Int32Array::from(vec![1, 2, 3, 4, 5]));
         assert_eq!(list_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 2, 5]);
-        assert_eq!(list_array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![
-            true, false, true
-        ]);
+        assert_eq!(
+            list_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
+            vec![true, false, true]
+        );
     }
 
     /// Tests deserialization of `Map(String, Int32)` with non-nullable key-value pairs.

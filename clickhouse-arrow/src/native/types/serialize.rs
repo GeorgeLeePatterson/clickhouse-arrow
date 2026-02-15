@@ -61,7 +61,10 @@ impl ClickHouseNativeSerializer for Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_) => {
+                | Type::Enum16(_)
+                | Type::BFloat16
+                | Type::Time
+                | Type::Time64(_) => {
                     sized::SizedSerializer::write_prefix(self, writer, state).await?;
                 }
 
@@ -89,6 +92,26 @@ impl ClickHouseNativeSerializer for Type {
                         .await?;
                 }
                 Type::Object => object::ObjectSerializer::write_prefix(self, writer, state).await?,
+                Type::Nested(fields) => {
+                    let tuple_type = Type::Tuple(
+                        fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                    );
+                    tuple_type.serialize_prefix_async(writer, state).await?;
+                }
+                Type::SimpleAggregateFunction { types, .. } => {
+                    if let Some(inner) = types.first() {
+                        inner.serialize_prefix_async(writer, state).await?;
+                    } else {
+                        return Err(Error::SerializeError(
+                            "SimpleAggregateFunction has no inner type".to_string(),
+                        ));
+                    }
+                }
+                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                    return Err(Error::SerializeError(format!(
+                        "native serialization prefix for type '{self}' is not implemented"
+                    )));
+                }
             }
             Ok(())
         }
@@ -106,6 +129,19 @@ impl ClickHouseNativeSerializer for Type {
             Type::Tuple(inner) => {
                 for item in inner {
                     item.serialize_prefix(writer, state);
+                }
+                return;
+            }
+            Type::Nested(fields) => {
+                let tuple_type = Type::Tuple(
+                    fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                );
+                tuple_type.serialize_prefix(writer, state);
+                return;
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    inner.serialize_prefix(writer, state);
                 }
                 return;
             }

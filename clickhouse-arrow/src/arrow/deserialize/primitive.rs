@@ -186,7 +186,7 @@ pub(super) use primitive_async;
 /// assert_eq!(array.as_ref(), expected.as_ref());
 /// ```
 pub(crate) async fn deserialize_async<R: ClickHouseRead>(
-    _: &Type,
+    type_hint: &Type,
     builder: &mut TypedBuilder,
     reader: &mut R,
     rows: usize,
@@ -196,6 +196,26 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     use ::tokio::io::AsyncReadExt as _;
 
     use crate::arrow::builder::TypedBuilder as B;
+
+    if matches!(type_hint.strip_null(), Type::BFloat16) {
+        let B::Float32(float_builder) = builder else {
+            return Err(Error::ArrowDeserialize(
+                "Expected Float32 builder for BFloat16 deserialization".to_string(),
+            ));
+        };
+
+        let byte_count = primitive_bulk!(tokio; reader, rows, rbuffer, u16);
+        let values: &[u16] = bytemuck::cast_slice(&rbuffer[..byte_count]);
+        for (i, bits) in values.iter().enumerate() {
+            if null_mask.is_empty() || null_mask[i] == 0 {
+                float_builder.append_value(f32::from_bits(u32::from(*bits) << 16));
+            } else {
+                float_builder.append_null();
+            }
+        }
+
+        return Ok(Arc::new(float_builder.finish()) as ArrayRef);
+    }
 
     // Bulk primitive cases using the provided builder
     super::deser!(() => builder => {
@@ -229,6 +249,16 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
         B::DateTimeMs(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
         B::DateTimeMu(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
         B::DateTimeNano(b) => {
+            super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64)
+        },
+        B::Time32(b) => {
+            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, u32 => i32)
+        },
+        B::Time64Ms(b) => {
+            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, i64 => i32)
+        },
+        B::Time64Mu(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::Time64Nano(b) => {
             super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64)
         }}
         _ => {()});
@@ -271,7 +301,11 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     B::DateTimeS(b) => { Arc::new(b.finish()) as ArrayRef },
     B::DateTimeMs(b) => { Arc::new(b.finish()) as ArrayRef },
     B::DateTimeMu(b) => { Arc::new(b.finish()) as ArrayRef },
-    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef }}
+    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Time32(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Time64Ms(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Time64Mu(b) => { Arc::new(b.finish()) as ArrayRef },
+    B::Time64Nano(b) => { Arc::new(b.finish()) as ArrayRef }}
     _ => { return Err(Error::ArrowDeserialize(
         "Unexpected builder type for primitive".into()))
     }))

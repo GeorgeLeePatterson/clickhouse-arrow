@@ -59,7 +59,10 @@ impl ClickHouseNativeDeserializer for Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_) => {
+                | Type::Enum16(_)
+                | Type::BFloat16
+                | Type::Time
+                | Type::Time64(_) => {
                     sized::SizedDeserializer::read_prefix(self, reader, state).await?;
                 }
 
@@ -92,6 +95,26 @@ impl ClickHouseNativeDeserializer for Type {
                 }
                 Type::Object => {
                     object::ObjectDeserializer::read_prefix(self, reader, state).await?;
+                }
+                Type::Nested(fields) => {
+                    let tuple_type = Type::Tuple(
+                        fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                    );
+                    tuple_type.deserialize_prefix_async(reader, state).await?;
+                }
+                Type::SimpleAggregateFunction { types, .. } => {
+                    if let Some(inner) = types.first() {
+                        inner.deserialize_prefix_async(reader, state).await?;
+                    } else {
+                        return Err(Error::DeserializeError(
+                            "SimpleAggregateFunction has no inner type".to_string(),
+                        ));
+                    }
+                }
+                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                    return Err(Error::DeserializeError(format!(
+                        "native deserialization prefix for type '{self}' is not implemented"
+                    )));
                 }
             }
             Ok(())
@@ -127,6 +150,26 @@ impl ClickHouseNativeDeserializer for Type {
             }
             Type::Object => {
                 let _ = reader.try_get_i8()?;
+            }
+            Type::Nested(fields) => {
+                let tuple_type = Type::Tuple(
+                    fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                );
+                tuple_type.deserialize_prefix(reader)?;
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    inner.deserialize_prefix(reader)?;
+                } else {
+                    return Err(Error::DeserializeError(
+                        "SimpleAggregateFunction has no inner type".to_string(),
+                    ));
+                }
+            }
+            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                return Err(Error::DeserializeError(format!(
+                    "native deserialization prefix for type '{self}' is not implemented"
+                )));
             }
             _ => {}
         }
@@ -478,9 +521,94 @@ impl FromStr for Type {
                         Box::new(Type::from_str(args[1])?),
                     )
                 }
-                // Unsupported
+                "Time64" => {
+                    let (args, count) = parse_fixed_args::<1>(following)?;
+                    if count != 1 {
+                        return Err(Error::TypeParseError(format!(
+                            "Time64 expects 1 arg (precision), got {count}: {args:?}"
+                        )));
+                    }
+                    Type::Time64(parse_precision(args[0])?)
+                }
+                "Variant" => {
+                    let args = parse_variable_args(following)?;
+                    if args.is_empty() {
+                        return Err(Error::TypeParseError(
+                            "Variant requires at least one inner type".to_string(),
+                        ));
+                    }
+                    Type::Variant(args.into_iter().map(Type::from_str).collect::<Result<Vec<_>>>()?)
+                }
+                "Dynamic" => {
+                    let (args, count) = parse_fixed_args::<1>(following)?;
+                    if count == 0 {
+                        Type::Dynamic { max_types: None }
+                    } else {
+                        let arg = args[0].trim();
+                        let max_types = if let Some(value) = arg.strip_prefix("max_types=") {
+                            Some(value.parse::<usize>().map_err(|e| {
+                                Error::TypeParseError(format!(
+                                    "Invalid Dynamic max_types value '{value}': {e}"
+                                ))
+                            })?)
+                        } else {
+                            Some(arg.parse::<usize>().map_err(|e| {
+                                Error::TypeParseError(format!(
+                                    "Invalid Dynamic argument '{arg}', expected max_types=<n> or <n>: {e}"
+                                ))
+                            })?)
+                        };
+                        Type::Dynamic { max_types }
+                    }
+                }
                 "Nested" => {
-                    return Err(Error::TypeParseError("unsupported Nested type".to_string()));
+                    let args = parse_variable_args(following)?;
+                    if args.is_empty() {
+                        return Err(Error::TypeParseError(
+                            "Nested requires at least one field".to_string(),
+                        ));
+                    }
+
+                    let mut fields = Vec::with_capacity(args.len());
+                    for arg in args {
+                        let arg = arg.trim();
+                        let mut split = arg.splitn(2, ' ');
+                        let name = split.next().unwrap_or_default().trim();
+                        let type_spec = split.next().unwrap_or_default().trim();
+                        if name.is_empty() || type_spec.is_empty() {
+                            return Err(Error::TypeParseError(format!(
+                                "Invalid Nested field '{arg}', expected '<name> <type>'"
+                            )));
+                        }
+                        fields.push((name.to_string(), Type::from_str(type_spec)?));
+                    }
+                    Type::Nested(fields)
+                }
+                "AggregateFunction" => {
+                    let args = parse_variable_args(following)?;
+                    if args.is_empty() {
+                        return Err(Error::TypeParseError(
+                            "AggregateFunction requires at least a function name".to_string(),
+                        ));
+                    }
+                    let name = args[0].trim().to_string();
+                    let mut types = Vec::new();
+                    for arg in args.into_iter().skip(1) {
+                        types.push(Type::from_str(arg)?);
+                    }
+                    Type::AggregateFunction { name, types }
+                }
+                "SimpleAggregateFunction" => {
+                    let args = parse_variable_args(following)?;
+                    if args.len() < 2 {
+                        return Err(Error::TypeParseError(
+                            "SimpleAggregateFunction requires function name and type".to_string(),
+                        ));
+                    }
+                    let name = args[0].trim().to_string();
+                    let types =
+                        args.into_iter().skip(1).map(Type::from_str).collect::<Result<Vec<_>>>()?;
+                    Type::SimpleAggregateFunction { name, types }
                 }
                 id => {
                     return Err(Error::TypeParseError(format!(
@@ -518,6 +646,9 @@ impl FromStr for Type {
             "Polygon" => Type::Polygon,
             "MultiPolygon" => Type::MultiPolygon,
             "Object" | "Json" | "OBJECT" | "JSON" => Type::Object,
+            "BFloat16" => Type::BFloat16,
+            "Time" => Type::Time,
+            "Dynamic" => Type::Dynamic { max_types: None },
             _ => {
                 return Err(Error::TypeParseError(format!("invalid type name: '{ident}'")));
             }
@@ -581,7 +712,9 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 }
 
 /// Parse arguments into a Vec for types with variable numbers of args
-fn parse_variable_args(input: &str) -> Result<Vec<&str>> { parse_args_iter(input)?.collect() }
+fn parse_variable_args(input: &str) -> Result<Vec<&str>> {
+    parse_args_iter(input)?.collect()
+}
 
 fn parse_scale(from: &str) -> Result<usize> {
     from.parse().map_err(|_| Error::TypeParseError("couldn't parse scale".to_string()))
@@ -605,11 +738,11 @@ fn parse_args_iter(input: &str) -> Result<impl Iterator<Item = Result<&str, Erro
 }
 
 struct ArgsIterator<'a> {
-    input:      &'a str,
+    input: &'a str,
     last_start: usize,
-    in_parens:  usize,
-    in_quotes:  bool,
-    done:       bool,
+    in_parens: usize,
+    in_quotes: bool,
+    done: bool,
 }
 
 impl<'a> Iterator for ArgsIterator<'a> {
@@ -914,6 +1047,17 @@ mod tests {
             Type::Nullable(Box::new(Type::Int32)),
             Type::Map(Box::new(Type::String), Box::new(Type::Int32)),
             Type::Object,
+            Type::BFloat16,
+            Type::Time,
+            Type::Time64(6),
+            Type::Variant(vec![Type::String, Type::UInt64]),
+            Type::Dynamic { max_types: Some(8) },
+            Type::Nested(vec![
+                ("name".to_string(), Type::String),
+                ("score".to_string(), Type::Float64),
+            ]),
+            Type::AggregateFunction { name: "sumState".to_string(), types: vec![Type::UInt64] },
+            Type::SimpleAggregateFunction { name: "sum".to_string(), types: vec![Type::UInt64] },
         ];
 
         for ty in types {
@@ -942,9 +1086,11 @@ mod tests {
     fn test_from_str_general_errors() {
         assert!(Type::from_str("").is_err()); // Empty input
         assert!(Type::from_str("InvalidType").is_err()); // Unknown type
-        assert!(Type::from_str("Nested(String)").is_err()); // Unsupported Nested
+        assert!(Type::from_str("Nested(String)").is_err()); // Invalid Nested field
         assert!(Type::from_str("Int8(").is_err()); // Unclosed paren
         assert!(Type::from_str("Tuple(String,)").is_err()); // Trailing comma
+        assert!(Type::from_str("Variant()").is_err()); // Empty Variant
+        assert!(Type::from_str("SimpleAggregateFunction(sum)").is_err()); // Missing arg
     }
 
     /// Tests `strip_tuple_field_name` helper function.

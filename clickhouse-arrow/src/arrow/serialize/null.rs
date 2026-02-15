@@ -19,8 +19,9 @@
 /// let mut buffer = Vec::new();
 /// write_nullability(&mut buffer, &array).await.unwrap();
 /// ```
+use std::io::IoSlice;
+
 use arrow::array::ArrayRef;
-use tokio::io::AsyncWriteExt;
 
 use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
@@ -57,10 +58,12 @@ pub(super) async fn serialize_nulls_async<W: ClickHouseWrite>(
         for valid_idx in null_buffer.valid_indices() {
             null_mask[valid_idx] = 0; // Set to 0 for non-NULL values
         }
-        writer.write_all(&null_mask).await?;
+        let bufs = [IoSlice::new(&null_mask)];
+        writer.write_vectored_all(&bufs).await?;
     } else {
         let nulls = vec![0_u8; array.len()];
-        writer.write_all(&nulls).await?;
+        let bufs = [IoSlice::new(&nulls)];
+        writer.write_vectored_all(&bufs).await?;
     }
 
     Ok(())

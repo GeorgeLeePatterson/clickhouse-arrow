@@ -191,9 +191,11 @@ mod client;
 mod compression;
 mod constants;
 mod errors;
+pub mod explain;
 mod flags;
 mod formats;
 mod io;
+pub mod limits;
 pub mod native;
 #[cfg(feature = "pool")]
 mod pool;
@@ -240,7 +242,9 @@ pub use client::*;
 /// Set this environment to enable additional debugs around arrow (de)serialization.
 pub use constants::{CONN_READ_BUFFER_ENV_VAR, CONN_WRITE_BUFFER_ENV_VAR, DEBUG_ARROW_ENV_VAR};
 pub use errors::*;
+pub use explain::*;
 pub use formats::{ArrowFormat, ClientFormat, NativeFormat};
+pub use limits::*;
 /// Contains useful top-level traits to interface with [`crate::prelude::NativeFormat`]
 pub use native::convert::*;
 pub use native::progress::Progress;

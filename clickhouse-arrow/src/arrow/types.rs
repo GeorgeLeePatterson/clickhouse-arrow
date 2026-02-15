@@ -472,6 +472,45 @@ pub fn ch_to_arrow_type(ch_type: &Type, options: Option<ArrowOptions>) -> Result
         Type::Enum16(_) => {
             DataType::Dictionary(Box::new(DataType::Int16), Box::new(DataType::Utf8))
         }
+        Type::BFloat16 => DataType::Float32,
+        Type::Time => DataType::Time32(TimeUnit::Second),
+        Type::Time64(precision) => match precision {
+            0..=3 => DataType::Time32(TimeUnit::Millisecond),
+            4..=6 => DataType::Time64(TimeUnit::Microsecond),
+            7..=9 => DataType::Time64(TimeUnit::Nanosecond),
+            _ => {
+                return Err(Error::ArrowUnsupportedType(format!(
+                    "Time64 precision must be 0-9, received {precision}"
+                )));
+            }
+        },
+        Type::Nested(fields) => {
+            let fields = fields
+                .iter()
+                .map(|(name, inner)| {
+                    ch_to_arrow_type(inner, options).map(|(data_type, is_nullable)| {
+                        Field::new(
+                            name,
+                            DataType::List(Arc::new(Field::new(
+                                LIST_ITEM_FIELD_NAME,
+                                data_type,
+                                is_nullable,
+                            ))),
+                            false,
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            DataType::Struct(fields.into())
+        }
+        Type::SimpleAggregateFunction { types, .. } => {
+            if let Some(inner) = types.first() {
+                return ch_to_arrow_type(inner, options);
+            }
+            DataType::Binary
+        }
+        Type::AggregateFunction { .. } | Type::Variant(_) => DataType::Binary,
+        Type::Dynamic { .. } => DataType::Utf8,
         Type::Point | Type::Ring | Type::Polygon | Type::MultiPolygon => {
             // Normalize Geo types first - Infallible due to type check
             let normalized = normalize_geo_type(ch_type).unwrap();
@@ -821,6 +860,52 @@ mod tests {
 
         // Error case
         assert!(ch_to_arrow_type(&Type::DateTime64(10, Tz::UTC), options).is_err());
+    }
+
+    #[test]
+    fn test_ch_to_arrow_type_new_types() {
+        assert_eq!(ch_to_arrow_type(&Type::BFloat16, None).unwrap(), (DataType::Float32, false));
+        assert_eq!(
+            ch_to_arrow_type(&Type::Time, None).unwrap(),
+            (DataType::Time32(TimeUnit::Second), false)
+        );
+        assert_eq!(
+            ch_to_arrow_type(&Type::Time64(3), None).unwrap(),
+            (DataType::Time32(TimeUnit::Millisecond), false)
+        );
+        assert_eq!(
+            ch_to_arrow_type(&Type::Time64(6), None).unwrap(),
+            (DataType::Time64(TimeUnit::Microsecond), false)
+        );
+
+        let nested = Type::Nested(vec![
+            ("name".to_string(), Type::String),
+            ("value".to_string(), Type::UInt32),
+        ]);
+        let expected = DataType::Struct(
+            vec![
+                Field::new(
+                    "name",
+                    DataType::List(Arc::new(Field::new(
+                        LIST_ITEM_FIELD_NAME,
+                        DataType::Binary,
+                        false,
+                    ))),
+                    false,
+                ),
+                Field::new(
+                    "value",
+                    DataType::List(Arc::new(Field::new(
+                        LIST_ITEM_FIELD_NAME,
+                        DataType::UInt32,
+                        false,
+                    ))),
+                    false,
+                ),
+            ]
+            .into(),
+        );
+        assert_eq!(ch_to_arrow_type(&nested, None).unwrap(), (expected, false));
     }
 
     /// Tests `arrow_to_ch_type` for `Map(String, Nullable(Int32))` with outer nullability.

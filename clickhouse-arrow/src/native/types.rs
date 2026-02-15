@@ -83,6 +83,16 @@ pub enum Type {
     Map(Box<Type>, Box<Type>),
 
     Object,
+
+    // ClickHouse 24.x+ types
+    Variant(Vec<Type>),
+    Dynamic { max_types: Option<usize> },
+    Nested(Vec<(String, Type)>),
+    BFloat16,
+    Time,
+    Time64(usize),
+    AggregateFunction { name: String, types: Vec<Type> },
+    SimpleAggregateFunction { name: String, types: Vec<Type> },
 }
 
 impl Type {
@@ -151,7 +161,9 @@ impl Type {
         }
     }
 
-    pub fn is_nullable(&self) -> bool { matches!(self, Type::Nullable(_)) }
+    pub fn is_nullable(&self) -> bool {
+        matches!(self, Type::Nullable(_))
+    }
 
     pub fn strip_low_cardinality(&self) -> &Type {
         match self {
@@ -212,6 +224,21 @@ impl Type {
             Type::MultiPolygon => Value::MultiPolygon(MultiPolygon::default()),
             Type::Uuid => Value::Uuid(Uuid::from_u128(0)),
             Type::Object => Value::Object("{}".as_bytes().to_vec()),
+            Type::Variant(_) | Type::Dynamic { .. } => Value::Null,
+            Type::Nested(fields) => Value::Tuple(
+                fields.iter().map(|(_, inner)| Value::Array(vec![inner.default_value()])).collect(),
+            ),
+            Type::BFloat16 => Value::UInt16(0),
+            Type::Time => Value::UInt32(0),
+            Type::Time64(_) => Value::Int64(0),
+            Type::AggregateFunction { .. } => Value::String(vec![]),
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    inner.default_value()
+                } else {
+                    Value::Null
+                }
+            }
         }
     }
 }
@@ -286,6 +313,54 @@ impl Display for Type {
             Type::Nullable(inner) => write!(f, "Nullable({inner})"),
             Type::Map(key, value) => write!(f, "Map({key},{value})"),
             Type::Object => write!(f, "JSON"),
+            Type::Variant(types) => write!(
+                f,
+                "Variant({})",
+                types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+            ),
+            Type::Dynamic { max_types } => {
+                if let Some(max_types) = max_types {
+                    write!(f, "Dynamic(max_types={max_types})")
+                } else {
+                    write!(f, "Dynamic")
+                }
+            }
+            Type::Nested(fields) => write!(
+                f,
+                "Nested({})",
+                fields
+                    .iter()
+                    .map(|(name, type_)| format!("{name} {type_}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Type::BFloat16 => write!(f, "BFloat16"),
+            Type::Time => write!(f, "Time"),
+            Type::Time64(precision) => write!(f, "Time64({precision})"),
+            Type::AggregateFunction { name, types } => write!(
+                f,
+                "AggregateFunction({name}{})",
+                if types.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ",{}",
+                        types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+                    )
+                }
+            ),
+            Type::SimpleAggregateFunction { name, types } => write!(
+                f,
+                "SimpleAggregateFunction({name}{})",
+                if types.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ",{}",
+                        types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+                    )
+                }
+            ),
         }
     }
 }
@@ -332,7 +407,10 @@ impl Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_) => {
+                | Type::Enum16(_)
+                | Type::BFloat16
+                | Type::Time
+                | Type::Time64(_) => {
                     sized::SizedDeserializer::read(self, reader, rows, state).await?
                 }
                 Type::String
@@ -358,6 +436,26 @@ impl Type {
                         .await?
                 }
                 Type::Object => object::ObjectDeserializer::read(self, reader, rows, state).await?,
+                Type::Nested(fields) => {
+                    let tuple_type = Type::Tuple(
+                        fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                    );
+                    tuple_type.deserialize_column(reader, rows, state).await?
+                }
+                Type::SimpleAggregateFunction { types, .. } => {
+                    if let Some(inner) = types.first() {
+                        inner.deserialize_column(reader, rows, state).await?
+                    } else {
+                        return Err(Error::DeserializeError(
+                            "SimpleAggregateFunction has no inner type".to_string(),
+                        ));
+                    }
+                }
+                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                    return Err(Error::DeserializeError(format!(
+                        "native value deserialization for type '{self}' is not implemented"
+                    )));
+                }
             })
         }
         .boxed()
@@ -405,7 +503,10 @@ impl Type {
             | Type::Ipv4
             | Type::Ipv6
             | Type::Enum8(_)
-            | Type::Enum16(_) => sized::SizedDeserializer::read_sync(self, reader, rows, state)?,
+            | Type::Enum16(_)
+            | Type::BFloat16
+            | Type::Time
+            | Type::Time64(_) => sized::SizedDeserializer::read_sync(self, reader, rows, state)?,
             Type::String | Type::FixedSizedString(_) | Type::Binary | Type::FixedSizedBinary(_) => {
                 string::StringDeserializer::read_sync(self, reader, rows, state)?
             }
@@ -425,6 +526,26 @@ impl Type {
                 low_cardinality::LowCardinalityDeserializer::read_sync(self, reader, rows, state)?
             }
             Type::Object => object::ObjectDeserializer::read_sync(self, reader, rows, state)?,
+            Type::Nested(fields) => {
+                let tuple_type = Type::Tuple(
+                    fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                );
+                tuple_type.deserialize_column_sync(reader, rows, state)?
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    inner.deserialize_column_sync(reader, rows, state)?
+                } else {
+                    return Err(Error::DeserializeError(
+                        "SimpleAggregateFunction has no inner type".to_string(),
+                    ));
+                }
+            }
+            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                return Err(Error::DeserializeError(format!(
+                    "native value deserialization for type '{self}' is not implemented"
+                )));
+            }
         })
     }
 
@@ -463,7 +584,10 @@ impl Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_) => {
+                | Type::Enum16(_)
+                | Type::BFloat16
+                | Type::Time
+                | Type::Time64(_) => {
                     sized::SizedSerializer::write(self, values, writer, state).await?;
                 }
 
@@ -496,6 +620,26 @@ impl Type {
                 }
                 Type::Object => {
                     object::ObjectSerializer::write(self, values, writer, state).await?;
+                }
+                Type::Nested(fields) => {
+                    let tuple_type = Type::Tuple(
+                        fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                    );
+                    tuple_type.serialize_column(values, writer, state).await?;
+                }
+                Type::SimpleAggregateFunction { types, .. } => {
+                    if let Some(inner) = types.first() {
+                        inner.serialize_column(values, writer, state).await?;
+                    } else {
+                        return Err(Error::SerializeError(
+                            "SimpleAggregateFunction has no inner type".to_string(),
+                        ));
+                    }
+                }
+                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                    return Err(Error::SerializeError(format!(
+                        "native value serialization for type '{self}' is not implemented"
+                    )));
                 }
             }
             Ok(())
@@ -537,7 +681,10 @@ impl Type {
             | Type::Ipv4
             | Type::Ipv6
             | Type::Enum8(_)
-            | Type::Enum16(_) => {
+            | Type::Enum16(_)
+            | Type::BFloat16
+            | Type::Time
+            | Type::Time64(_) => {
                 sized::SizedSerializer::write_sync(self, values, writer, state)?;
             }
 
@@ -566,6 +713,26 @@ impl Type {
             }
             Type::Object => {
                 object::ObjectSerializer::write_sync(self, values, writer, state)?;
+            }
+            Type::Nested(fields) => {
+                let tuple_type = Type::Tuple(
+                    fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
+                );
+                tuple_type.serialize_column_sync(values, writer, state)?;
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    inner.serialize_column_sync(values, writer, state)?;
+                } else {
+                    return Err(Error::SerializeError(
+                        "SimpleAggregateFunction has no inner type".to_string(),
+                    ));
+                }
+            }
+            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                return Err(Error::SerializeError(format!(
+                    "native value serialization for type '{self}' is not implemented"
+                )));
             }
         }
         Ok(())
@@ -599,12 +766,26 @@ impl Type {
                     )));
                 }
             }
-            Type::DateTime64(precision, _) | Type::Decimal64(precision) => {
+            Type::Decimal64(precision) => {
                 if *precision == 0 || *precision > 18 {
                     return Err(Error::TypeParseError(format!(
-                        "precision out of bounds for Decimal64/DateTime64({}) must be in range \
-                         (1..=18)",
+                        "precision out of bounds for Decimal64({}) must be in range (1..=18)",
                         *precision
+                    )));
+                }
+            }
+            Type::DateTime64(precision, _) => {
+                if *precision > 9 {
+                    return Err(Error::TypeParseError(format!(
+                        "precision out of bounds for DateTime64({}) must be in range (0..=9)",
+                        *precision
+                    )));
+                }
+            }
+            Type::Time64(precision) => {
+                if *precision > 9 {
+                    return Err(Error::TypeParseError(format!(
+                        "precision out of bounds for Time64({precision}) must be in range (0..=9)"
                     )));
                 }
             }
@@ -690,6 +871,47 @@ impl Type {
                 key.validate()?;
                 value.validate()?;
             }
+            Type::Variant(types) => {
+                if types.is_empty() {
+                    return Err(Error::TypeParseError(
+                        "Variant requires at least one inner type".to_string(),
+                    ));
+                }
+                for type_ in types {
+                    type_.validate()?;
+                }
+            }
+            Type::Dynamic { max_types: Some(0) } => {
+                return Err(Error::TypeParseError(
+                    "Dynamic max_types must be greater than 0 when set".to_string(),
+                ));
+            }
+            Type::Dynamic { .. } => {}
+            Type::Nested(fields) => {
+                if fields.is_empty() {
+                    return Err(Error::TypeParseError(
+                        "Nested requires at least one field".to_string(),
+                    ));
+                }
+                for (_, type_) in fields {
+                    type_.validate()?;
+                }
+            }
+            Type::AggregateFunction { types, .. } => {
+                for type_ in types {
+                    type_.validate()?;
+                }
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if types.is_empty() {
+                    return Err(Error::TypeParseError(
+                        "SimpleAggregateFunction requires at least one inner type".to_string(),
+                    ));
+                }
+                for type_ in types {
+                    type_.validate()?;
+                }
+            }
             // TODO: Add Object
             _ => {}
         }
@@ -731,7 +953,10 @@ impl Type {
             | (Type::Point, Value::Point(_))
             | (Type::Ring, Value::Ring(_))
             | (Type::Polygon, Value::Polygon(_))
-            | (Type::MultiPolygon, Value::MultiPolygon(_)) => true,
+            | (Type::MultiPolygon, Value::MultiPolygon(_))
+            | (Type::BFloat16, Value::UInt16(_))
+            | (Type::Time, Value::UInt32(_))
+            | (Type::Time64(_), Value::Int64(_)) => true,
             (Type::DateTime(tz1), Value::DateTime(date)) => tz1 == &date.0,
             (Type::DateTime64(precision1, tz1), Value::DateTime64(tz2)) => {
                 tz1 == &tz2.0 && precision1 == &tz2.2
@@ -768,6 +993,26 @@ impl Type {
                     && keys.iter().all(|x| key.inner_validate_value(x))
                     && values.iter().all(|x| value.inner_validate_value(x))
             }
+            (Type::Variant(types), Value::Null) => !types.is_empty(),
+            (Type::Variant(types), value) => {
+                types.iter().any(|type_| type_.inner_validate_value(value))
+            }
+            (Type::Dynamic { .. }, _) => true,
+            (Type::Nested(fields), Value::Tuple(values)) => {
+                fields.len() == values.len()
+                    && fields.iter().zip(values.iter()).all(
+                        |((_, inner_type), value)| match value {
+                            Value::Array(items) => {
+                                items.iter().all(|item| inner_type.inner_validate_value(item))
+                            }
+                            _ => false,
+                        },
+                    )
+            }
+            (Type::AggregateFunction { .. }, Value::String(_)) => true,
+            (Type::SimpleAggregateFunction { types, .. }, value) => {
+                types.first().is_some_and(|inner| inner.inner_validate_value(value))
+            }
             _ => false,
         }
     }
@@ -787,6 +1032,9 @@ impl Type {
             Type::Int128 | Type::UInt128 | Type::Uuid | Type::Ipv6 | Type::Point => 16,
             Type::Int256 | Type::UInt256 | Type::String | Type::Binary => 32,
             Type::FixedSizedString(n) | Type::FixedSizedBinary(n) => *n,
+            Type::BFloat16 => 2,
+            Type::Time => 4,
+            Type::Time64(_) => 8,
 
             // Complex types
             Type::Array(inner) => {
@@ -799,6 +1047,15 @@ impl Type {
                 let key_data = key.estimate_capacity();
                 let value_data = value.estimate_capacity();
                 4 + key_data + value_data // 4 bytes for offsets
+            }
+            Type::Variant(types) => 1 + types.first().map_or(64, Type::estimate_capacity),
+            Type::Dynamic { .. } => 64,
+            Type::Nested(fields) => {
+                fields.iter().map(|(_, type_)| type_.estimate_capacity() * 8).sum()
+            }
+            Type::AggregateFunction { .. } => 64,
+            Type::SimpleAggregateFunction { types, .. } => {
+                types.first().map_or(64, Type::estimate_capacity)
             }
 
             // Placeholder for unsupported types
@@ -834,20 +1091,29 @@ impl Type {
             }
             Type::UInt8 => writer.write_u8(0).await?,
             Type::UInt16 | Type::Date => writer.write_u16_le(0).await?,
+            Type::BFloat16 => writer.write_u16_le(0).await?,
             Type::UInt32 | Type::Ipv4 | Type::DateTime(_) => writer.write_u32_le(0).await?,
+            Type::Time => writer.write_u32_le(0).await?,
             Type::UInt64 => writer.write_u64_le(0).await?,
             Type::Float32 => writer.write_f32_le(0.0).await?,
             Type::Float64 => writer.write_f64_le(0.0).await?,
-            Type::DateTime64(precision, _) => {
-                let bytes = (0_i64).to_le_bytes();
-                writer.write_all(&bytes[..*precision]).await?;
-            }
+            Type::DateTime64(_, _) => writer.write_i64_le(0).await?,
+            Type::Time64(_) => writer.write_i64_le(0).await?,
             Type::Array(_) | Type::Map(_, _) => writer.write_var_uint(0).await?, // Empty array/map
             // Recursive
             Type::LowCardinality(inner) => Box::pin(inner.write_default(writer)).await?,
             Type::Tuple(inner) => {
                 for t in inner {
                     Box::pin(t.write_default(writer)).await?;
+                }
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    Box::pin(inner.write_default(writer)).await?;
+                } else {
+                    return Err(Error::SerializeError(
+                        "SimpleAggregateFunction has no inner type".to_string(),
+                    ));
                 }
             }
             _ => {
@@ -875,14 +1141,14 @@ impl Type {
             Type::Int256 | Type::UInt256 | Type::Decimal256(_) => writer.put_slice(&[0; 32]),
             Type::UInt8 => writer.put_u8(0),
             Type::UInt16 | Type::Date => writer.put_u16_le(0),
+            Type::BFloat16 => writer.put_u16_le(0),
             Type::UInt32 | Type::Ipv4 | Type::DateTime(_) => writer.put_u32_le(0),
+            Type::Time => writer.put_u32_le(0),
             Type::UInt64 => writer.put_u64_le(0),
             Type::Float32 => writer.put_f32_le(0.0),
             Type::Float64 => writer.put_f64_le(0.0),
-            Type::DateTime64(precision, _) => {
-                let bytes = (0_i64).to_le_bytes();
-                writer.put_slice(&bytes[..*precision]);
-            }
+            Type::DateTime64(_, _) => writer.put_i64_le(0),
+            Type::Time64(_) => writer.put_i64_le(0),
             Type::Array(_) | Type::Map(_, _) => writer.put_var_uint(0)?, // Empty array/map
             Type::Enum16(_) => writer.put_i16(0),
             // Recursive
@@ -890,6 +1156,15 @@ impl Type {
             Type::Tuple(inner) => {
                 for t in inner {
                     t.put_default(writer)?;
+                }
+            }
+            Type::SimpleAggregateFunction { types, .. } => {
+                if let Some(inner) = types.first() {
+                    inner.put_default(writer)?;
+                } else {
+                    return Err(Error::SerializeError(
+                        "SimpleAggregateFunction has no inner type".to_string(),
+                    ));
                 }
             }
             _ => {
