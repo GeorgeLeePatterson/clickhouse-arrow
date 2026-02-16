@@ -364,7 +364,40 @@ pub(crate) fn explain_text_from_batches(batches: &[RecordBatch]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Int32Array, StringArray, UInt64Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
     use super::*;
+
+    fn text_batch(values: &[Option<&str>]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, true)]));
+        let array = StringArray::from(values.to_vec());
+        RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    }
+
+    fn estimate_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("database", DataType::Utf8, false),
+            Field::new("table", DataType::Utf8, false),
+            Field::new("parts", DataType::UInt64, false),
+            Field::new("rows", DataType::UInt64, false),
+            Field::new("marks", DataType::UInt64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["db1", "db2"])),
+                Arc::new(StringArray::from(vec!["t1", "t2"])),
+                Arc::new(UInt64Array::from(vec![1, 2])),
+                Arc::new(UInt64Array::from(vec![10, 20])),
+                Arc::new(UInt64Array::from(vec![100, 200])),
+            ],
+        )
+        .unwrap()
+    }
 
     #[test]
     fn explain_prefix_generation_is_stable() {
@@ -374,9 +407,156 @@ mod tests {
     }
 
     #[test]
+    fn explain_operation_helpers_are_consistent() {
+        assert_eq!(ExplainOperation::Ast.as_sql(), "AST");
+        assert_eq!(ExplainOperation::Syntax.as_sql(), "SYNTAX");
+        assert_eq!(ExplainOperation::Plan.as_sql(), "PLAN");
+        assert_eq!(ExplainOperation::Pipeline.as_sql(), "PIPELINE");
+        assert_eq!(ExplainOperation::Estimate.as_sql(), "ESTIMATE");
+
+        assert!(ExplainOperation::Plan.supports_json());
+        assert!(!ExplainOperation::Ast.supports_json());
+        assert!(ExplainOperation::Estimate.is_tabular());
+        assert!(!ExplainOperation::Plan.is_tabular());
+        assert_eq!(ExplainOperation::Pipeline.to_string(), "PIPELINE");
+    }
+
+    #[test]
+    fn explain_format_auto_resolution_is_operation_aware() {
+        assert_eq!(
+            ExplainFormat::Auto.resolve(ExplainOperation::Estimate),
+            ExplainFormat::Arrow
+        );
+        assert_eq!(ExplainFormat::Auto.resolve(ExplainOperation::Plan), ExplainFormat::Text);
+        assert_eq!(ExplainFormat::Json.resolve(ExplainOperation::Plan), ExplainFormat::Json);
+        assert_eq!(ExplainFormat::Arrow.resolve(ExplainOperation::Ast), ExplainFormat::Arrow);
+    }
+
+    #[test]
+    fn explain_prefix_respects_json_capability() {
+        assert_eq!(ExplainOptions::plan().with_json().build_prefix(), "EXPLAIN PLAN json=1");
+        // JSON suffix is only valid for PLAN.
+        assert_eq!(ExplainOptions::syntax().with_json().build_prefix(), "EXPLAIN SYNTAX");
+    }
+
+    #[test]
     fn query_options_explain_only_detection() {
         let options = QueryOptions::new().with_explain(ExplainOptions::plan().explain_only());
         assert!(options.is_explain_only());
         assert!(options.has_options());
+    }
+
+    #[test]
+    fn query_options_helpers_cover_all_combinations() {
+        let empty = QueryOptions::new();
+        assert!(!empty.has_options());
+        assert!(!empty.has_explain());
+        assert!(!empty.is_explain_only());
+
+        let with_limits = QueryOptions::new().with_limits(QueryLimits::none().with_max_rows(1));
+        assert!(with_limits.has_options());
+        assert!(!with_limits.has_explain());
+
+        let with_explain = QueryOptions::new().with_explain(ExplainOptions::plan());
+        assert!(with_explain.has_options());
+        assert!(with_explain.has_explain());
+        assert!(!with_explain.is_explain_only());
+    }
+
+    #[test]
+    fn explain_text_from_batches_ignores_non_utf8_and_nulls() {
+        let utf8 = text_batch(&[Some("line-1"), None, Some("line-2")]);
+        let non_utf8_schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int32, false)]));
+        let non_utf8 = RecordBatch::try_new(
+            non_utf8_schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let empty_cols = RecordBatch::new_empty(Arc::new(Schema::empty()));
+
+        let out = explain_text_from_batches(&[utf8, non_utf8, empty_cols]);
+        assert_eq!(out, "line-1\nline-2");
+    }
+
+    #[test]
+    fn explain_result_from_batches_text_and_arrow_paths() {
+        let batch = text_batch(&[Some("x"), Some("y")]);
+
+        let text = explain_result_from_batches(vec![batch.clone()], ExplainFormat::Text).unwrap();
+        assert_eq!(text.as_text(), Some("x\ny"));
+        assert!(text.as_arrow().is_none());
+        assert_eq!(text.to_string(), "x\ny");
+
+        let arrow = explain_result_from_batches(vec![batch.clone()], ExplainFormat::Arrow).unwrap();
+        let arrow_batch = arrow.as_arrow().expect("expected arrow result");
+        assert_eq!(arrow_batch.num_rows(), 2);
+        assert!(arrow.to_string().contains("RecordBatch(2 rows, 1 columns)"));
+
+        let auto = explain_result_from_batches(vec![batch], ExplainFormat::Auto).unwrap();
+        assert!(auto.as_arrow().is_some());
+
+        let empty_arrow = explain_result_from_batches(Vec::new(), ExplainFormat::Arrow).unwrap();
+        assert_eq!(empty_arrow.as_text(), Some(""));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn explain_result_from_batches_json_path() {
+        let batch = text_batch(&[Some("{\"k\":1}")]);
+        let json = explain_result_from_batches(vec![batch], ExplainFormat::Json).unwrap();
+        let value = json.as_json().expect("json should be available");
+        assert_eq!(value.get("k").and_then(serde_json::Value::as_i64), Some(1));
+        assert!(json.to_string().contains("\"k\""));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn explain_result_from_batches_json_invalid_payload_errors() {
+        let batch = text_batch(&[Some("not json")]);
+        let err = explain_result_from_batches(vec![batch], ExplainFormat::Json).unwrap_err();
+        assert!(err.to_string().contains("Failed to parse EXPLAIN JSON"));
+    }
+
+    #[test]
+    fn explain_estimate_row_from_batch_success() {
+        let rows = ExplainEstimateRow::from_batch(&estimate_batch()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].database, "db1");
+        assert_eq!(rows[1].table, "t2");
+        assert_eq!(rows[1].parts, 2);
+        assert_eq!(rows[1].rows, 20);
+        assert_eq!(rows[1].marks, 200);
+    }
+
+    #[test]
+    fn explain_estimate_row_from_batch_missing_column_errors() {
+        let schema = Arc::new(Schema::new(vec![Field::new("database", DataType::Utf8, false)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["db"]))]).unwrap();
+        let err = ExplainEstimateRow::from_batch(&batch).unwrap_err();
+        assert!(err.to_string().contains("Missing 'table' column"));
+    }
+
+    #[test]
+    fn explain_estimate_row_from_batch_wrong_type_errors() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("database", DataType::Utf8, false),
+            Field::new("table", DataType::Utf8, false),
+            Field::new("parts", DataType::Int32, false),
+            Field::new("rows", DataType::UInt64, false),
+            Field::new("marks", DataType::UInt64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["db"])),
+                Arc::new(StringArray::from(vec!["tbl"])),
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(UInt64Array::from(vec![1])),
+                Arc::new(UInt64Array::from(vec![1])),
+            ],
+        )
+        .unwrap();
+        let err = ExplainEstimateRow::from_batch(&batch).unwrap_err();
+        assert!(err.to_string().contains("'parts' column is not a UInt64 array"));
     }
 }

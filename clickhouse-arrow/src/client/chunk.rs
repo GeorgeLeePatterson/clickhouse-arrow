@@ -203,3 +203,98 @@ impl<R: ClickHouseRead> AsyncRead for ChunkReader<R> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    fn chunk_frame(payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + payload.len());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload);
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out
+    }
+
+    #[tokio::test]
+    async fn chunk_writer_buffers_until_finish_chunk() {
+        let (mut read_side, write_side) = tokio::io::duplex(256);
+        let mut writer = ChunkWriter::new(write_side);
+
+        writer.write_all(b"hello").await.unwrap();
+        writer.write_all(b" world").await.unwrap();
+        writer.finish_chunk().await.unwrap();
+        drop(writer);
+
+        let mut raw = Vec::new();
+        let _ = read_side.read_to_end(&mut raw).await.unwrap();
+
+        let expected = chunk_frame(b"hello world");
+        assert_eq!(raw, expected);
+    }
+
+    #[tokio::test]
+    async fn chunk_writer_empty_finish_is_noop() {
+        let (mut read_side, write_side) = tokio::io::duplex(128);
+        let mut writer = ChunkWriter::new(write_side);
+
+        writer.finish_chunk().await.unwrap();
+        drop(writer);
+
+        let mut raw = Vec::new();
+        let _ = read_side.read_to_end(&mut raw).await.unwrap();
+        assert!(raw.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chunk_reader_reads_multiple_chunks() {
+        let (mut tx, rx) = tokio::io::duplex(512);
+        tx.write_all(&chunk_frame(b"abc")).await.unwrap();
+        tx.write_all(&chunk_frame(b"defg")).await.unwrap();
+        tx.shutdown().await.unwrap();
+
+        let mut reader = ChunkReader::new(rx);
+        let mut out = [0u8; 7];
+        let _ = reader.read_exact(&mut out).await.unwrap();
+        assert_eq!(&out, b"abcdefg");
+    }
+
+    #[tokio::test]
+    async fn chunk_reader_rejects_oversized_chunk() {
+        let (mut tx, rx) = tokio::io::duplex(64);
+        tx.write_all(&100_000_001u32.to_le_bytes()).await.unwrap();
+        tx.shutdown().await.unwrap();
+
+        let mut reader = ChunkReader::new(rx);
+        let mut buf = [0u8; 1];
+        let err = reader.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Chunk size too large"));
+    }
+
+    #[tokio::test]
+    async fn chunk_reader_errors_on_incomplete_header_and_data_eof() {
+        let (mut tx_header, rx_header) = tokio::io::duplex(64);
+        tx_header.write_all(&[1u8, 2u8]).await.unwrap();
+        tx_header.shutdown().await.unwrap();
+
+        let mut reader = ChunkReader::new(rx_header);
+        let mut buf = [0u8; 1];
+        let err = reader.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("Unexpected EOF in chunk data"));
+
+        let (mut tx_data, rx_data) = tokio::io::duplex(64);
+        tx_data.write_all(&5u32.to_le_bytes()).await.unwrap();
+        tx_data.write_all(b"xy").await.unwrap();
+        tx_data.shutdown().await.unwrap();
+
+        let mut reader = ChunkReader::new(rx_data);
+        let mut out = [0u8; 8];
+        let err = reader.read(&mut out).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("Unexpected EOF in chunk data"));
+    }
+}

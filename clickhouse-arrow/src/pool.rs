@@ -280,3 +280,79 @@ impl ExponentialBackoff {
 impl Default for ExponentialBackoff {
     fn default() -> Self { Self::new() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exponential_backoff_progression_and_cap() {
+        let mut backoff = ExponentialBackoff::new();
+        let first = backoff.next_backoff().unwrap();
+        let second = backoff.next_backoff().unwrap();
+        let third = backoff.next_backoff().unwrap();
+
+        assert_eq!(first, Duration::from_millis(10));
+        assert_eq!(second, Duration::from_millis(20));
+        assert_eq!(third, Duration::from_millis(40));
+
+        // Force capping behavior.
+        backoff.max_interval = Duration::from_millis(25);
+        let capped = backoff.next_backoff().unwrap();
+        assert_eq!(capped, Duration::from_millis(25));
+    }
+
+    #[test]
+    fn exponential_backoff_stops_when_elapsed_limit_is_reached() {
+        let mut backoff = ExponentialBackoff::new();
+        backoff.current_interval = Duration::from_secs(1);
+        backoff.max_elapsed_time = Some(Duration::from_secs(2));
+
+        assert_eq!(backoff.next_backoff(), Some(Duration::from_secs(1)));
+        assert_eq!(backoff.next_backoff(), Some(Duration::from_secs(2)));
+        assert_eq!(backoff.next_backoff(), None);
+    }
+
+    #[test]
+    fn connection_pool_builder_exposes_configuration() {
+        let builder = ConnectionPoolBuilder::<NativeFormat>::new("localhost:9000")
+            .with_check()
+            .configure_client(|b| {
+                b.with_options(
+                    ClientOptions::new()
+                        .with_username("alice")
+                        .with_default_database("analytics")
+                        .with_use_tls(false),
+                )
+            })
+            .configure_pool(|p| p.max_size(3));
+
+        assert_eq!(builder.client_options().username, "alice");
+        assert_eq!(builder.client_options().default_database, "analytics");
+        assert!(builder.client_settings().is_none());
+        assert!(!builder.connection_identifier().is_empty());
+    }
+
+    #[tokio::test]
+    async fn connection_manager_requires_destination() {
+        let result =
+            ConnectionManager::<NativeFormat>::try_new_with_builder(ClientBuilder::new()).await;
+        assert!(matches!(result, Err(Error::MissingConnectionInformation)));
+    }
+
+    #[tokio::test]
+    async fn connection_manager_and_pool_builder_can_verify_destination() {
+        let base = ClientBuilder::new()
+            .with_destination("localhost:9000")
+            .with_options(ClientOptions::new().with_ipv4_only(true));
+
+        let manager = ConnectionManager::<NativeFormat>::try_new_with_builder(base.clone())
+            .await
+            .unwrap();
+        assert!(!manager.connection_identifier().is_empty());
+
+        let pool_builder = ConnectionPoolBuilder::<NativeFormat>::with_client_builder(base);
+        let manager_from_pool = pool_builder.build_manager().await.unwrap();
+        assert!(!manager_from_pool.connection_identifier().is_empty());
+    }
+}

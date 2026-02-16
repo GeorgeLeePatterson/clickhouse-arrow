@@ -498,3 +498,367 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
         Ok(Some(ServerData { block }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use tokio::io::AsyncWriteExt;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::formats::NativeFormat;
+    use crate::io::ClickHouseWrite;
+    use crate::native::protocol::{CompressionMethod, DBMS_TCP_PROTOCOL_VERSION, ServerPacketId};
+
+    fn metadata() -> ClientMetadata {
+        ClientMetadata {
+            client_id: 7,
+            compression: CompressionMethod::None,
+            arrow_options: super::super::ArrowOptions::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn receive_hello_reads_basic_server_hello() {
+        let mut buf = Cursor::new(Vec::new());
+        buf.write_var_uint(ServerPacketId::Hello as u64).await.unwrap();
+        buf.write_string("test-server").await.unwrap();
+        buf.write_var_uint(24).await.unwrap();
+        buf.write_var_uint(8).await.unwrap();
+        buf.write_var_uint(0).await.unwrap();
+
+        let mut reader = Cursor::new(buf.into_inner());
+        let hello = Reader::<Cursor<Vec<u8>>>::receive_hello(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            (
+                ChunkedProtocolMode::ChunkedOptional,
+                ChunkedProtocolMode::ChunkedOptional,
+            ),
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hello.server_name, "test-server");
+        assert_eq!(hello.version, (24, 8, 0));
+        assert_eq!(hello.revision_version, 0);
+        assert_eq!(hello.chunked_send, ChunkedProtocolMode::ChunkedOptional);
+        assert_eq!(hello.chunked_recv, ChunkedProtocolMode::ChunkedOptional);
+    }
+
+    #[tokio::test]
+    async fn receive_hello_propagates_server_exception() {
+        let mut buf = Cursor::new(Vec::new());
+        buf.write_var_uint(ServerPacketId::Exception as u64).await.unwrap();
+        buf.write_i32_le(43).await.unwrap();
+        buf.write_string("DB::Exception").await.unwrap();
+        buf.write_string("boom").await.unwrap();
+        buf.write_string("stack").await.unwrap();
+        buf.write_u8(0).await.unwrap();
+
+        let mut reader = Cursor::new(buf.into_inner());
+        let err = Reader::<Cursor<Vec<u8>>>::receive_hello(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            (
+                ChunkedProtocolMode::ChunkedOptional,
+                ChunkedProtocolMode::ChunkedOptional,
+            ),
+            99,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn receive_header_handles_progress_table_columns_and_eof() {
+        let mut progress_buf = Cursor::new(Vec::new());
+        progress_buf
+            .write_var_uint(ServerPacketId::Progress as u64)
+            .await
+            .unwrap();
+        progress_buf.write_var_uint(10).await.unwrap();
+        progress_buf.write_var_uint(20).await.unwrap();
+
+        let mut reader = Cursor::new(progress_buf.into_inner());
+        let packet =
+            Reader::<Cursor<Vec<u8>>>::receive_header::<NativeFormat>(&mut reader, 0, metadata())
+                .await
+                .unwrap();
+        match packet {
+            ServerPacket::Progress(progress) => {
+                assert_eq!(progress.read_rows, 10);
+                assert_eq!(progress.read_bytes, 20);
+                assert_eq!(progress.total_rows_to_read, 0);
+            }
+            other => panic!("unexpected packet: {other:?}"),
+        }
+
+        let mut table_columns_buf = Cursor::new(Vec::new());
+        table_columns_buf
+            .write_var_uint(ServerPacketId::TableColumns as u64)
+            .await
+            .unwrap();
+        table_columns_buf.write_string("table").await.unwrap();
+        table_columns_buf.write_string("id UInt64").await.unwrap();
+        let mut reader = Cursor::new(table_columns_buf.into_inner());
+        let packet =
+            Reader::<Cursor<Vec<u8>>>::receive_header::<NativeFormat>(&mut reader, 0, metadata())
+                .await
+                .unwrap();
+        match packet {
+            ServerPacket::TableColumns(columns) => {
+                assert_eq!(columns.name, "table");
+                assert_eq!(columns.description, "id UInt64");
+            }
+            other => panic!("unexpected packet: {other:?}"),
+        }
+
+        let mut eos_buf = Cursor::new(Vec::new());
+        eos_buf
+            .write_var_uint(ServerPacketId::EndOfStream as u64)
+            .await
+            .unwrap();
+        let mut reader = Cursor::new(eos_buf.into_inner());
+        let packet =
+            Reader::<Cursor<Vec<u8>>>::receive_header::<NativeFormat>(&mut reader, 0, metadata())
+                .await
+                .unwrap();
+        assert!(matches!(packet, ServerPacket::EndOfStream));
+    }
+
+    #[tokio::test]
+    async fn receive_packet_handles_control_packets_and_errors() {
+        let mut state = DeserializerState::default();
+
+        let mut pong_buf = Cursor::new(Vec::new());
+        pong_buf
+            .write_var_uint(ServerPacketId::Pong as u64)
+            .await
+            .unwrap();
+        let mut reader = Cursor::new(pong_buf.into_inner());
+        let packet = Reader::<Cursor<Vec<u8>>>::receive_packet::<NativeFormat>(
+            &mut reader,
+            0,
+            metadata(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(packet, ServerPacket::Pong));
+
+        let mut task_buf = Cursor::new(Vec::new());
+        task_buf
+            .write_var_uint(ServerPacketId::ReadTaskRequest as u64)
+            .await
+            .unwrap();
+        task_buf.write_string("task-1").await.unwrap();
+        let mut reader = Cursor::new(task_buf.into_inner());
+        let packet = Reader::<Cursor<Vec<u8>>>::receive_packet::<NativeFormat>(
+            &mut reader,
+            0,
+            metadata(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(packet, ServerPacket::ReadTaskRequest(Some(task)) if task == "task-1"));
+
+        let uuid = Uuid::from_u128(0x11223344556677889900aabbccddeeff);
+        let mut part_buf = Cursor::new(Vec::new());
+        part_buf
+            .write_var_uint(ServerPacketId::PartUUIDs as u64)
+            .await
+            .unwrap();
+        part_buf.write_var_uint(1).await.unwrap();
+        part_buf.write_all(uuid.as_bytes()).await.unwrap();
+        let mut reader = Cursor::new(part_buf.into_inner());
+        let packet = Reader::<Cursor<Vec<u8>>>::receive_packet::<NativeFormat>(
+            &mut reader,
+            0,
+            metadata(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(packet, ServerPacket::PartUUIDs(parts) if parts == vec![uuid]));
+
+        let mut hello_buf = Cursor::new(Vec::new());
+        hello_buf
+            .write_var_uint(ServerPacketId::Hello as u64)
+            .await
+            .unwrap();
+        let mut reader = Cursor::new(hello_buf.into_inner());
+        let err = Reader::<Cursor<Vec<u8>>>::receive_packet::<NativeFormat>(
+            &mut reader,
+            0,
+            metadata(),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Uexpected hello"));
+    }
+
+    #[tokio::test]
+    async fn read_progress_and_profile_info_cover_optional_fields() {
+        let mut progress_high = Cursor::new(Vec::new());
+        progress_high.write_var_uint(11).await.unwrap();
+        progress_high.write_var_uint(22).await.unwrap();
+        progress_high.write_var_uint(33).await.unwrap();
+        progress_high.write_var_uint(44).await.unwrap();
+        progress_high.write_var_uint(55).await.unwrap();
+        progress_high.write_var_uint(66).await.unwrap();
+        progress_high.write_var_uint(77).await.unwrap();
+        let mut reader = Cursor::new(progress_high.into_inner());
+        let progress =
+            Reader::<Cursor<Vec<u8>>>::read_progress(&mut reader, DBMS_TCP_PROTOCOL_VERSION)
+                .await
+                .unwrap();
+        assert_eq!(progress.read_rows, 11);
+        assert_eq!(progress.total_rows_to_read, 33);
+        assert_eq!(progress.total_bytes_to_read, Some(44));
+        assert_eq!(progress.written_rows, Some(55));
+        assert_eq!(progress.written_bytes, Some(66));
+        assert_eq!(progress.elapsed_ns, Some(77));
+
+        let mut profile_old = Cursor::new(Vec::new());
+        profile_old.write_var_uint(1).await.unwrap();
+        profile_old.write_var_uint(2).await.unwrap();
+        profile_old.write_var_uint(3).await.unwrap();
+        profile_old.write_u8(1).await.unwrap();
+        profile_old.write_var_uint(4).await.unwrap();
+        profile_old.write_u8(0).await.unwrap();
+        let mut reader = Cursor::new(profile_old.into_inner());
+        let info = Reader::<Cursor<Vec<u8>>>::read_profile_info(&mut reader, 0)
+            .await
+            .unwrap();
+        assert_eq!(info.rows, 1);
+        assert!(!info.applied_aggregation);
+        assert_eq!(info.rows_before_aggregation, 0);
+
+        let mut profile_new = Cursor::new(Vec::new());
+        profile_new.write_var_uint(10).await.unwrap();
+        profile_new.write_var_uint(11).await.unwrap();
+        profile_new.write_var_uint(12).await.unwrap();
+        profile_new.write_u8(1).await.unwrap();
+        profile_new.write_var_uint(13).await.unwrap();
+        profile_new.write_u8(1).await.unwrap();
+        profile_new.write_u8(1).await.unwrap();
+        profile_new.write_var_uint(14).await.unwrap();
+        let mut reader = Cursor::new(profile_new.into_inner());
+        let info =
+            Reader::<Cursor<Vec<u8>>>::read_profile_info(&mut reader, DBMS_TCP_PROTOCOL_VERSION)
+                .await
+                .unwrap();
+        assert!(info.applied_aggregation);
+        assert_eq!(info.rows_before_aggregation, 14);
+    }
+
+    #[tokio::test]
+    async fn helper_readers_handle_valid_and_invalid_payloads() {
+        let mut status_buf = Cursor::new(Vec::new());
+        status_buf.write_var_uint(1).await.unwrap();
+        status_buf.write_string("db").await.unwrap();
+        status_buf.write_string("tbl").await.unwrap();
+        status_buf.write_u8(1).await.unwrap();
+        status_buf.write_var_uint(9).await.unwrap();
+        let mut reader = Cursor::new(status_buf.into_inner());
+        let statuses = Reader::<Cursor<Vec<u8>>>::read_table_status_response(&mut reader)
+            .await
+            .unwrap();
+        let table_status = statuses
+            .database_tables
+            .get("db")
+            .and_then(|tables| tables.get("tbl"))
+            .unwrap();
+        assert!(table_status.is_replicated);
+        assert_eq!(table_status.absolute_delay, 9);
+
+        let mut oversized_status = Cursor::new(Vec::new());
+        oversized_status
+            .write_var_uint((MAX_STRING_SIZE as u64) + 1)
+            .await
+            .unwrap();
+        let mut reader = Cursor::new(oversized_status.into_inner());
+        let err = Reader::<Cursor<Vec<u8>>>::read_table_status_response(&mut reader)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("size too large"));
+
+        let mut valid_task = Cursor::new(Vec::new());
+        valid_task.write_string("work").await.unwrap();
+        let mut reader = Cursor::new(valid_task.into_inner());
+        assert_eq!(
+            Reader::<Cursor<Vec<u8>>>::read_task_request(&mut reader)
+                .await
+                .unwrap(),
+            Some("work".to_string())
+        );
+
+        let mut invalid_task = Cursor::new(Vec::new());
+        invalid_task.write_var_uint(1).await.unwrap();
+        invalid_task.write_all(&[0xFF]).await.unwrap();
+        let mut reader = Cursor::new(invalid_task.into_inner());
+        assert!(
+            Reader::<Cursor<Vec<u8>>>::read_task_request(&mut reader)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let uuid = Uuid::from_u128(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);
+        let mut part_buf = Cursor::new(Vec::new());
+        part_buf.write_var_uint(1).await.unwrap();
+        part_buf.write_all(uuid.as_bytes()).await.unwrap();
+        let mut reader = Cursor::new(part_buf.into_inner());
+        let parts = Reader::<Cursor<Vec<u8>>>::read_part_uuids(&mut reader)
+            .await
+            .unwrap();
+        assert_eq!(parts, vec![uuid]);
+
+        let mut oversized_parts = Cursor::new(Vec::new());
+        oversized_parts
+            .write_var_uint((MAX_STRING_SIZE as u64) + 1)
+            .await
+            .unwrap();
+        let mut reader = Cursor::new(oversized_parts.into_inner());
+        let err = Reader::<Cursor<Vec<u8>>>::read_part_uuids(&mut reader)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("size too large"));
+
+        let mut columns = Cursor::new(Vec::new());
+        columns.write_string("my_table").await.unwrap();
+        columns.write_string("x UInt32").await.unwrap();
+        let mut reader = Cursor::new(columns.into_inner());
+        let cols = Reader::<Cursor<Vec<u8>>>::read_table_columns(&mut reader)
+            .await
+            .unwrap();
+        assert_eq!(cols.name, "my_table");
+        assert_eq!(cols.description, "x UInt32");
+    }
+
+    #[tokio::test]
+    async fn read_exception_parses_binary_message_payload() {
+        let mut buf = Cursor::new(Vec::new());
+        buf.write_i32_le(123).await.unwrap();
+        buf.write_string("Name").await.unwrap();
+        buf.write_var_uint(3).await.unwrap();
+        buf.write_all(&[0x66, 0x6F, 0x80]).await.unwrap(); // "fo" + invalid UTF-8 tail
+        buf.write_string("trace").await.unwrap();
+        buf.write_u8(1).await.unwrap();
+
+        let mut reader = Cursor::new(buf.into_inner());
+        let exception = Reader::<Cursor<Vec<u8>>>::read_exception(&mut reader)
+            .await
+            .unwrap();
+        assert_eq!(exception.code, 123);
+        assert_eq!(exception.name, "Name");
+        assert!(exception.message.starts_with("fo"));
+        assert!(exception.has_nested);
+    }
+}

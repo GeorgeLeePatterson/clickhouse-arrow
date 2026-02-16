@@ -313,4 +313,79 @@ mod tests {
         assert!(text.contains("TRUNCATED"));
         assert!(text.contains("batch limit exceeded"));
     }
+
+    #[test]
+    fn truncation_reason_display_and_stats_helpers() {
+        assert_eq!(TruncationReason::MemoryLimit.to_string(), "memory limit exceeded");
+        assert_eq!(TruncationReason::RowLimit.to_string(), "row limit exceeded");
+        assert_eq!(TruncationReason::BatchLimit.to_string(), "batch limit exceeded");
+
+        let full = QueryStats {
+            rows_returned: 5,
+            batches_returned: 1,
+            memory_bytes: 128,
+            truncated: false,
+            truncation_reason: None,
+        };
+        assert!(!full.is_truncated());
+        assert!(!full.summary().contains("TRUNCATED"));
+    }
+
+    #[test]
+    fn query_limits_builder_helpers() {
+        let none = QueryLimits::none();
+        assert!(!none.has_limits());
+
+        let limits = QueryLimits::none()
+            .with_max_memory(1024)
+            .with_max_rows(9)
+            .with_max_batches(3);
+        assert_eq!(limits.max_memory_bytes, Some(1024));
+        assert_eq!(limits.max_rows, Some(9));
+        assert_eq!(limits.max_batches, Some(3));
+        assert!(limits.has_limits());
+
+        assert_eq!(QueryLimits::none().with_max_memory_mb(2).max_memory_bytes, Some(2 * 1024 * 1024));
+        assert_eq!(
+            QueryLimits::none().with_max_memory_gb(1).max_memory_bytes,
+            Some(1024 * 1024 * 1024)
+        );
+    }
+
+    #[tokio::test]
+    async fn limited_response_truncates_on_memory_limit() {
+        let first = create_test_batch(64);
+        let first_size = first.get_array_memory_size();
+        let batches = vec![Ok(first), Ok(create_test_batch(64))];
+        let stream = futures_util::stream::iter(batches);
+        // Allow one batch and truncate before second.
+        let limits = QueryLimits::none().with_max_memory(first_size + 1);
+        let mut limited = LimitedResponse::new(stream, limits);
+
+        assert!(limited.next().await.unwrap().is_ok());
+        assert!(limited.next().await.is_none());
+        assert!(limited.is_truncated());
+        assert_eq!(limited.truncation_reason(), Some(TruncationReason::MemoryLimit));
+    }
+
+    #[tokio::test]
+    async fn limited_response_truncates_on_batch_limit_and_passes_errors() {
+        let batches = vec![
+            Ok(create_test_batch(1)),
+            Ok(create_test_batch(1)),
+            Err(crate::Error::Protocol("stop".into())),
+        ];
+        let stream = futures_util::stream::iter(batches);
+        let mut limited = LimitedResponse::new(stream, QueryLimits::none().with_max_batches(1));
+
+        assert!(limited.next().await.unwrap().is_ok());
+        assert!(limited.next().await.is_none());
+        assert!(limited.is_truncated());
+        assert_eq!(limited.truncation_reason(), Some(TruncationReason::BatchLimit));
+
+        let stream = futures_util::stream::iter(vec![Err(crate::Error::Protocol("err".into()))]);
+        let mut passthrough = LimitedResponse::new(stream, QueryLimits::none().with_max_rows(100));
+        let err = passthrough.next().await.unwrap().unwrap_err();
+        assert!(matches!(err, crate::Error::Protocol(msg) if msg == "err"));
+    }
 }

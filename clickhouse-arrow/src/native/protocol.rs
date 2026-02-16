@@ -197,9 +197,7 @@ pub(crate) enum ServerPacket<T = Block> {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerHello {
-    #[expect(unused)]
     pub(crate) server_name:      String,
-    #[expect(unused)]
     pub(crate) version:          (u64, u64, u64),
     pub(crate) revision_version: u64,
     #[expect(unused)]
@@ -238,7 +236,6 @@ pub(crate) struct ServerException {
     pub(crate) name:        String,
     pub(crate) message:     String,
     pub(crate) stack_trace: String,
-    #[expect(unused)]
     pub(crate) has_nested:  bool,
 }
 
@@ -259,14 +256,12 @@ pub(crate) struct ProfileInfo {
     pub(crate) rows_before_aggregation:      u64,
 }
 
-#[expect(unused)]
 #[derive(Debug, Clone)]
 pub(crate) struct TableColumns {
     pub(crate) name:        String,
     pub(crate) description: String,
 }
 
-#[expect(unused)]
 #[derive(Debug, Clone)]
 pub(crate) struct TableStatus {
     pub(crate) is_replicated:  bool,
@@ -502,5 +497,213 @@ impl AsRef<str> for CompressionMethod {
             CompressionMethod::LZ4 => "LZ4",
             CompressionMethod::ZSTD => "ZSTD",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native::block::Block;
+    use crate::native::values::Value;
+
+    #[test]
+    fn server_packet_id_from_u64_maps_known_and_rejects_unknown() {
+        for id in 0..=18 {
+            let packet = ServerPacketId::from_u64(id).expect("known packet id should map");
+            let back = packet as u64;
+            assert_eq!(back, id);
+        }
+
+        let err = ServerPacketId::from_u64(99).unwrap_err();
+        assert!(matches!(err, Error::Protocol(msg) if msg.contains("Unknown packet id")));
+    }
+
+    #[test]
+    fn server_hello_chunked_support_helpers() {
+        let mut hello = ServerHello::default();
+        hello.chunked_send = ChunkedProtocolMode::Chunked;
+        hello.chunked_recv = ChunkedProtocolMode::ChunkedOptional;
+        assert!(hello.supports_chunked_send());
+        assert!(hello.supports_chunked_recv());
+
+        hello.chunked_send = ChunkedProtocolMode::NotChunked;
+        hello.chunked_recv = ChunkedProtocolMode::NotChunkedOptional;
+        assert!(!hello.supports_chunked_send());
+        assert!(!hello.supports_chunked_recv());
+    }
+
+    #[test]
+    fn chunked_protocol_negotiation_and_parsing() {
+        let negotiated = ChunkedProtocolMode::negotiate(
+            ChunkedProtocolMode::ChunkedOptional,
+            ChunkedProtocolMode::NotChunked,
+            "send",
+        )
+        .unwrap();
+        assert_eq!(negotiated, ChunkedProtocolMode::NotChunked);
+
+        let negotiated = ChunkedProtocolMode::negotiate(
+            ChunkedProtocolMode::NotChunked,
+            ChunkedProtocolMode::ChunkedOptional,
+            "recv",
+        )
+        .unwrap();
+        assert_eq!(negotiated, ChunkedProtocolMode::NotChunked);
+
+        let negotiated = ChunkedProtocolMode::negotiate(
+            ChunkedProtocolMode::Chunked,
+            ChunkedProtocolMode::Chunked,
+            "send",
+        )
+        .unwrap();
+        assert_eq!(negotiated, ChunkedProtocolMode::Chunked);
+
+        let err = ChunkedProtocolMode::negotiate(
+            ChunkedProtocolMode::Chunked,
+            ChunkedProtocolMode::NotChunked,
+            "send",
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Protocol(msg) if msg.contains("Incompatible protocol")));
+
+        assert_eq!(
+            ChunkedProtocolMode::from_str("chunked").unwrap(),
+            ChunkedProtocolMode::Chunked
+        );
+        assert_eq!(
+            ChunkedProtocolMode::from_str("chunked_optional").unwrap(),
+            ChunkedProtocolMode::ChunkedOptional
+        );
+        assert_eq!(
+            ChunkedProtocolMode::from_str("notchunked").unwrap(),
+            ChunkedProtocolMode::NotChunked
+        );
+        assert_eq!(
+            ChunkedProtocolMode::from_str("notchunked_optional").unwrap(),
+            ChunkedProtocolMode::NotChunkedOptional
+        );
+        let err = ChunkedProtocolMode::from_str("bogus").unwrap_err();
+        assert!(matches!(err, Error::Protocol(msg) if msg.contains("Unexpected value")));
+    }
+
+    #[test]
+    fn compression_method_conversion_and_display() {
+        assert_eq!(CompressionMethod::None.byte(), 0x02);
+        assert_eq!(CompressionMethod::LZ4.byte(), 0x82);
+        assert_eq!(CompressionMethod::ZSTD.byte(), 0x90);
+
+        assert_eq!(CompressionMethod::from("LZ4"), CompressionMethod::LZ4);
+        assert_eq!(CompressionMethod::from("zstd"), CompressionMethod::ZSTD);
+        assert_eq!(CompressionMethod::from("unknown"), CompressionMethod::None);
+
+        assert_eq!(CompressionMethod::LZ4.to_string(), "LZ4");
+        assert_eq!(CompressionMethod::ZSTD.to_string(), "ZSTD");
+        assert_eq!(CompressionMethod::None.to_string(), "None");
+        assert_eq!(CompressionMethod::LZ4.as_ref(), "LZ4");
+
+        assert_eq!(CompressionMethod::from_str("lz4").unwrap(), CompressionMethod::LZ4);
+        assert_eq!(CompressionMethod::from_str("ZSTD").unwrap(), CompressionMethod::ZSTD);
+        assert!(CompressionMethod::from_str("none").is_err());
+    }
+
+    #[test]
+    fn server_exception_emit_preserves_fields() {
+        let exception = ServerException {
+            code: 43,
+            name: "DB::Exception".to_string(),
+            message: "bad argument".to_string(),
+            stack_trace: "stack".to_string(),
+            has_nested: false,
+        };
+        let emitted = exception.emit();
+        assert_eq!(emitted.code, 43);
+        assert_eq!(emitted.name, "DB::Exception");
+        assert_eq!(emitted.message, "bad argument");
+        assert_eq!(emitted.stack_trace, "stack");
+    }
+
+    #[test]
+    fn log_data_from_block_maps_columns_by_name() {
+        let block = Block {
+            info: Default::default(),
+            rows: 2,
+            column_types: vec![
+                ("time".to_string(), Type::String),
+                ("time_micro".to_string(), Type::UInt32),
+                ("host_name".to_string(), Type::String),
+                ("query_id".to_string(), Type::String),
+                ("thread_id".to_string(), Type::UInt64),
+                ("priority".to_string(), Type::Int8),
+                ("source".to_string(), Type::String),
+                ("text".to_string(), Type::String),
+                ("ignored".to_string(), Type::Int32),
+            ],
+            column_data: vec![
+                Value::String(b"2024-01-01".to_vec()),
+                Value::String(b"2024-01-02".to_vec()),
+                Value::UInt32(11),
+                Value::UInt32(22),
+                Value::String(b"h1".to_vec()),
+                Value::String(b"h2".to_vec()),
+                Value::String(b"q1".to_vec()),
+                Value::String(b"q2".to_vec()),
+                Value::UInt64(101),
+                Value::UInt64(202),
+                Value::Int8(3),
+                Value::Int8(4),
+                Value::String(b"src1".to_vec()),
+                Value::String(b"src2".to_vec()),
+                Value::String(b"log-1".to_vec()),
+                Value::String(b"log-2".to_vec()),
+                Value::Int32(1),
+                Value::Int32(2),
+            ],
+        };
+
+        let logs = LogData::from_block(block).unwrap();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].time_micro, 11);
+        assert_eq!(logs[1].thread_id, 202);
+        assert_eq!(logs[0].priority, 3);
+        assert_eq!(logs[1].priority, 4);
+        assert_eq!(logs[0].time, "'2024-01-01'");
+        assert_eq!(logs[1].text, "'log-2'");
+    }
+
+    #[test]
+    fn profile_event_from_block_maps_columns_by_name() {
+        let block = Block {
+            info: Default::default(),
+            rows: 2,
+            column_types: vec![
+                ("host_name".to_string(), Type::String),
+                ("current_time".to_string(), Type::String),
+                ("thread_id".to_string(), Type::UInt64),
+                ("type_code".to_string(), Type::Int8),
+                ("name".to_string(), Type::String),
+                ("value".to_string(), Type::Int64),
+            ],
+            column_data: vec![
+                Value::String(b"host-a".to_vec()),
+                Value::String(b"host-b".to_vec()),
+                Value::String(b"ts-a".to_vec()),
+                Value::String(b"ts-b".to_vec()),
+                Value::UInt64(55),
+                Value::UInt64(66),
+                Value::Int8(1),
+                Value::Int8(2),
+                Value::String(b"rows".to_vec()),
+                Value::String(b"bytes".to_vec()),
+                Value::Int64(100),
+                Value::Int64(200),
+            ],
+        };
+
+        let events = ProfileEvent::from_block(block).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].thread_id, 55);
+        assert_eq!(events[1].type_code, 2);
+        assert_eq!(events[0].name, "'rows'");
+        assert_eq!(events[1].value, 200);
     }
 }
