@@ -8,9 +8,9 @@ use arrow::array::ArrayRef;
 use arrow::datatypes::DataType;
 use tokio::io::AsyncReadExt;
 
-use super::ClickHouseArrowDeserializer;
+use super::{ArrowFieldCtx, ClickHouseArrowDeserializer};
 use crate::arrow::builder::TypedBuilder;
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Nullable` type into an Arrow array.
@@ -63,13 +63,13 @@ use crate::{Error, Result, Type};
 /// let int32_array = array.as_any().downcast_ref::<Int32Array>().unwrap();
 /// assert_eq!(int32_array, &Int32Array::from(vec![Some(1), None, Some(3)]));
 /// ```
-pub(crate) async fn deserialize_async<R: ClickHouseRead>(
+pub(crate) async fn deserialize<R: ClickHouseRead>(
     inner: &Type,
     builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
-    rbuffer: &mut Vec<u8>,
+    ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
     let nulls = if rows > 0 {
         let mut mask = vec![0u8; rows];
@@ -81,30 +81,7 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
     } else {
         vec![]
     };
-    inner.deserialize_arrow_async(builder, reader, data_type, rows, &nulls, rbuffer).await
-}
-
-#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
-pub(crate) fn deserialize<R: ClickHouseBytesRead>(
-    inner: &Type,
-    builder: &mut TypedBuilder,
-    reader: &mut R,
-    data_type: &DataType,
-    rows: usize,
-    rbuffer: &mut Vec<u8>,
-) -> Result<ArrayRef> {
-    let nulls = if rows > 0 {
-        let mut mask = vec![0u8; rows];
-        reader.try_copy_to_slice(&mut mask)?;
-        if mask.len() != rows {
-            return Err(Error::DeserializeError(format!("Nulls={}, rows={rows}", mask.len())));
-        }
-        mask
-    } else {
-        vec![]
-    };
-
-    inner.deserialize_arrow(builder, reader, data_type, rows, &nulls, rbuffer)
+    inner.deserialize_arrow(builder, reader, data_type, rows, &nulls, ctx).await
 }
 
 #[cfg(test)]
@@ -135,7 +112,7 @@ mod tests {
         let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
         let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Int32)");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -161,7 +138,7 @@ mod tests {
         let data_type = ch_to_arrow_type(inner_type, opts).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
         let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(String)");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
@@ -192,7 +169,7 @@ mod tests {
         let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
         let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Array(Int32))");
         let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
@@ -218,7 +195,7 @@ mod tests {
         let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
         let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
+            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Int32) with zero rows");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -234,7 +211,7 @@ mod tests {
         let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
         assert!(
-            deserialize_async(
+            deserialize(
                 inner_type,
                 &mut builder,
                 &data_type,

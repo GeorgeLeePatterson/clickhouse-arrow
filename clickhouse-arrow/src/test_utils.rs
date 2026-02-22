@@ -11,7 +11,7 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt, TestcontainersError
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::level_filters::LevelFilter;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
@@ -22,6 +22,8 @@ pub const HTTP_PORT_ENV: &str = "CLICKHOUSE_HTTP_PORT";
 pub const USER_ENV: &str = "CLICKHOUSE_USER";
 pub const PASSWORD_ENV: &str = "CLICKHOUSE_PASSWORD";
 pub const USE_TMPFS_ENV: &str = "USE_TMPFS";
+pub const PULL_LATEST_ENV: &str = "CLICKHOUSE_PULL_LATEST";
+pub const PULL_TIMEOUT_SECS_ENV: &str = "CLICKHOUSE_PULL_TIMEOUT_SECS";
 
 const CLICKHOUSE_CONFIG_SRC: &str = "tests/bin/";
 const CLICKHOUSE_CONFIG_DEST: &str = "/etc/clickhouse-server/config.xml";
@@ -33,6 +35,7 @@ const CLICKHOUSE_VERSION: &str = "latest";
 const CLICKHOUSE_NATIVE_PORT: u16 = 9000;
 const CLICKHOUSE_HTTP_PORT: u16 = 8123;
 const CLICKHOUSE_ENDPOINT: &str = "localhost";
+const DEFAULT_PULL_TIMEOUT_SECS: u64 = 30;
 
 pub static CONTAINER: OnceLock<Arc<ClickHouseContainer>> = OnceLock::new();
 
@@ -253,53 +256,84 @@ impl ClickHouseContainer {
             .unwrap_or(CLICKHOUSE_HTTP_PORT);
         let user = env::var(USER_ENV).ok().unwrap_or(CLICKHOUSE_USER.into());
         let password = env::var(PASSWORD_ENV).ok().unwrap_or(CLICKHOUSE_PASSWORD.into());
+        let pull_latest =
+            env::var(PULL_LATEST_ENV).map_or(true, |v| v.eq_ignore_ascii_case("true") || v == "1");
+        let pull_timeout = env::var(PULL_TIMEOUT_SECS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_PULL_TIMEOUT_SECS);
 
-        // Get image
-        let mut image = GenericImage::new("clickhouse/clickhouse-server", &version)
-            .with_exposed_port(native_port.tcp())
-            .with_exposed_port(http_port.tcp())
-            .with_wait_for(testcontainers::core::WaitFor::message_on_stderr(
-                "Ready for connections",
-            ))
-            .with_env_var(USER_ENV, &user)
-            .with_env_var(PASSWORD_ENV, &password)
-            .with_mount(Mount::bind_mount(
-                format!(
-                    "{}/{CLICKHOUSE_CONFIG_SRC}/{}",
-                    env!("CARGO_MANIFEST_DIR"),
-                    conf.unwrap_or("config.xml")
-                ),
-                CLICKHOUSE_CONFIG_DEST,
-            ));
+        let build_image = || {
+            let mut image = GenericImage::new("clickhouse/clickhouse-server", &version)
+                .with_exposed_port(native_port.tcp())
+                .with_exposed_port(http_port.tcp())
+                .with_wait_for(testcontainers::core::WaitFor::message_on_stderr(
+                    "Ready for connections",
+                ))
+                .with_env_var(USER_ENV, &user)
+                .with_env_var(PASSWORD_ENV, &password)
+                .with_mount(Mount::bind_mount(
+                    format!(
+                        "{}/{CLICKHOUSE_CONFIG_SRC}/{}",
+                        env!("CARGO_MANIFEST_DIR"),
+                        conf.unwrap_or("config.xml")
+                    ),
+                    CLICKHOUSE_CONFIG_DEST,
+                ));
 
-        // Add tmpfs mounts for benchmark mode (zero disk I/O)
-        if use_tmpfs {
-            #[cfg(feature = "tmpfs-size")]
-            {
-                // Explicit sizing prevents space exhaustion during long benchmark suites:
-                // - /var/lib/clickhouse: 20GB (main data directory, accumulates WAL/merge
-                //   artifacts)
-                // - /var/log/clickhouse-server: 2GB (server logs)
-                // - /tmp: 2GB (temporary files)
-                image = image
-                    .with_mount(Mount::tmpfs_mount("/var/lib/clickhouse").with_size("20g"))
-                    .with_mount(Mount::tmpfs_mount("/var/log/clickhouse-server").with_size("2g"))
-                    .with_mount(Mount::tmpfs_mount("/tmp").with_size("2g"));
+            // Add tmpfs mounts for benchmark mode (zero disk I/O)
+            if use_tmpfs {
+                #[cfg(feature = "tmpfs-size")]
+                {
+                    // Explicit sizing prevents space exhaustion during long benchmark suites:
+                    // - /var/lib/clickhouse: 20GB (main data directory, accumulates WAL/merge
+                    //   artifacts)
+                    // - /var/log/clickhouse-server: 2GB (server logs)
+                    // - /tmp: 2GB (temporary files)
+                    image = image
+                        .with_mount(Mount::tmpfs_mount("/var/lib/clickhouse").with_size("20g"))
+                        .with_mount(
+                            Mount::tmpfs_mount("/var/log/clickhouse-server").with_size("2g"),
+                        )
+                        .with_mount(Mount::tmpfs_mount("/tmp").with_size("2g"));
+                }
+                #[cfg(not(feature = "tmpfs-size"))]
+                {
+                    // Note: Without tmpfs-size feature, tmpfs defaults to 50% of available RAM per
+                    // mount. This may cause space exhaustion in long-running benchmark
+                    // suites.
+                    image = image
+                        .with_mount(Mount::tmpfs_mount("/var/lib/clickhouse"))
+                        .with_mount(Mount::tmpfs_mount("/var/log/clickhouse-server"))
+                        .with_mount(Mount::tmpfs_mount("/tmp"));
+                }
             }
-            #[cfg(not(feature = "tmpfs-size"))]
+
+            image
+        };
+
+        // Try to refresh mutable tags (like `latest`) without blocking test startup forever.
+        if pull_latest {
+            match tokio::time::timeout(
+                Duration::from_secs(pull_timeout),
+                build_image().pull_image(),
+            )
+            .await
             {
-                // Note: Without tmpfs-size feature, tmpfs defaults to 50% of available RAM per
-                // mount. This may cause space exhaustion in long-running benchmark
-                // suites.
-                image = image
-                    .with_mount(Mount::tmpfs_mount("/var/lib/clickhouse"))
-                    .with_mount(Mount::tmpfs_mount("/var/log/clickhouse-server"))
-                    .with_mount(Mount::tmpfs_mount("/tmp"));
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    warn!(?error, "Failed to pull ClickHouse image, using local cache");
+                }
+                Err(_) => {
+                    warn!(
+                        "Timed out pulling ClickHouse image after {pull_timeout}s, using local \
+                         cache"
+                    );
+                }
             }
         }
 
-        // Start container
-        let container = image.start().await?;
+        let container = build_image().start().await?;
 
         // Ports
         let native_port = container.get_host_port_ipv4(native_port).await?;

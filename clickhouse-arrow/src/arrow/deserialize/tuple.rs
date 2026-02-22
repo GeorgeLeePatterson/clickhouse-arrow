@@ -8,9 +8,9 @@ use arrow::array::*;
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::DataType;
 
-use super::ClickHouseArrowDeserializer;
+use super::{ArrowFieldCtx, ClickHouseArrowDeserializer};
 use crate::arrow::builder::TypedBuilder;
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Tuple` type into an Arrow `StructArray`.
@@ -23,7 +23,7 @@ use crate::{Error, Result, Type};
 /// - `reader`: The async reader providing the `ClickHouse` native format data.
 /// - `rows`: The number of tuples to deserialize.
 /// - `nulls`: A slice indicating null values (`1` for null, `0` for non-null).
-/// - `state`: A mutable `DeserializerState` for deserialization context.
+/// - `state`: A mutable `FieldDeserializerState` for deserialization context.
 ///
 /// # Returns
 /// A `Result` containing the deserialized `StructArray` as an `ArrayRef` or a
@@ -32,14 +32,14 @@ use crate::{Error, Result, Type};
 /// # Errors
 /// - Returns `ArrowDeserialize` if an inner type is unsupported or the data is malformed.
 /// - Returns `Io` if reading from the reader fails.
-pub(super) async fn deserialize_async<R: ClickHouseRead>(
+pub(super) async fn deserialize<R: ClickHouseRead>(
     inner_types: &[Type],
     builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
     nulls: &[u8],
-    rbuffer: &mut Vec<u8>,
+    ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
     // Read each field’s data
     let DataType::Struct(fields) = data_type else {
@@ -54,58 +54,16 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
     };
 
     if rows == 0 {
-        let arrays = vec![
-            Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef,
-            Arc::new(StringArray::from(Vec::<String>::new())),
-        ];
-        return Ok(Arc::new(StructArray::try_new_with_length(fields.clone(), arrays, None, 0)?));
+        let arrays =
+            fields.iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
+        return Ok(Arc::new(StructArray::new(fields.clone(), arrays, None)));
     }
 
     let mut arrays = Vec::with_capacity(inner_types.len());
     let field_types = inner_types.iter().zip(fields.iter());
     for (b, (inner_type, field)) in builders.iter_mut().zip(field_types) {
         let data_type = field.data_type();
-        arrays.push(
-            inner_type.deserialize_arrow_async(b, reader, data_type, rows, &[], rbuffer).await?,
-        );
-    }
-    let null_buffer = if nulls.is_empty() {
-        None
-    } else {
-        Some(NullBuffer::from(nulls.iter().map(|&n| n == 0).collect::<Vec<bool>>()))
-    };
-    Ok(Arc::new(StructArray::new(fields.clone(), arrays, null_buffer)))
-}
-
-#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
-pub(super) fn deserialize<R: ClickHouseBytesRead>(
-    builders: &mut [TypedBuilder],
-    reader: &mut R,
-    inner: &[Type],
-    data_type: &DataType,
-    rows: usize,
-    nulls: &[u8],
-    rbuffer: &mut Vec<u8>,
-) -> Result<ArrayRef> {
-    let DataType::Struct(fields) = data_type else {
-        return Err(Error::ArrowDeserialize(format!(
-            "Unexpected datatype for tuple: {data_type:?}",
-        )));
-    };
-
-    if rows == 0 {
-        let arrays = vec![
-            Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef,
-            Arc::new(StringArray::from(Vec::<String>::new())),
-        ];
-        return Ok(Arc::new(StructArray::try_new_with_length(fields.clone(), arrays, None, 0)?));
-    }
-
-    let mut arrays = Vec::with_capacity(inner.len());
-    let field_types = inner.iter().zip(fields.iter());
-    for (b, (inner_type, field)) in builders.iter_mut().zip(field_types) {
-        let data_type = field.data_type();
-        arrays.push(inner_type.deserialize_arrow(b, reader, data_type, rows, &[], rbuffer)?);
+        arrays.push(inner_type.deserialize_arrow(b, reader, data_type, rows, &[], ctx).await?);
     }
     let null_buffer = if nulls.is_empty() {
         None
@@ -154,7 +112,7 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             &inner_types,
             &mut builder,
             &data_type,
@@ -201,7 +159,7 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             &inner_types,
             &mut builder,
             &data_type,
@@ -249,7 +207,7 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             &inner_types,
             &mut builder,
             &data_type,
@@ -304,7 +262,7 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             &inner_types,
             &mut builder,
             &data_type,
@@ -349,7 +307,7 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             &inner_types,
             &mut builder,
             &data_type,
@@ -400,7 +358,7 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             &inner_types,
             &mut builder,
             &data_type,

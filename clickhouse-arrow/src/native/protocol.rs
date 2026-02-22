@@ -197,7 +197,9 @@ pub(crate) enum ServerPacket<T = Block> {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerHello {
+    #[expect(unused)]
     pub(crate) server_name:      String,
+    #[expect(unused)]
     pub(crate) version:          (u64, u64, u64),
     pub(crate) revision_version: u64,
     #[expect(unused)]
@@ -262,7 +264,7 @@ pub(crate) struct TableColumns {
     pub(crate) description: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct TableStatus {
     pub(crate) is_replicated:  bool,
     pub(crate) absolute_delay: u32,
@@ -566,10 +568,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, Error::Protocol(msg) if msg.contains("Incompatible protocol")));
 
-        assert_eq!(
-            ChunkedProtocolMode::from_str("chunked").unwrap(),
-            ChunkedProtocolMode::Chunked
-        );
+        assert_eq!(ChunkedProtocolMode::from_str("chunked").unwrap(), ChunkedProtocolMode::Chunked);
         assert_eq!(
             ChunkedProtocolMode::from_str("chunked_optional").unwrap(),
             ChunkedProtocolMode::ChunkedOptional
@@ -609,11 +608,11 @@ mod tests {
     #[test]
     fn server_exception_emit_preserves_fields() {
         let exception = ServerException {
-            code: 43,
-            name: "DB::Exception".to_string(),
-            message: "bad argument".to_string(),
+            code:        43,
+            name:        "DB::Exception".to_string(),
+            message:     "bad argument".to_string(),
             stack_trace: "stack".to_string(),
-            has_nested: false,
+            has_nested:  false,
         };
         let emitted = exception.emit();
         assert_eq!(emitted.code, 43);
@@ -625,8 +624,8 @@ mod tests {
     #[test]
     fn log_data_from_block_maps_columns_by_name() {
         let block = Block {
-            info: Default::default(),
-            rows: 2,
+            info:         Default::default(),
+            rows:         2,
             column_types: vec![
                 ("time".to_string(), Type::String),
                 ("time_micro".to_string(), Type::UInt32),
@@ -638,7 +637,7 @@ mod tests {
                 ("text".to_string(), Type::String),
                 ("ignored".to_string(), Type::Int32),
             ],
-            column_data: vec![
+            column_data:  vec![
                 Value::String(b"2024-01-01".to_vec()),
                 Value::String(b"2024-01-02".to_vec()),
                 Value::UInt32(11),
@@ -673,8 +672,8 @@ mod tests {
     #[test]
     fn profile_event_from_block_maps_columns_by_name() {
         let block = Block {
-            info: Default::default(),
-            rows: 2,
+            info:         Default::default(),
+            rows:         2,
             column_types: vec![
                 ("host_name".to_string(), Type::String),
                 ("current_time".to_string(), Type::String),
@@ -683,7 +682,7 @@ mod tests {
                 ("name".to_string(), Type::String),
                 ("value".to_string(), Type::Int64),
             ],
-            column_data: vec![
+            column_data:  vec![
                 Value::String(b"host-a".to_vec()),
                 Value::String(b"host-b".to_vec()),
                 Value::String(b"ts-a".to_vec()),

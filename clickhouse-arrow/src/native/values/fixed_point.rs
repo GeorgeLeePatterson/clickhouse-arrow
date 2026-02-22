@@ -25,7 +25,7 @@ impl<const SCALE: u64> ToSql for FixedPoint32<SCALE> {
 
 impl<const SCALE: u64> FromSql for FixedPoint32<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal32(x) if *x == SCALE as usize) {
+        if !matches!(type_, Type::Decimal32(x) if usize::from(*x) == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -54,7 +54,7 @@ impl<const SCALE: u64> ToSql for FixedPoint64<SCALE> {
 
 impl<const SCALE: u64> FromSql for FixedPoint64<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal64(x) if *x == SCALE as usize) {
+        if !matches!(type_, Type::Decimal64(x) if usize::from(*x) == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -91,7 +91,7 @@ impl<const SCALE: u64> ToSql for FixedPoint128<SCALE> {
 
 impl<const SCALE: u64> FromSql for FixedPoint128<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal128(x) if *x == SCALE as usize) {
+        if !matches!(type_, Type::Decimal128(x) if usize::from(*x) == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {
@@ -237,7 +237,7 @@ impl<const SCALE: u64> ToSql for FixedPoint256<SCALE> {
 
 impl<const SCALE: u64> FromSql for FixedPoint256<SCALE> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::Decimal256(x) if *x == SCALE as usize) {
+        if !matches!(type_, Type::Decimal256(x) if usize::from(*x) == SCALE as usize) {
             return Err(unexpected_type(type_));
         }
         match value {

@@ -212,6 +212,7 @@ mod tests {
 
     fn chunk_frame(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + payload.len());
+        #[expect(clippy::cast_possible_truncation)]
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(payload);
         out.extend_from_slice(&0u32.to_le_bytes());

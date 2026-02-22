@@ -250,6 +250,7 @@ pub fn test_schema() -> Arc<Schema> {
         Field::new("uint256_col", DataType::FixedSizeBinary(32), true),
         Field::new("float32_col", DataType::Float32, true),
         Field::new("float64_col", DataType::Float64, true),
+        Field::new("nothing_col", DataType::Null, false),
         // String
         Field::new("string_col", DataType::Utf8, true),
         Field::new("fixed_string_col", DataType::Utf8, true),
@@ -284,6 +285,35 @@ pub fn test_schema() -> Arc<Schema> {
             "datetime64_9_utc_col",
             DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
             true,
+        ),
+        // ClickHouse 24.x+ Arrow path coverage
+        #[cfg(feature = "extended-types")]
+        Field::new("bfloat16_col", DataType::Float32, true),
+        #[cfg(feature = "extended-types")]
+        Field::new(
+            "qbit_float32_col",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 3),
+            false,
+        ),
+        #[cfg(feature = "extended-types")]
+        Field::new(
+            "nested_col",
+            DataType::Struct(
+                vec![
+                    Field::new(
+                        "name",
+                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                        false,
+                    ),
+                    Field::new(
+                        "score",
+                        DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                        false,
+                    ),
+                ]
+                .into(),
+            ),
+            false,
         ),
         // Maps and Tuples
         Field::new(
@@ -505,6 +535,7 @@ pub fn test_record_batch() -> RecordBatch {
         Some(f64::INFINITY),
         Some(f64::MAX),
     ]));
+    let nothing_col = Arc::new(NullArray::new(5));
     // String
     let string_col = Arc::new(StringArray::from(vec![
         Some("hello"),
@@ -610,6 +641,65 @@ pub fn test_record_batch() -> RecordBatch {
         ])
         .with_timezone_opt(Some("UTC")),
     );
+    #[cfg(feature = "extended-types")]
+    let bfloat16_col =
+        Arc::new(Float32Array::from(vec![Some(0.0), None, Some(1.0), Some(-2.0), Some(42.5)]));
+    #[cfg(feature = "extended-types")]
+    let qbit_values = Arc::new(Float32Array::from(vec![
+        0.1, 0.2, 0.3, // row 1
+        1.0, 2.0, 3.0, // row 2
+        -1.5, 0.0, 1.5, // row 3
+        42.0, 43.0, 44.0, // row 4
+        9.9, 8.8, 7.7, // row 5
+    ])) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let qbit_float32_col = Arc::new(FixedSizeListArray::new(
+        Arc::new(Field::new("item", DataType::Float32, false)),
+        3,
+        qbit_values,
+        None,
+    )) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let nested_offsets = OffsetBuffer::new(vec![0, 2, 2, 3, 4, 6].into());
+    #[cfg(feature = "extended-types")]
+    let nested_name_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Utf8, false)),
+            nested_offsets.clone(),
+            Arc::new(StringArray::from(vec!["alice", "bob", "charlie", "diana", "eve", "frank"])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let nested_score_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            nested_offsets,
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50, 60])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let nested_col = Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new(
+                "name",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            )),
+            nested_name_col,
+        ),
+        (
+            Arc::new(Field::new(
+                "score",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            )),
+            nested_score_col,
+        ),
+    ])) as ArrayRef;
     // Map and Tuple
     let fields = Fields::from(vec![
         Arc::new(Field::new(STRUCT_KEY_FIELD_NAME, DataType::Int32, false)),
@@ -858,6 +948,7 @@ pub fn test_record_batch() -> RecordBatch {
         uint256_col,
         float32_col,
         float64_col,
+        nothing_col,
         // String
         string_col,
         fixed_string_col,
@@ -866,19 +957,25 @@ pub fn test_record_batch() -> RecordBatch {
         decimal64_col,
         // Datetimes
         date_col,
-        date32_col, // 20
+        date32_col,
         datetime_col,
         datetime_utc_col,
         datetime_est_col,
         datetime64_3_ny_col,
         datetime64_6_tokyo_col,
         datetime64_9_utc_col,
+        #[cfg(feature = "extended-types")]
+        bfloat16_col,
+        #[cfg(feature = "extended-types")]
+        qbit_float32_col,
+        #[cfg(feature = "extended-types")]
+        nested_col,
         // Map and Tuple
         map_array,
         tuple_int32_string_col,
         // Special
         ipv4_col,
-        ipv6_col, // 30
+        ipv6_col,
         uuid_col,
         //
         // TODO
@@ -896,7 +993,7 @@ pub fn test_record_batch() -> RecordBatch {
         array_low_cardinality_string_col,
         array_int32_col,
         array_nullable_int32_col,
-        array_nullable_string_col, // 40
+        array_nullable_string_col,
         large_list_int32_col,
         array_tuple_col,
     ])

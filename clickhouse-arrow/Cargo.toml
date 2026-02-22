@@ -42,6 +42,8 @@ geo-types = ["dep:geo-types"]
 cloud = ["dep:ureq"]
 # Enable `rust_decimal` types for serialization and deserialization
 rust_decimal = ["dep:rust_decimal"]
+# Enable newer/extended ClickHouse data types (e.g. Variant, Dynamic, Nested, BFloat16, Time64)
+extended-types = []
 
 # -- Testing --
 test-utils = [

@@ -14,10 +14,10 @@ use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields};
 use tokio::io::AsyncReadExt;
 
-use super::ClickHouseArrowDeserializer;
+use super::{ArrowFieldCtx, ClickHouseArrowDeserializer};
 use crate::arrow::builder::TypedBuilder;
 use crate::arrow::types::MAP_FIELD_NAME;
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Map` type into an Arrow `MapArray`.
@@ -32,7 +32,7 @@ use crate::{Error, Result, Type};
 /// - `reader`: The async reader providing the `ClickHouse` native format data.
 /// - `rows`: The number of map entries to deserialize.
 /// - `nulls`: A slice indicating null values (`1` for null, `0` for non-null).
-/// - `state`: A mutable `DeserializerState` for deserialization context.
+/// - `state`: A mutable `FieldDeserializerState` for deserialization context.
 ///
 /// # Returns
 /// A `Result` containing the deserialized `MapArray` as an `ArrayRef` or a `Error`
@@ -42,14 +42,14 @@ use crate::{Error, Result, Type};
 /// - Returns `ArrowDeserialize` if the key or value type is unsupported or the data is malformed.
 /// - Returns `Io` if reading from the reader fails.
 #[expect(clippy::cast_possible_truncation)]
-pub(super) async fn deserialize_async<R: ClickHouseRead>(
+pub(super) async fn deserialize<R: ClickHouseRead>(
     types: (&Type, &Type),
     builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
     nulls: &[u8],
-    rbuffer: &mut Vec<u8>,
+    ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
     // First get inner map fields
     let (key_type, value_type) = types;
@@ -62,83 +62,18 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
         )));
     };
 
-    let offset_bytes = super::list::bulk_offsets!(tokio; reader, rbuffer, rows);
-    let offsets: &[u64] = bytemuck::cast_slice::<u8, u64>(&rbuffer[..offset_bytes]);
+    let offset_bytes = super::list::bulk_offsets!(tokio; reader, ctx.row_buffer, rows);
+    let offsets: &[u64] = bytemuck::cast_slice::<u8, u64>(&ctx.row_buffer[..offset_bytes]);
     let offset_buffer =
         OffsetBuffer::new(offsets.iter().map(|&o| o as i32).collect::<ScalarBuffer<_>>());
     let total_pairs = *offsets.last().unwrap_or(&0) as usize;
 
     let key_array = key_type
-        .deserialize_arrow_async(
-            key_builder,
-            reader,
-            key_field.data_type(),
-            total_pairs,
-            &[],
-            rbuffer,
-        )
+        .deserialize_arrow(key_builder, reader, key_field.data_type(), total_pairs, &[], ctx)
         .await?;
     let value_array = value_type
-        .deserialize_arrow_async(
-            value_builder,
-            reader,
-            value_field.data_type(),
-            total_pairs,
-            &[],
-            rbuffer,
-        )
+        .deserialize_arrow(value_builder, reader, value_field.data_type(), total_pairs, &[], ctx)
         .await?;
-
-    // Construct StructArray for entries
-    let struct_field = Arc::new(Field::new(
-        MAP_FIELD_NAME,
-        DataType::Struct(Fields::from(vec![Arc::clone(key_field), Arc::clone(value_field)])),
-        false,
-    ));
-    let struct_fields =
-        vec![(Arc::clone(key_field), key_array), (Arc::clone(value_field), value_array)];
-
-    // Construct MapArray
-    let null_buffer = if nulls.is_empty() {
-        None
-    } else {
-        Some(NullBuffer::from(nulls.iter().map(|&n| n == 0).collect::<Vec<bool>>()))
-    };
-
-    let struct_arr = StructArray::from(struct_fields);
-    Ok(Arc::new(MapArray::new(struct_field, offset_buffer, struct_arr, null_buffer, false)))
-}
-
-#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
-pub(super) fn deserialize<R: ClickHouseBytesRead>(
-    builders: (&mut TypedBuilder, &mut TypedBuilder),
-    reader: &mut R,
-    key_value: (&Type, &Type),
-    data_type: &DataType,
-    rows: usize,
-    nulls: &[u8],
-    rbuffer: &mut Vec<u8>,
-) -> Result<ArrayRef> {
-    let (key_b, value_b) = builders;
-    let (kt, vt) = key_value;
-
-    let (key_field, value_field) = crate::arrow::builder::map::get_map_fields(data_type)?;
-    let key_dt = key_field.data_type();
-    let value_dt = value_field.data_type();
-
-    let offset_bytes = super::list::bulk_offsets!(reader, rbuffer, rows);
-    let offsets: &[u64] = bytemuck::cast_slice::<u8, u64>(&rbuffer[..offset_bytes]);
-    #[expect(clippy::cast_possible_truncation)]
-    let (offset_buffer, total_pairs) = {
-        (
-            OffsetBuffer::new(offsets.iter().map(|&o| o as i32).collect::<ScalarBuffer<_>>()),
-            *offsets.last().unwrap_or(&0) as usize,
-        )
-    };
-
-    // Read keys and values
-    let key_array = kt.deserialize_arrow(key_b, reader, key_dt, total_pairs, &[], rbuffer)?;
-    let value_array = vt.deserialize_arrow(value_b, reader, value_dt, total_pairs, &[], rbuffer)?;
 
     // Construct StructArray for entries
     let struct_field = Arc::new(Field::new(
@@ -218,7 +153,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
             &data_type,
@@ -273,7 +208,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
             &data_type,
@@ -333,7 +268,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
             &data_type,
@@ -385,7 +320,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
             &data_type,
@@ -426,7 +361,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
             &data_type,
@@ -469,7 +404,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let result = deserialize_async(
+        let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
             &data_type,

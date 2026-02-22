@@ -4,17 +4,29 @@ use tokio::io::AsyncWriteExt;
 use super::{Serializer, SerializerState, Type};
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::native::types::low_cardinality::*;
-use crate::{Result, Value};
+use crate::{Error, Result, Value};
 
 pub(crate) struct LowCardinalitySerializer;
 
 impl Serializer for LowCardinalitySerializer {
+    fn write_prefix_sync(
+        type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        _state: &mut SerializerState,
+    ) {
+        if let Type::LowCardinality(_) = type_.strip_null() {
+            writer.put_u64_le(LOW_CARDINALITY_VERSION);
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
-        _type_: &Type,
+        type_: &Type,
         writer: &mut W,
         _state: &mut SerializerState,
     ) -> Result<()> {
-        writer.write_u64_le(LOW_CARDINALITY_VERSION).await?;
+        if let Type::LowCardinality(_) = type_.strip_null() {
+            writer.write_u64_le(LOW_CARDINALITY_VERSION).await?;
+        }
         Ok(())
     }
 
@@ -27,7 +39,7 @@ impl Serializer for LowCardinalitySerializer {
         let inner_type = match type_ {
             Type::LowCardinality(x) => &**x,
             _ => {
-                return Err(crate::Error::SerializeError(format!(
+                return Err(Error::serialize(format!(
                     "LowCardinalitySerializer called with non-low-cardinality type: {type_:?}"
                 )));
             }
@@ -96,7 +108,7 @@ impl Serializer for LowCardinalitySerializer {
         let inner_type = match type_ {
             Type::LowCardinality(x) => &**x,
             _ => {
-                return Err(crate::Error::SerializeError(format!(
+                return Err(Error::SerializeError(format!(
                     "LowCardinalitySerializer called with non-low-cardinality type: {type_:?}"
                 )));
             }

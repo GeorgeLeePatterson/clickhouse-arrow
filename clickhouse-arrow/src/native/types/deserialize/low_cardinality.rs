@@ -1,17 +1,17 @@
 use tokio::io::AsyncReadExt;
 
 use super::{Deserializer, DeserializerState, Type};
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::native::types::low_cardinality::*;
 use crate::{Error, Result, Value};
 
 pub(crate) struct LowCardinalityDeserializer;
 
 impl Deserializer for LowCardinalityDeserializer {
-    async fn read_prefix<R: ClickHouseRead>(
+    async fn read_prefix<R: ClickHouseRead, T: Default + Send>(
         _type_: &Type,
         reader: &mut R,
-        _state: &mut DeserializerState,
+        _state: &mut DeserializerState<T>,
     ) -> Result<()> {
         let version = reader.read_u64_le().await?;
         if version != LOW_CARDINALITY_VERSION {
@@ -178,14 +178,15 @@ impl Deserializer for LowCardinalityDeserializer {
         })
     }
 
-    fn read_sync(
-        _type_: &Type,
-        _reader: &mut impl ClickHouseBytesRead,
-        _rows: usize,
-        _state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError(
-            "LowCardinalityDeserializer sync not yet implemented".to_string(),
-        ))
-    }
+    // TODO: Remove
+    // fn read_sync(
+    //     _type_: &Type,
+    //     _reader: &mut impl ClickHouseBytesRead,
+    //     _rows: usize,
+    //     _state: &mut DeserializerState,
+    // ) -> Result<Vec<Value>> {
+    //     Err(Error::DeserializeError(
+    //         "LowCardinalityDeserializer sync not yet implemented".to_string(),
+    //     ))
+    // }
 }

@@ -346,9 +346,8 @@ mod tests {
             .with_destination("localhost:9000")
             .with_options(ClientOptions::new().with_ipv4_only(true));
 
-        let manager = ConnectionManager::<NativeFormat>::try_new_with_builder(base.clone())
-            .await
-            .unwrap();
+        let manager =
+            ConnectionManager::<NativeFormat>::try_new_with_builder(base.clone()).await.unwrap();
         assert!(!manager.connection_identifier().is_empty());
 
         let pool_builder = ConnectionPoolBuilder::<NativeFormat>::with_client_builder(base);

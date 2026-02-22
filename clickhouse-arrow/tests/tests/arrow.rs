@@ -59,10 +59,22 @@ pub async fn test_round_trip(ch: Arc<ClickHouseContainer>, compression: Option<C
     let (client, options) = bootstrap(ch.as_ref(), compression).await;
 
     // Create table with schema and enum mappings
-    let schema = test_schema();
+    let mut excluded_fields = vec![];
+    if !supports_column_type(&client, "Nothing").await {
+        excluded_fields.push("nothing_col");
+    }
+    #[cfg(feature = "extended-types")]
+    if !supports_column_type(&client, "QBit(Float32, 3)").await {
+        excluded_fields.push("qbit_float32_col");
+    }
+    let schema = filter_schema_fields(test_schema(), &excluded_fields);
+    eprintln!(
+        "roundtrip exclusions={excluded_fields:?}, fields={:?}",
+        schema.fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>()
+    );
 
     // Create test RecordBatch
-    let batch = test_record_batch();
+    let batch = filter_batch_fields(test_record_batch(), &excluded_fields);
 
     // Create schema
     let (db, table) =
@@ -130,7 +142,15 @@ pub async fn test_schema_utils(ch: Arc<ClickHouseContainer>) {
     let (client, options) = bootstrap(ch.as_ref(), None).await;
 
     // Create table with schema and enum mappings
-    let schema = test_schema();
+    let mut excluded_fields = vec![];
+    if !supports_column_type(&client, "Nothing").await {
+        excluded_fields.push("nothing_col");
+    }
+    #[cfg(feature = "extended-types")]
+    if !supports_column_type(&client, "QBit(Float32, 3)").await {
+        excluded_fields.push("qbit_float32_col");
+    }
+    let schema = filter_schema_fields(test_schema(), &excluded_fields);
 
     // Create schema
     let (db, table) = create_schema(&client, Arc::clone(&schema), &options)
@@ -164,8 +184,10 @@ pub async fn test_schema_utils(ch: Arc<ClickHouseContainer>) {
     // Test fetch schema unfiltered
     let query_id = Qid::new();
     header(query_id, "Fetching db schema (non-filtered)");
-    let tables =
-        client.fetch_schema(Some(&db), &[], Some(query_id)).await.expect("Fetch schema failed");
+    let tables = client
+        .fetch_schema(Some(&db), &[], Some(query_id), None)
+        .await
+        .expect("Fetch schema failed");
     let table_schema = tables.get(&table);
     assert!(table_schema.is_some());
     let table_schema = table_schema.unwrap();
@@ -176,7 +198,7 @@ pub async fn test_schema_utils(ch: Arc<ClickHouseContainer>) {
     let query_id = Qid::new();
     header(query_id, "Fetching db schema (filtered)");
     let tables = client
-        .fetch_schema(Some(&db), &[&table], Some(query_id))
+        .fetch_schema(Some(&db), &[&table], Some(query_id), None)
         .await
         .expect("Fetch schema filtered failed");
     let table_schema = tables.get(&table);
@@ -348,13 +370,29 @@ pub(super) async fn bootstrap_with_options(
     let client = builder.build().await.expect("Building client");
 
     // Settings allows converting from "default" types that are compatible
-    let schema_conversions = HashMap::from_iter([
+    #[allow(unused_mut)]
+    let mut schema_conversions = HashMap::from_iter([
         (
             "enum8_col".to_string(),
             Type::Enum8(vec![("active".to_string(), 0_i8), ("inactive".to_string(), 1)]),
         ),
         ("enum16_col".to_string(), Type::Enum16(vec![("x".to_string(), 0), ("y".to_string(), 1)])),
     ]);
+    #[cfg(feature = "extended-types")]
+    drop(
+        schema_conversions
+            .insert("bfloat16_col".to_string(), Type::Nullable(Box::new(Type::BFloat16))),
+    );
+    #[cfg(feature = "extended-types")]
+    drop(schema_conversions.insert("qbit_float32_col".to_string(), Type::QBit {
+        element_type: Box::new(Type::Float32),
+        dimension:    3,
+    }));
+    #[cfg(feature = "extended-types")]
+    drop(schema_conversions.insert(
+        "nested_col".to_string(),
+        Type::Nested(vec![("name".to_string(), Type::String), ("score".to_string(), Type::Int32)]),
+    ));
 
     let options = CreateOptions::new("MergeTree")
         .with_order_by(&["id".to_string()])
@@ -500,7 +538,7 @@ pub async fn round_trip(
 
     // Test insert many
     // Create test RecordBatch
-    let batches = (0..5).map(|_| test_record_batch()).collect::<Vec<_>>();
+    let batches = (0..5).map(|_| inserted_batch.clone()).collect::<Vec<_>>();
     let query = format!("INSERT INTO {table_ref} FORMAT Native");
     drop(
         client
@@ -537,6 +575,64 @@ pub async fn round_trip(
     assert!(empty_result.is_none(), "query_one should return None for no results");
 
     Ok(())
+}
+
+fn filter_schema_fields(schema: SchemaRef, excluded_fields: &[&str]) -> SchemaRef {
+    if excluded_fields.is_empty() {
+        return schema;
+    }
+
+    let fields = schema
+        .fields()
+        .iter()
+        .filter(|f| !excluded_fields.contains(&f.name().as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    Arc::new(Schema::new(fields))
+}
+
+fn filter_batch_fields(batch: RecordBatch, excluded_fields: &[&str]) -> RecordBatch {
+    if excluded_fields.is_empty() {
+        return batch;
+    }
+
+    let keep_indices = batch
+        .schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            (!excluded_fields.contains(&field.name().as_str())).then_some(idx)
+        })
+        .collect::<Vec<_>>();
+
+    batch.project(&keep_indices).expect("Failed to project RecordBatch fields")
+}
+
+async fn supports_column_type(client: &ArrowClient, column_type: &str) -> bool {
+    let table = format!("type_probe_{}", Qid::new());
+    let create = format!("CREATE TABLE {table} (value {column_type}) ENGINE = Memory");
+    let drop_query = format!("DROP TABLE IF EXISTS {table}");
+    let exists_query = format!(
+        "SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = '{table}'"
+    );
+
+    drop(client.execute_now(&create, None).await);
+    let supported = client
+        .query_column(&exists_query, None)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|column| {
+            column
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .map(|counts| !counts.is_empty() && counts.value(0) > 0)
+        })
+        .unwrap_or(false);
+    drop(client.execute_now(&drop_query, None).await);
+    supported
 }
 
 /// Test `ClickHouse`'s actual support for various nullable array combinations

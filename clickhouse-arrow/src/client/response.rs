@@ -40,7 +40,7 @@ pub(crate) fn handle_insert_response<T: ClientFormat>(
 #[pin_project::pin_project]
 pub struct ClickHouseResponse<T> {
     #[pin]
-    stream: Pin<Box<dyn Stream<Item = Result<T>> + Send + 'static>>,
+    stream:           Pin<Box<dyn Stream<Item = Result<T>> + Send + 'static>>,
     explain_receiver: Option<oneshot::Receiver<Result<ExplainResult>>>,
 }
 
@@ -74,9 +74,7 @@ impl<T> ClickHouseResponse<T> {
     }
 
     #[must_use]
-    pub fn has_explain(&self) -> bool {
-        self.explain_receiver.is_some()
-    }
+    pub fn has_explain(&self) -> bool { self.explain_receiver.is_some() }
 
     pub async fn explain(&mut self) -> Option<Result<ExplainResult>> {
         let receiver = self.explain_receiver.take()?;
@@ -142,12 +140,12 @@ mod tests {
     #[tokio::test]
     async fn clickhouse_response_explain_roundtrip_and_channel_closed() {
         let (tx_explain, rx_explain) = oneshot::channel();
-        tx_explain
-            .send(Ok(ExplainResult::Text("plan".to_string())))
-            .expect("oneshot send");
+        tx_explain.send(Ok(ExplainResult::Text("plan".to_string()))).expect("oneshot send");
 
-        let mut response =
-            ClickHouseResponse::from_stream_with_explain(futures_util::stream::iter(vec![Ok(1)]), rx_explain);
+        let mut response = ClickHouseResponse::from_stream_with_explain(
+            futures_util::stream::iter(vec![Ok(1)]),
+            rx_explain,
+        );
 
         assert!(response.has_explain());
         let explain = response.explain().await.expect("explain should exist").unwrap();
@@ -159,8 +157,10 @@ mod tests {
 
         let (tx_dropped, rx_dropped) = oneshot::channel::<Result<ExplainResult>>();
         drop(tx_dropped);
-        let mut dropped =
-            ClickHouseResponse::<i32>::from_stream_with_explain(futures_util::stream::empty(), rx_dropped);
+        let mut dropped = ClickHouseResponse::<i32>::from_stream_with_explain(
+            futures_util::stream::empty(),
+            rx_dropped,
+        );
         let err = dropped.explain().await.expect("expected channel close error").unwrap_err();
         assert!(matches!(err, Error::ChannelClosed));
     }

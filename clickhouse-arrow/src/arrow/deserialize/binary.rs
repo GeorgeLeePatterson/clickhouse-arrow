@@ -19,6 +19,7 @@ use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
+#[expect(unused_macros)]
 macro_rules! binary {
     // Infallible aka panic
     (String => $reader:expr) => {
@@ -76,7 +77,6 @@ macro_rules! binary {
         }
     }};
 }
-pub(crate) use binary;
 
 macro_rules! binary_async {
     // Infallible aka panic

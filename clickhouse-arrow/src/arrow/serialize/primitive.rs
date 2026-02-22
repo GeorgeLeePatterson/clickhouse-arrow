@@ -36,6 +36,8 @@ use tokio::io::AsyncWriteExt;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
+static NULL_UUID: [u8; 16] = [0; 16];
+
 /// Serializes an Arrow array to `ClickHouse`’s native format for primitive types.
 ///
 /// Dispatches to specialized serialization functions based on the `Type` variant, handling:
@@ -86,7 +88,6 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
         Type::UInt256 => write_u256_values(values, writer).await?,
         Type::Float32 => write_f32_values(values, writer).await?,
         Type::Float64 => write_f64_values(values, writer).await?,
-        Type::BFloat16 => write_bfloat16_values(values, writer).await?,
         Type::Decimal32(_) => write_decimal32_values(values, writer).await?,
         Type::Decimal64(_) => write_decimal64_values(values, writer).await?,
         Type::Decimal128(_) => write_decimal128_values(values, writer).await?,
@@ -94,17 +95,6 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
         Type::Date => write_date_values(values, writer).await?,
         Type::Date32 => write_date32_values(values, writer).await?,
         Type::DateTime(_) => write_datetime_values(values, writer).await?,
-        Type::Time => write_time_values(values, writer).await?,
-        Type::Time64(p) => match p {
-            0..=3 => write_time64_ms_values(values, writer).await?,
-            4..=6 => write_time64_us_values(values, writer).await?,
-            7..=9 => write_time64_ns_values(values, writer).await?,
-            _ => {
-                return Err(Error::ArrowSerialize(format!(
-                    "Unsupported precision for Time64: {p}"
-                )));
-            }
-        },
         Type::DateTime64(p, _) => match p {
             0 => write_datetime64_unknown_values(values, writer).await?,
             1..=3 => write_datetime64_3_values(values, writer).await?,
@@ -124,8 +114,6 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                 .downcast_ref::<FixedSizeBinaryArray>()
                 .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
 
-            static NULL_UUID: [u8; 16] = [0; 16];
-
             for i in 0..array.len() {
                 if array.is_null(i) {
                     writer.write_all(&NULL_UUID).await?;
@@ -136,6 +124,21 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                 }
             }
         }
+        #[cfg(feature = "extended-types")]
+        Type::BFloat16 => write_bfloat16_values(values, writer).await?,
+        #[cfg(feature = "extended-types")]
+        Type::Time => write_time_values(values, writer).await?,
+        #[cfg(feature = "extended-types")]
+        Type::Time64(p) => match p {
+            0..=3 => write_time64_ms_values(values, writer).await?,
+            4..=6 => write_time64_us_values(values, writer).await?,
+            7..=9 => write_time64_ns_values(values, writer).await?,
+            _ => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Unsupported precision for Time64: {p}"
+                )));
+            }
+        },
         _ => {
             return Err(Error::ArrowSerialize(format!("Unsupported data type: {type_hint:?}")));
         }
@@ -171,6 +174,7 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         Type::UInt256 => put_u256_values(values, writer)?,
         Type::Float32 => put_f32_values(values, writer)?,
         Type::Float64 => put_f64_values(values, writer)?,
+        #[cfg(feature = "extended-types")]
         Type::BFloat16 => put_bfloat16_values(values, writer)?,
         Type::Decimal32(_) => put_decimal32_values(values, writer)?,
         Type::Decimal64(_) => put_decimal64_values(values, writer)?,
@@ -179,7 +183,9 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         Type::Date => put_date_values(values, writer)?,
         Type::Date32 => put_date32_values(values, writer)?,
         Type::DateTime(_) => put_datetime_values(values, writer)?,
+        #[cfg(feature = "extended-types")]
         Type::Time => put_time_values(values, writer)?,
+        #[cfg(feature = "extended-types")]
         Type::Time64(p) => match p {
             0..=3 => put_time64_ms_values(values, writer)?,
             4..=6 => put_time64_us_values(values, writer)?,
@@ -208,8 +214,6 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
                 .as_any()
                 .downcast_ref::<FixedSizeBinaryArray>()
                 .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
-
-            static NULL_UUID: [u8; 16] = [0; 16];
 
             for i in 0..array.len() {
                 if array.is_null(i) {
@@ -248,146 +252,6 @@ fn f32_to_bfloat16_bits(value: f32) -> u16 {
     let rounded = bits.wrapping_add(0x7FFF + lsb);
     (rounded >> 16) as u16
 }
-
-async fn write_bfloat16_values<W: ClickHouseWrite>(
-    column: &ArrayRef,
-    writer: &mut W,
-) -> Result<()> {
-    if let Some(array) = column.as_any().downcast_ref::<Float32Array>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { f32_to_bfloat16_bits(array.value(i)) };
-            writer.write_u16_le(value).await?;
-        }
-        return Ok(());
-    }
-
-    if let Some(array) = column.as_any().downcast_ref::<UInt16Array>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { array.value(i) };
-            writer.write_u16_le(value).await?;
-        }
-        return Ok(());
-    }
-
-    Err(Error::ArrowSerialize("Expected Float32Array or UInt16Array for BFloat16".into()))
-}
-
-fn put_bfloat16_values<W: ClickHouseBytesWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
-    if let Some(array) = column.as_any().downcast_ref::<Float32Array>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { f32_to_bfloat16_bits(array.value(i)) };
-            writer.put_u16_le(value);
-        }
-        return Ok(());
-    }
-
-    if let Some(array) = column.as_any().downcast_ref::<UInt16Array>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { array.value(i) };
-            writer.put_u16_le(value);
-        }
-        return Ok(());
-    }
-
-    Err(Error::ArrowSerialize("Expected Float32Array or UInt16Array for BFloat16".into()))
-}
-
-async fn write_time_values<W: ClickHouseWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
-    if let Some(array) = column.as_any().downcast_ref::<Time32SecondArray>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
-            writer.write_u32_le(value).await?;
-        }
-        return Ok(());
-    }
-
-    if let Some(array) = column.as_any().downcast_ref::<Int32Array>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
-            writer.write_u32_le(value).await?;
-        }
-        return Ok(());
-    }
-
-    Err(Error::ArrowSerialize("Expected Time32SecondArray or Int32Array for Time".into()))
-}
-
-fn put_time_values<W: ClickHouseBytesWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
-    if let Some(array) = column.as_any().downcast_ref::<Time32SecondArray>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
-            writer.put_u32_le(value);
-        }
-        return Ok(());
-    }
-
-    if let Some(array) = column.as_any().downcast_ref::<Int32Array>() {
-        for i in 0..array.len() {
-            let value = if array.is_null(i) { 0 } else { array.value(i) as u32 };
-            writer.put_u32_le(value);
-        }
-        return Ok(());
-    }
-
-    Err(Error::ArrowSerialize("Expected Time32SecondArray or Int32Array for Time".into()))
-}
-
-macro_rules! write_time64_values_async {
-    ($name:ident, $arr_ty:ty) => {
-        async fn $name<W: ClickHouseWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
-            if let Some(array) = column.as_any().downcast_ref::<$arr_ty>() {
-                for i in 0..array.len() {
-                    let raw = if array.is_null(i) { 0 } else { array.value(i) };
-                    let value: i64 = raw.into();
-                    writer.write_i64_le(value).await?;
-                }
-                return Ok(());
-            }
-            if let Some(array) = column.as_any().downcast_ref::<Int64Array>() {
-                for i in 0..array.len() {
-                    let value: i64 = if array.is_null(i) { 0 } else { array.value(i) };
-                    writer.write_i64_le(value).await?;
-                }
-                return Ok(());
-            }
-            Err(Error::ArrowSerialize(
-                concat!("Expected ", stringify!($arr_ty), " or Int64Array for Time64").into(),
-            ))
-        }
-    };
-}
-
-macro_rules! write_time64_values_sync {
-    ($name:ident, $arr_ty:ty) => {
-        fn $name<W: ClickHouseBytesWrite>(column: &ArrayRef, writer: &mut W) -> Result<()> {
-            if let Some(array) = column.as_any().downcast_ref::<$arr_ty>() {
-                for i in 0..array.len() {
-                    let raw = if array.is_null(i) { 0 } else { array.value(i) };
-                    let value: i64 = raw.into();
-                    writer.put_i64_le(value);
-                }
-                return Ok(());
-            }
-            if let Some(array) = column.as_any().downcast_ref::<Int64Array>() {
-                for i in 0..array.len() {
-                    let value: i64 = if array.is_null(i) { 0 } else { array.value(i) };
-                    writer.put_i64_le(value);
-                }
-                return Ok(());
-            }
-            Err(Error::ArrowSerialize(
-                concat!("Expected ", stringify!($arr_ty), " or Int64Array for Time64").into(),
-            ))
-        }
-    };
-}
-
-write_time64_values_async!(write_time64_ms_values, Time32MillisecondArray);
-write_time64_values_async!(write_time64_us_values, Time64MicrosecondArray);
-write_time64_values_async!(write_time64_ns_values, Time64NanosecondArray);
-write_time64_values_sync!(put_time64_ms_values, Time32MillisecondArray);
-write_time64_values_sync!(put_time64_us_values, Time64MicrosecondArray);
-write_time64_values_sync!(put_time64_ns_values, Time64NanosecondArray);
 
 /// Macro to generate serialization functions for primitive types.
 ///
@@ -626,6 +490,69 @@ put_primitive_values!(put_bool_values, BooleanArray, u8, put_u8);
 put_primitive_values!(put_u16_values, UInt16Array, u16, put_u16_le);
 put_primitive_values!(put_u32_values, UInt32Array, u32, put_u32_le);
 put_primitive_values!(put_u64_values, UInt64Array, u64, put_u64_le);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_bfloat16_values, scalar u16::default(), write_u16_le, [
+    (Float32Array, |v: f32| Ok::<_, Error>(f32_to_bfloat16_bits(v))),
+    (UInt16Array, |v: u16| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_bfloat16_values, scalar u16::default(), put_u16_le, [
+    (Float32Array, |v: f32| Ok::<_, Error>(f32_to_bfloat16_bits(v))),
+    (UInt16Array, |v: u16| Ok::<_, Error>(v))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time_values, scalar u32::default(), write_u32_le, [
+    (Time32SecondArray, |v: i32| Ok::<_, Error>(v as u32)),
+    (Int32Array, |v: i32| Ok::<_, Error>(v as u32)),
+    (DurationSecondArray, |v: i64| Ok::<_, Error>(v as u32))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time_values, scalar u32::default(), put_u32_le, [
+    (Time32SecondArray, |v: i32| Ok::<_, Error>(v as u32)),
+    (Int32Array, |v: i32| Ok::<_, Error>(v as u32)),
+    (DurationSecondArray, |v: i64| Ok::<_, Error>(v as u32))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time64_ms_values, scalar i64::default(), write_i64_le, [
+    (Time32MillisecondArray, |v: i32| Ok::<_, Error>(i64::from(v))),
+    (DurationMillisecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time64_ms_values, scalar i64::default(), put_i64_le, [
+    (Time32MillisecondArray, |v: i32| Ok::<_, Error>(i64::from(v))),
+    (DurationMillisecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time64_us_values, scalar i64::default(), write_i64_le, [
+    (Time64MicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationMicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time64_us_values, scalar i64::default(), put_i64_le, [
+    (Time64MicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationMicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time64_ns_values, scalar i64::default(), write_i64_le, [
+    (Time64NanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationNanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time64_ns_values, scalar i64::default(), put_i64_le, [
+    (Time64NanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationNanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
 
 // Large primitives
 write_primitive_values!(write_i128_values, scalar i128::default(), write_i128_le, [
@@ -1119,12 +1046,11 @@ macro_rules! put_float_values {
 }
 
 write_float_values!(write_f32_values, f32, write_u32_le, [Float32Array, Float16Array]);
-write_float_values!(
-    write_f64_values,
-    f64,
-    write_u64_le,
-    [Float64Array, Float32Array, Float16Array]
-);
+write_float_values!(write_f64_values, f64, write_u64_le, [
+    Float64Array,
+    Float32Array,
+    Float16Array
+]);
 
 put_float_values!(put_f32_values, f32, put_u32_le, [Float32Array, Float16Array]);
 put_float_values!(put_f64_values, f64, put_u64_le, [Float64Array, Float32Array, Float16Array]);
@@ -1293,14 +1219,11 @@ mod tests {
         let field = Field::new("bf16", DataType::Float32, true);
         let mut writer = MockWriter::new();
         serialize_async(&Type::BFloat16, &mut writer, &column, field.data_type()).await.unwrap();
-        assert_eq!(
-            writer,
-            vec![
-                0x80, 0x3F, // 1.0 -> 0x3F80
-                0x20, 0xC0, // -2.5 -> 0xC020
-                0x00, 0x00, // null -> default
-            ]
-        );
+        assert_eq!(writer, vec![
+            0x80, 0x3F, // 1.0 -> 0x3F80
+            0x20, 0xC0, // -2.5 -> 0xC020
+            0x00, 0x00, // null -> default
+        ]);
     }
 
     #[tokio::test]
@@ -2241,14 +2164,11 @@ mod tests_sync {
         let field = Field::new("bf16", DataType::Float32, true);
         let mut writer = MockWriter::new();
         serialize(&Type::BFloat16, &mut writer, &column, field.data_type()).unwrap();
-        assert_eq!(
-            writer,
-            vec![
-                0x80, 0x3F, // 1.0 -> 0x3F80
-                0x20, 0xC0, // -2.5 -> 0xC020
-                0x00, 0x00, // null -> default
-            ]
-        );
+        assert_eq!(writer, vec![
+            0x80, 0x3F, // 1.0 -> 0x3F80
+            0x20, 0xC0, // -2.5 -> 0xC020
+            0x00, 0x00, // null -> default
+        ]);
     }
 
     #[test]
@@ -2958,6 +2878,24 @@ mod tests_sync {
             Err(Error::ArrowSerialize(msg))
             if msg.contains("Unsupported precision for DateTime64: 10")
         ));
+    }
+
+    #[test]
+    fn test_serialize_time_from_duration_seconds() {
+        let column = Arc::new(DurationSecondArray::from(vec![10_i64, 20_i64])) as ArrayRef;
+        let field = Field::new("t", DataType::Duration(TimeUnit::Second), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::Time, &mut writer, &column, field.data_type()).unwrap();
+        assert_eq!(writer, vec![10, 0, 0, 0, 20, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_serialize_time64_from_duration_microseconds() {
+        let column = Arc::new(DurationMicrosecondArray::from(vec![10_i64, 20_i64])) as ArrayRef;
+        let field = Field::new("t", DataType::Duration(TimeUnit::Microsecond), false);
+        let mut writer = MockWriter::new();
+        serialize(&Type::Time64(6), &mut writer, &column, field.data_type()).unwrap();
+        assert_eq!(writer, vec![10, 0, 0, 0, 0, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

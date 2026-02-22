@@ -7,6 +7,20 @@ use crate::{Error, Result, Value};
 pub(crate) struct NullableSerializer;
 
 impl Serializer for NullableSerializer {
+    fn write_prefix_sync(
+        type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        let inner_type = if let Type::Nullable(n) = type_ {
+            &**n
+        } else {
+            return;
+        };
+
+        inner_type.serialize_prefix(writer, state);
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         type_: &Type,
         writer: &mut W,
@@ -14,9 +28,7 @@ impl Serializer for NullableSerializer {
     ) -> Result<()> {
         let inner_type = match type_ {
             Type::Nullable(inner) => &**inner,
-            _ => {
-                return Err(Error::SerializeError("Expected Nullable type".to_string()));
-            }
+            _ => return Err(Error::serialize("Expected Nullable type")),
         };
 
         // Delegate to inner type's prefix (e.g., LowCardinality)
@@ -32,7 +44,7 @@ impl Serializer for NullableSerializer {
         let inner_type = if let Type::Nullable(n) = type_ {
             &**n
         } else {
-            return Err(Error::SerializeError(format!(
+            return Err(Error::serialize(format!(
                 "NullableSerializer called with non-nullable type: {type_:?}"
             )));
         };
@@ -53,7 +65,7 @@ impl Serializer for NullableSerializer {
         let inner_type = if let Type::Nullable(n) = type_ {
             &**n
         } else {
-            return Err(Error::SerializeError(format!(
+            return Err(Error::serialize(format!(
                 "NullableSerializer called with non-nullable type: {type_:?}"
             )));
         };

@@ -125,7 +125,7 @@ impl<T: ClientFormat> InternalConn<T> {
         // `inner_pool` it's helpful to distinguish.
         let conn_id = CONN_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let cid = Box::leak(format!("{}.{conn_id}", metadata.client_id).into_boxed_str());
-        let state = DeserializerState::default().with_arrow_options(metadata.arrow_options);
+        let state = DeserializerState::default();
         InternalConn {
             cid,
             server_hello,
@@ -157,7 +157,7 @@ impl<T: ClientFormat> InternalConn<T> {
                     let cid = self.cid;
                     let revision = self.server_hello.revision_version;
                     let result =
-                        Self::receive_ping(&mut reader, revision, self.metadata, cid).await;
+                        Self::receive_ping(&mut reader, revision, self.metadata.clone(), cid).await;
                     let _ = response.send(result).ok();
                 }
                 OperationTask::Chunk(_) => {}
@@ -186,7 +186,7 @@ impl<T: ClientFormat> InternalConn<T> {
                     let cid = self.cid;
                     let revision = self.server_hello.revision_version;
                     let result =
-                        Self::receive_ping(&mut reader, revision, self.metadata, cid).await;
+                        Self::receive_ping(&mut reader, revision, self.metadata.clone(), cid).await;
                     let _ = response.send(result).ok();
                 }
                 // Logical chunk boundary, flush
@@ -338,9 +338,10 @@ impl<T: ClientFormat> InternalConn<T> {
 
         // Wait for packet from server
         let packet = if matches!(exec.state, QueryState::Header) {
-            Reader::receive_header::<T>(reader, revision, self.metadata).await?
+            Reader::receive_header::<T>(reader, revision, self.metadata.clone()).await?
         } else {
-            Reader::receive_packet::<T>(reader, revision, self.metadata, &mut self.state).await?
+            Reader::receive_packet::<T>(reader, revision, self.metadata.clone(), &mut self.state)
+                .await?
         };
 
         let _ = Span::current().record(ATT_PID, packet.as_ref());
@@ -404,6 +405,7 @@ impl<T: ClientFormat> InternalConn<T> {
         cid: &'static str,
     ) -> Result<()> {
         let mut state = DeserializerState::default();
+        let client_id = metadata.client_id;
         let packet = Reader::receive_packet::<T>(reader, revision, metadata, &mut state)
             .await
             .inspect_err(|error| error!(?error, { ATT_CON } = cid, "Failed pong"))?;
@@ -412,7 +414,7 @@ impl<T: ClientFormat> InternalConn<T> {
             return Err(Error::Protocol("Expected Pong".to_string()));
         }
 
-        trace!({ ATT_CON } = metadata.client_id, "Pong received");
+        trace!({ ATT_CON } = client_id, "Pong received");
 
         Ok(())
     }
@@ -482,14 +484,22 @@ impl<T: ClientFormat> InternalConn<T> {
         trace!({ ATT_CID } = self.cid, { ATT_QID } = %qid, insert = insert.as_ref(), "Inserting");
         match insert {
             InsertState::Data(data) => {
-                Writer::send_data::<T>(writer, data, qid, header, revision, self.metadata).await?;
+                Writer::send_data::<T>(writer, data, qid, header, revision, self.metadata.clone())
+                    .await?;
                 self.send_delimiter(writer, qid).await?;
             }
             InsertState::Batch(data) => {
                 if !data.is_empty() {
                     for block in data {
-                        Writer::send_data::<T>(writer, block, qid, header, revision, self.metadata)
-                            .await?;
+                        Writer::send_data::<T>(
+                            writer,
+                            block,
+                            qid,
+                            header,
+                            revision,
+                            self.metadata.clone(),
+                        )
+                        .await?;
                     }
                 }
                 self.send_delimiter(writer, qid).await?;
@@ -506,7 +516,7 @@ impl<T: ClientFormat> InternalConn<T> {
             qid,
             None,
             self.server_hello.revision_version,
-            self.metadata,
+            self.metadata.clone(),
         )
         .await
     }

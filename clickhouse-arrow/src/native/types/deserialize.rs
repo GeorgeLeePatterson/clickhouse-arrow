@@ -1,34 +1,104 @@
 pub(crate) mod array;
+#[cfg(feature = "extended-types")]
+pub(crate) mod dynamic;
 pub(crate) mod geo;
 pub(crate) mod low_cardinality;
 pub(crate) mod map;
+#[cfg(feature = "extended-types")]
+pub(crate) mod nested;
 pub(crate) mod nullable;
 pub(crate) mod object;
 pub(crate) mod sized;
 pub(crate) mod string;
 pub(crate) mod tuple;
+#[cfg(feature = "extended-types")]
+pub(crate) mod variant;
 
-use super::low_cardinality::LOW_CARDINALITY_VERSION;
+use tokio::io::AsyncReadExt;
+
 use super::*;
-use crate::io::ClickHouseBytesRead;
+
+const CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT: u8 = 0;
+const CUSTOM_SERIALIZATION_KIND_STACK_SPARSE: u8 = 1;
+const CUSTOM_SERIALIZATION_KIND_STACK_DETACHED: u8 = 2;
+const CUSTOM_SERIALIZATION_KIND_STACK_DETACHED_OVER_SPARSE: u8 = 3;
+const CUSTOM_SERIALIZATION_KIND_STACK_REPLICATED: u8 = 4;
+const CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION: u8 = 5;
+
+const CUSTOM_SERIALIZATION_KIND_DEFAULT: u8 = 0;
+const CUSTOM_SERIALIZATION_KIND_SPARSE: u8 = 1;
+const CUSTOM_SERIALIZATION_KIND_DETACHED: u8 = 2;
+const CUSTOM_SERIALIZATION_KIND_REPLICATED: u8 = 3;
 
 // Core protocol parsing
 pub(crate) trait ClickHouseNativeDeserializer {
-    fn deserialize_prefix_async<'a, R: ClickHouseRead>(
+    fn deserialize_custom_serialization_prefix<'a, R: ClickHouseRead>(
         &'a self,
         reader: &'a mut R,
-        state: &'a mut DeserializerState,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
-    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
-    fn deserialize_prefix<R: ClickHouseBytesRead>(&self, reader: &mut R) -> Result<()>;
+    fn deserialize_prefix<'a, R: ClickHouseRead, T: Default + Send>(
+        &'a self,
+        reader: &'a mut R,
+        state: &'a mut DeserializerState<T>,
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
 }
 
 impl ClickHouseNativeDeserializer for Type {
-    fn deserialize_prefix_async<'a, R: ClickHouseRead>(
+    fn deserialize_custom_serialization_prefix<'a, R: ClickHouseRead>(
         &'a self,
         reader: &'a mut R,
-        state: &'a mut DeserializerState,
+    ) -> impl Future<Output = Result<()>> + Send + 'a {
+        async move {
+            let mut stack = vec![self.strip_null()];
+            while let Some(next) = stack.pop() {
+                let kind_stack_type = reader.read_u8().await?;
+                match kind_stack_type {
+                    CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT
+                    | CUSTOM_SERIALIZATION_KIND_STACK_SPARSE
+                    | CUSTOM_SERIALIZATION_KIND_STACK_DETACHED
+                    | CUSTOM_SERIALIZATION_KIND_STACK_DETACHED_OVER_SPARSE
+                    | CUSTOM_SERIALIZATION_KIND_STACK_REPLICATED => {}
+                    CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION => {
+                        #[expect(clippy::cast_possible_truncation)]
+                        let num_kinds = reader.read_var_uint().await? as usize;
+                        for _ in 0..num_kinds {
+                            let kind = reader.read_u8().await?;
+                            if !matches!(
+                                kind,
+                                CUSTOM_SERIALIZATION_KIND_DEFAULT
+                                    | CUSTOM_SERIALIZATION_KIND_SPARSE
+                                    | CUSTOM_SERIALIZATION_KIND_DETACHED
+                                    | CUSTOM_SERIALIZATION_KIND_REPLICATED
+                            ) {
+                                return Err(Error::Protocol(format!(
+                                    "invalid custom serialization kind: {kind}"
+                                )));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(Error::Protocol(format!(
+                            "invalid custom serialization kind stack type: {kind_stack_type}"
+                        )));
+                    }
+                }
+
+                if let Type::Tuple(inner) = next {
+                    for item in inner.iter().rev() {
+                        stack.push(item.strip_null());
+                    }
+                }
+            }
+            Ok(())
+        }
+        .boxed()
+    }
+
+    fn deserialize_prefix<'a, R: ClickHouseRead, T: Default + Send>(
+        &'a self,
+        reader: &'a mut R,
+        state: &'a mut DeserializerState<T>,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
         use deserialize::*;
         async move {
@@ -59,12 +129,16 @@ impl ClickHouseNativeDeserializer for Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_)
-                | Type::BFloat16
-                | Type::Time
-                | Type::Time64(_) => {
+                | Type::Enum16(_) => {
                     sized::SizedDeserializer::read_prefix(self, reader, state).await?;
                 }
+                #[cfg(feature = "extended-types")]
+                Type::BFloat16 | Type::Time | Type::Time64(_) => {
+                    sized::SizedDeserializer::read_prefix(self, reader, state).await?;
+                }
+                Type::Nothing => {}
+                #[cfg(feature = "extended-types")]
+                Type::QBit { .. } => {}
 
                 Type::String
                 | Type::FixedSizedString(_)
@@ -96,84 +170,123 @@ impl ClickHouseNativeDeserializer for Type {
                 Type::Object => {
                     object::ObjectDeserializer::read_prefix(self, reader, state).await?;
                 }
-                Type::Nested(fields) => {
-                    let tuple_type = Type::Tuple(
-                        fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
-                    );
-                    tuple_type.deserialize_prefix_async(reader, state).await?;
+                #[cfg(feature = "extended-types")]
+                Type::Nested(_) => {
+                    nested::NestedDeserializer::read_prefix(self, reader, state).await?;
                 }
+                #[cfg(feature = "extended-types")]
                 Type::SimpleAggregateFunction { types, .. } => {
                     if let Some(inner) = types.first() {
-                        inner.deserialize_prefix_async(reader, state).await?;
+                        inner.deserialize_prefix(reader, state).await?;
                     } else {
                         return Err(Error::DeserializeError(
                             "SimpleAggregateFunction has no inner type".to_string(),
                         ));
                     }
                 }
-                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                    return Err(Error::DeserializeError(format!(
-                        "native deserialization prefix for type '{self}' is not implemented"
-                    )));
+                #[cfg(feature = "extended-types")]
+                Type::Variant(_) => {
+                    variant::VariantDeserializer::read_prefix(self, reader, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::AggregateFunction { .. } => {}
+                #[cfg(feature = "extended-types")]
+                Type::Dynamic { .. } => {
+                    dynamic::DynamicDeserializer::read_prefix(self, reader, state).await?;
                 }
             }
             Ok(())
         }
         .boxed()
     }
+}
 
-    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
-    fn deserialize_prefix<R: ClickHouseBytesRead>(&self, reader: &mut R) -> Result<()> {
-        match self {
-            Type::Array(inner) | Type::Nullable(inner) => inner.deserialize_prefix(reader)?,
-            Type::Point => {
-                for _ in 0..2 {
-                    Type::Float64.deserialize_prefix(reader)?;
-                }
-            }
-            Type::LowCardinality(_) => {
-                let version = reader.try_get_u64_le()?;
-                if version != LOW_CARDINALITY_VERSION {
-                    return Err(Error::DeserializeError(format!(
-                        "LowCardinality: invalid low cardinality version: {version}"
-                    )));
-                }
-            }
-            Type::Map(key, value) => {
-                let nested = super::map::normalize_map_type(key, value);
-                nested.deserialize_prefix(reader)?;
-            }
-            Type::Tuple(inner) => {
-                for inner_type in inner {
-                    inner_type.deserialize_prefix(reader)?;
-                }
-            }
-            Type::Object => {
-                let _ = reader.try_get_i8()?;
-            }
-            Type::Nested(fields) => {
-                let tuple_type = Type::Tuple(
-                    fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
-                );
-                tuple_type.deserialize_prefix(reader)?;
-            }
-            Type::SimpleAggregateFunction { types, .. } => {
-                if let Some(inner) = types.first() {
-                    inner.deserialize_prefix(reader)?;
-                } else {
-                    return Err(Error::DeserializeError(
-                        "SimpleAggregateFunction has no inner type".to_string(),
-                    ));
-                }
-            }
-            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                return Err(Error::DeserializeError(format!(
-                    "native deserialization prefix for type '{self}' is not implemented"
-                )));
-            }
-            _ => {}
+// ---
+// String => Aggregate Parameter Deserialization
+// ---
+
+#[cfg(feature = "extended-types")]
+impl AggregateParameter {
+    fn parse_quoted_string(input: &str) -> Result<String> {
+        if !(input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2) {
+            return Err(Error::TypeParseError(format!(
+                "invalid quoted aggregate parameter literal: {input}"
+            )));
         }
-        Ok(())
+
+        let inner = &input[1..input.len() - 1];
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                let Some(escaped) = chars.next() else {
+                    return Err(Error::TypeParseError(format!(
+                        "invalid escape sequence in aggregate parameter literal: {input}"
+                    )));
+                };
+                out.push(match escaped {
+                    '\\' => '\\',
+                    '\'' => '\'',
+                    '"' => '"',
+                    '0' => '\0',
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    other => other,
+                });
+                continue;
+            }
+
+            if ch == '\'' && chars.peek() == Some(&'\'') {
+                let _ = chars.next();
+                out.push('\'');
+                continue;
+            }
+
+            out.push(ch);
+        }
+
+        Ok(out)
+    }
+}
+
+#[cfg(feature = "extended-types")]
+impl FromStr for AggregateParameter {
+    type Err = Error;
+
+    fn from_str(input: &str) -> Result<Self> {
+        let input = input.trim();
+        if input.eq_ignore_ascii_case("null") {
+            return Ok(Self::Null);
+        }
+        if input.eq_ignore_ascii_case("true") {
+            return Ok(Self::Bool(true));
+        }
+        if input.eq_ignore_ascii_case("false") {
+            return Ok(Self::Bool(false));
+        }
+        if input.eq_ignore_ascii_case("inf") || input.eq_ignore_ascii_case("+inf") {
+            return Ok(Self::Float64(f64::INFINITY.to_bits()));
+        }
+        if input.eq_ignore_ascii_case("-inf") {
+            return Ok(Self::Float64(f64::NEG_INFINITY.to_bits()));
+        }
+
+        if input.starts_with('\'') && input.ends_with('\'') {
+            return Ok(Self::String(Self::parse_quoted_string(input)?));
+        }
+
+        if let Ok(value) = input.parse::<u64>() {
+            return Ok(Self::UInt64(value));
+        }
+        if let Ok(value) = input.parse::<i64>() {
+            return Ok(Self::Int64(value));
+        }
+        if let Ok(value) = input.parse::<f64>() {
+            return Ok(Self::Float64(value.to_bits()));
+        }
+
+        Err(Error::TypeParseError(format!("unsupported aggregate parameter literal '{input}'")))
     }
 }
 
@@ -312,7 +425,7 @@ impl FromStr for Type {
 
         let following = following.trim();
         if !following.is_empty() {
-            return Ok(match ident {
+            let parsed = match ident {
                 "Decimal" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if count != 2 {
@@ -321,7 +434,7 @@ impl FromStr for Type {
                         )));
                     }
                     let p: usize = parse_precision(args[0])?;
-                    let s: usize = parse_scale(args[1])?;
+                    let s: u8 = parse_scale(args[1])?;
                     if s == 0
                         || (p <= 9 && s > 9)
                         || (p <= 18 && s > 18)
@@ -353,7 +466,7 @@ impl FromStr for Type {
                             "bad arg count for Decimal32, expected 1 and got {count}: {args:?}"
                         )));
                     }
-                    let s: usize = parse_scale(args[0])?;
+                    let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 9 {
                         return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal32, must be 1..=9"
@@ -368,7 +481,7 @@ impl FromStr for Type {
                             "bad arg count for Decimal64, expected 1 and got {count}: {args:?}"
                         )));
                     }
-                    let s: usize = parse_scale(args[0])?;
+                    let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 18 {
                         return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal64, must be 1..=18"
@@ -383,7 +496,7 @@ impl FromStr for Type {
                             "bad arg count for Decimal128, expected 1 and got {count}: {args:?}"
                         )));
                     }
-                    let s: usize = parse_scale(args[0])?;
+                    let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 38 {
                         return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal128, must be 1..=38"
@@ -398,7 +511,7 @@ impl FromStr for Type {
                             "bad arg count for Decimal256, expected 1 and got {count}: {args:?}"
                         )));
                     }
-                    let s: usize = parse_scale(args[0])?;
+                    let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 76 {
                         return Err(Error::TypeParseError(format!(
                             "Invalid scale {s} for Decimal256, must be 1..=76"
@@ -413,7 +526,7 @@ impl FromStr for Type {
                             "bad arg count for FixedString, expected 1 and got {count}: {args:?}"
                         )));
                     }
-                    let s: usize = parse_scale(args[0])?;
+                    let s: usize = parse_precision(args[0])?;
                     if s == 0 {
                         return Err(Error::TypeParseError(
                             "FixedString size must be greater than 0".to_string(),
@@ -452,7 +565,9 @@ impl FromStr for Type {
                             "DateTime64 expects 1 or 2 args, got {count}: {args:?}"
                         )));
                     }
-                    let precision = parse_precision(args[0])?;
+                    let precision: u8 = args[0].parse().map_err(|_| {
+                        Error::TypeParseError("could not parse precision".to_string())
+                    })?;
                     let tz = if count == 2 {
                         let tz_str = args[1];
                         if !tz_str.starts_with('\'') || !tz_str.ends_with('\'') {
@@ -521,6 +636,7 @@ impl FromStr for Type {
                         Box::new(Type::from_str(args[1])?),
                     )
                 }
+                #[cfg(feature = "extended-types")]
                 "Time64" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
@@ -528,8 +644,24 @@ impl FromStr for Type {
                             "Time64 expects 1 arg (precision), got {count}: {args:?}"
                         )));
                     }
-                    Type::Time64(parse_precision(args[0])?)
+                    let precision: u8 = args[0].parse().map_err(|_| {
+                        Error::TypeParseError("could not parse precision".to_string())
+                    })?;
+                    Type::Time64(precision)
                 }
+                #[cfg(feature = "extended-types")]
+                "QBit" => {
+                    let (args, count) = parse_fixed_args::<2>(following)?;
+                    if count != 2 {
+                        return Err(Error::TypeParseError(format!(
+                            "QBit expects 2 args (element_type, dimension), got {count}: {args:?}"
+                        )));
+                    }
+                    let element_type = Type::from_str(args[0])?;
+                    let dimension = parse_precision(args[1])?;
+                    Type::QBit { element_type: Box::new(element_type), dimension }
+                }
+                #[cfg(feature = "extended-types")]
                 "Variant" => {
                     let args = parse_variable_args(following)?;
                     if args.is_empty() {
@@ -539,28 +671,37 @@ impl FromStr for Type {
                     }
                     Type::Variant(args.into_iter().map(Type::from_str).collect::<Result<Vec<_>>>()?)
                 }
+                #[cfg(feature = "extended-types")]
                 "Dynamic" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count == 0 {
-                        Type::Dynamic { max_types: None }
+                        Type::Dynamic { max_types: 32 }
                     } else {
                         let arg = args[0].trim();
                         let max_types = if let Some(value) = arg.strip_prefix("max_types=") {
-                            Some(value.parse::<usize>().map_err(|e| {
+                            value.parse::<u8>().map_err(|e| {
                                 Error::TypeParseError(format!(
                                     "Invalid Dynamic max_types value '{value}': {e}"
                                 ))
-                            })?)
+                            })?
                         } else {
-                            Some(arg.parse::<usize>().map_err(|e| {
+                            arg.parse::<u8>().map_err(|e| {
                                 Error::TypeParseError(format!(
-                                    "Invalid Dynamic argument '{arg}', expected max_types=<n> or <n>: {e}"
+                                    "Invalid Dynamic argument '{arg}', expected max_types=<n> or \
+                                     <n>: {e}"
                                 ))
-                            })?)
+                            })?
                         };
+                        if max_types > 254 {
+                            return Err(Error::TypeParseError(format!(
+                                "Invalid Dynamic max_types value '{max_types}', must be in range \
+                                 (0..=254)"
+                            )));
+                        }
                         Type::Dynamic { max_types }
                     }
                 }
+                #[cfg(feature = "extended-types")]
                 "Nested" => {
                     let args = parse_variable_args(following)?;
                     if args.is_empty() {
@@ -572,9 +713,9 @@ impl FromStr for Type {
                     let mut fields = Vec::with_capacity(args.len());
                     for arg in args {
                         let arg = arg.trim();
-                        let mut split = arg.splitn(2, ' ');
-                        let name = split.next().unwrap_or_default().trim();
-                        let type_spec = split.next().unwrap_or_default().trim();
+                        let (name, type_spec) = eat_identifier(arg);
+                        let name = name.trim();
+                        let type_spec = type_spec.trim();
                         if name.is_empty() || type_spec.is_empty() {
                             return Err(Error::TypeParseError(format!(
                                 "Invalid Nested field '{arg}', expected '<name> <type>'"
@@ -584,6 +725,7 @@ impl FromStr for Type {
                     }
                     Type::Nested(fields)
                 }
+                #[cfg(feature = "extended-types")]
                 "AggregateFunction" => {
                     let args = parse_variable_args(following)?;
                     if args.is_empty() {
@@ -591,13 +733,34 @@ impl FromStr for Type {
                             "AggregateFunction requires at least a function name".to_string(),
                         ));
                     }
-                    let name = args[0].trim().to_string();
+                    let signature = args[0].trim();
+                    let (name, following) = eat_identifier(signature);
+                    if name.is_empty() {
+                        return Err(Error::TypeParseError(
+                            "AggregateFunction requires a non-empty function name".to_string(),
+                        ));
+                    }
+                    let following = following.trim();
+                    let parameters = if following.is_empty() {
+                        Vec::new()
+                    } else {
+                        parse_variable_args(following)?
+                            .into_iter()
+                            .map(AggregateParameter::from_str)
+                            .collect::<Result<Vec<_>>>()?
+                    };
                     let mut types = Vec::new();
                     for arg in args.into_iter().skip(1) {
                         types.push(Type::from_str(arg)?);
                     }
-                    Type::AggregateFunction { name, types }
+                    Type::AggregateFunction {
+                        name: name.to_string(),
+                        parameters,
+                        types,
+                        version: 0,
+                    }
                 }
+                #[cfg(feature = "extended-types")]
                 "SimpleAggregateFunction" => {
                     let args = parse_variable_args(following)?;
                     if args.len() < 2 {
@@ -605,19 +768,36 @@ impl FromStr for Type {
                             "SimpleAggregateFunction requires function name and type".to_string(),
                         ));
                     }
-                    let name = args[0].trim().to_string();
+                    let signature = args[0].trim();
+                    let (name, following) = eat_identifier(signature);
+                    if name.is_empty() {
+                        return Err(Error::TypeParseError(
+                            "SimpleAggregateFunction requires a non-empty function name"
+                                .to_string(),
+                        ));
+                    }
+                    let following = following.trim();
+                    let parameters = if following.is_empty() {
+                        Vec::new()
+                    } else {
+                        parse_variable_args(following)?
+                            .into_iter()
+                            .map(AggregateParameter::from_str)
+                            .collect::<Result<Vec<_>>>()?
+                    };
                     let types =
                         args.into_iter().skip(1).map(Type::from_str).collect::<Result<Vec<_>>>()?;
-                    Type::SimpleAggregateFunction { name, types }
+                    Type::SimpleAggregateFunction { name: name.to_string(), parameters, types }
                 }
                 id => {
                     return Err(Error::TypeParseError(format!(
                         "invalid type with arguments: '{ident}' (ident = {id})"
                     )));
                 }
-            });
+            };
+            return Ok(parsed);
         }
-        Ok(match ident {
+        let parsed = match ident {
             "Int8" => Type::Int8,
             "Int16" => Type::Int16,
             "Int32" => Type::Int32,
@@ -633,6 +813,7 @@ impl FromStr for Type {
             "Float32" => Type::Float32,
             "Float64" => Type::Float64,
             "String" => Type::String,
+            "Nothing" => Type::Nothing,
             "UUID" | "Uuid" | "uuid" => Type::Uuid,
             "Date" => Type::Date,
             "Date32" => Type::Date32,
@@ -646,13 +827,17 @@ impl FromStr for Type {
             "Polygon" => Type::Polygon,
             "MultiPolygon" => Type::MultiPolygon,
             "Object" | "Json" | "OBJECT" | "JSON" => Type::Object,
+            #[cfg(feature = "extended-types")]
             "BFloat16" => Type::BFloat16,
+            #[cfg(feature = "extended-types")]
             "Time" => Type::Time,
-            "Dynamic" => Type::Dynamic { max_types: None },
+            #[cfg(feature = "extended-types")]
+            "Dynamic" => Type::Dynamic { max_types: 32 },
             _ => {
                 return Err(Error::TypeParseError(format!("invalid type name: '{ident}'")));
             }
-        })
+        };
+        Ok(parsed)
     }
 }
 
@@ -712,11 +897,9 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 }
 
 /// Parse arguments into a Vec for types with variable numbers of args
-fn parse_variable_args(input: &str) -> Result<Vec<&str>> {
-    parse_args_iter(input)?.collect()
-}
+fn parse_variable_args(input: &str) -> Result<Vec<&str>> { parse_args_iter(input)?.collect() }
 
-fn parse_scale(from: &str) -> Result<usize> {
+fn parse_scale(from: &str) -> Result<u8> {
     from.parse().map_err(|_| Error::TypeParseError("couldn't parse scale".to_string()))
 }
 
@@ -738,11 +921,11 @@ fn parse_args_iter(input: &str) -> Result<impl Iterator<Item = Result<&str, Erro
 }
 
 struct ArgsIterator<'a> {
-    input: &'a str,
+    input:      &'a str,
     last_start: usize,
-    in_parens: usize,
-    in_quotes: bool,
-    done: bool,
+    in_parens:  usize,
+    in_quotes:  bool,
+    done:       bool,
 }
 
 impl<'a> Iterator for ArgsIterator<'a> {
@@ -908,6 +1091,7 @@ mod tests {
     #[test]
     fn test_from_str_strings() {
         assert_eq!(Type::from_str("String").unwrap(), Type::String);
+        assert_eq!(Type::from_str("Nothing").unwrap(), Type::Nothing);
         assert_eq!(Type::from_str("FixedString(4)").unwrap(), Type::FixedSizedString(4));
         assert!(Type::from_str("FixedString(0)").is_err()); // Invalid size
         assert!(Type::from_str("FixedString(a)").is_err()); // Invalid size
@@ -1025,12 +1209,14 @@ mod tests {
             (Type::FixedSizedBinary(8), Type::FixedSizedString(8)),
         ];
 
-        let types = vec![
+        #[allow(unused_mut)]
+        let mut types = vec![
             Type::Int8,
             Type::UInt8,
             Type::Float64,
             Type::String,
             Type::FixedSizedString(4),
+            Type::Nothing,
             Type::Uuid,
             Type::Date,
             Type::Date32,
@@ -1047,18 +1233,45 @@ mod tests {
             Type::Nullable(Box::new(Type::Int32)),
             Type::Map(Box::new(Type::String), Box::new(Type::Int32)),
             Type::Object,
+        ];
+        #[cfg(feature = "extended-types")]
+        types.extend(vec![
             Type::BFloat16,
             Type::Time,
             Type::Time64(6),
+            Type::QBit { element_type: Box::new(Type::Float32), dimension: 4 },
             Type::Variant(vec![Type::String, Type::UInt64]),
-            Type::Dynamic { max_types: Some(8) },
+            Type::Dynamic { max_types: 8 },
             Type::Nested(vec![
                 ("name".to_string(), Type::String),
                 ("score".to_string(), Type::Float64),
             ]),
-            Type::AggregateFunction { name: "sumState".to_string(), types: vec![Type::UInt64] },
-            Type::SimpleAggregateFunction { name: "sum".to_string(), types: vec![Type::UInt64] },
-        ];
+            Type::AggregateFunction {
+                name:       "sumState".to_string(),
+                parameters: vec![],
+                types:      vec![Type::UInt64],
+                version:    0,
+            },
+            Type::SimpleAggregateFunction {
+                name:       "sum".to_string(),
+                parameters: vec![],
+                types:      vec![Type::UInt64],
+            },
+            Type::AggregateFunction {
+                name:       "quantilesTDigest".to_string(),
+                parameters: vec![
+                    AggregateParameter::Float64(0.5_f64.to_bits()),
+                    AggregateParameter::Float64(0.9_f64.to_bits()),
+                ],
+                types:      vec![Type::UInt64],
+                version:    0,
+            },
+            Type::SimpleAggregateFunction {
+                name:       "quantile".to_string(),
+                parameters: vec![AggregateParameter::Float64(0.9_f64.to_bits())],
+                types:      vec![Type::UInt64],
+            },
+        ]);
 
         for ty in types {
             let type_str = ty.to_string();
@@ -1091,6 +1304,28 @@ mod tests {
         assert!(Type::from_str("Tuple(String,)").is_err()); // Trailing comma
         assert!(Type::from_str("Variant()").is_err()); // Empty Variant
         assert!(Type::from_str("SimpleAggregateFunction(sum)").is_err()); // Missing arg
+    }
+
+    #[cfg(feature = "extended-types")]
+    #[test]
+    fn test_from_str_aggregate_function_with_parameters() {
+        let type_ = Type::from_str("AggregateFunction(quantilesTDigest(0.5,0.9),UInt64)").unwrap();
+        assert_eq!(type_, Type::AggregateFunction {
+            name:       "quantilesTDigest".to_string(),
+            parameters: vec![
+                AggregateParameter::Float64(0.5_f64.to_bits()),
+                AggregateParameter::Float64(0.9_f64.to_bits()),
+            ],
+            types:      vec![Type::UInt64],
+            version:    0,
+        });
+
+        let type_ = Type::from_str("SimpleAggregateFunction(quantile(0.9),UInt64)").unwrap();
+        assert_eq!(type_, Type::SimpleAggregateFunction {
+            name:       "quantile".to_string(),
+            parameters: vec![AggregateParameter::Float64(0.9_f64.to_bits())],
+            types:      vec![Type::UInt64],
+        });
     }
 
     /// Tests `strip_tuple_field_name` helper function.

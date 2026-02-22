@@ -452,7 +452,7 @@ impl<const PRECISION: usize> ToSql for DateTime64<PRECISION> {
 
 impl<const PRECISION: usize> FromSql for DateTime64<PRECISION> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
-        if !matches!(type_, Type::DateTime64(x, _) if *x == PRECISION) {
+        if !matches!(type_, Type::DateTime64(x, _) if usize::from(*x) == PRECISION) {
             return Err(unexpected_type(type_));
         }
         match value {

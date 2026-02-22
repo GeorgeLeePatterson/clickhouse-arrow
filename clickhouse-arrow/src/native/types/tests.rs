@@ -21,25 +21,98 @@ async fn roundtrip_values(type_: &Type, values: &[Value]) -> Result<Vec<Value>> 
     type_.serialize_column(values.to_vec(), &mut output, &mut state).await?;
     let mut input = Cursor::new(output);
     let mut state = DeserializerState::default();
-    type_.deserialize_prefix_async(&mut input, &mut state).await?;
+    type_.deserialize_prefix(&mut input, &mut state).await?;
     let deserialized = type_.deserialize_column(&mut input, values.len(), &mut state).await?;
 
     Ok(deserialized)
 }
 
-fn roundtrip_values_sync(type_: &Type, values: &[Value]) -> Result<Vec<Value>> {
-    let mut output = vec![];
+// TODO: Remove
+// fn roundtrip_values_sync(type_: &Type, values: &[Value]) -> Result<Vec<Value>> {
+//     let mut output = vec![];
 
-    let mut state = SerializerState::default();
-    // Most types don't have a prefix, so we can skip this for sync roundtrips
-    type_.serialize_column_sync(values.to_vec(), &mut output, &mut state)?;
-    let mut input = Cursor::new(output);
-    let mut state = DeserializerState::default();
-    // Most types don't have a prefix, so we can skip this for sync roundtrips
-    let deserialized = type_.deserialize_column_sync(&mut input, values.len(), &mut state)?;
+//     let mut state = SerializerState::default();
+//     // Most types don't have a prefix, so we can skip this for sync roundtrips
+//     type_.serialize_column_sync(values.to_vec(), &mut output, &mut state)?;
+//     let mut input = Cursor::new(output);
+//     let mut state = DeserializerState::default();
+//     // Most types don't have a prefix, so we can skip this for sync roundtrips
+//     let deserialized = type_.deserialize_column_sync(&mut input, values.len(), &mut state)?;
 
-    Ok(deserialized)
+//     Ok(deserialized)
+// }
+
+#[cfg(feature = "extended-types")]
+#[test]
+fn nested_prefix_matches_tuple_of_arrays_prefix() {
+    let nested = Type::Nested(vec![
+        ("k".to_string(), Type::LowCardinality(Box::new(Type::String))),
+        ("v".to_string(), Type::Object),
+    ]);
+    let tuple = Type::Tuple(vec![
+        Type::Array(Box::new(Type::LowCardinality(Box::new(Type::String)))),
+        Type::Array(Box::new(Type::Object)),
+    ]);
+
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let (nested_bytes, tuple_bytes) = rt.block_on(async {
+        let mut nested_bytes = vec![];
+        let mut nested_state = SerializerState::default();
+        nested.serialize_prefix_async(&mut nested_bytes, &mut nested_state).await.unwrap();
+
+        let mut tuple_bytes = vec![];
+        let mut tuple_state = SerializerState::default();
+        tuple.serialize_prefix_async(&mut tuple_bytes, &mut tuple_state).await.unwrap();
+
+        (nested_bytes, tuple_bytes)
+    });
+
+    assert_eq!(nested_bytes, tuple_bytes);
 }
+
+// TODO: Remove
+// #[cfg(feature = "extended-types")]
+// #[test]
+// fn prefix_behavior_for_variant_dynamic_and_aggregate_function() {
+//     let types = vec![Type::Variant(vec![Type::UInt8, Type::String]), Type::AggregateFunction {
+//         name:  "sumState".to_string(),
+//         types: vec![Type::UInt64],
+//     }];
+
+//     let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+//     rt.block_on(async {
+//         for type_ in types {
+//             let mut bytes = vec![];
+//             let mut serializer_state = SerializerState::default();
+//             type_.serialize_prefix_async(&mut bytes, &mut serializer_state).await.unwrap();
+//             assert!(bytes.is_empty(), "expected no prefix bytes for {type_}");
+
+//             let mut cursor = Cursor::new(bytes);
+//             let mut deserializer_state = DeserializerState::default();
+//             type_.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
+//             assert_eq!(cursor.position(), 0, "expected no prefix bytes consumed for {type_}");
+//         }
+
+//         let dynamic = Type::Dynamic { max_types: 8 };
+//         let mut dynamic_prefix = Vec::new();
+//         dynamic_prefix.extend_from_slice(&3_u64.to_le_bytes()); // flattened
+//         dynamic_prefix.push(1); // one flattened source type
+//         dynamic_prefix.push(5); // "UInt8" length
+//         dynamic_prefix.extend_from_slice(b"UInt8");
+
+//         let mut cursor = Cursor::new(dynamic_prefix.clone());
+//         let mut deserializer_state =
+//             DeserializerState::<crate::arrow::ArrowDeserializerState>::default();
+//         dynamic.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
+//         assert_eq!(cursor.position() as usize, dynamic_prefix.len());
+//         let dynamic_state = deserializer_state
+//             .deserializer()
+//             .take_dynamic()
+//             .expect("dynamic prefix metadata should be stored in deserializer state");
+//         assert_eq!(dynamic_state.serialization_version, 3);
+//         assert_eq!(dynamic_state.flattened_types, vec![Type::UInt8]);
+//     });
+// }
 
 #[tokio::test]
 async fn roundtrip_u8() {
@@ -1030,8 +1103,45 @@ async fn test_write_default() {
     // Test low cardinality
     assert!(Type::LowCardinality(Box::new(Type::String)).write_default(&mut writer).await.is_ok());
 
-    // Test unsupported type (should return error)
-    assert!(Type::Point.write_default(&mut writer).await.is_err());
+    // Test geo/object aliases
+    assert!(Type::Point.write_default(&mut writer).await.is_ok());
+    assert!(Type::Ring.write_default(&mut writer).await.is_ok());
+    assert!(Type::Polygon.write_default(&mut writer).await.is_ok());
+    assert!(Type::MultiPolygon.write_default(&mut writer).await.is_ok());
+    assert!(Type::Object.write_default(&mut writer).await.is_ok());
+
+    #[cfg(feature = "extended-types")]
+    {
+        assert!(
+            Type::SimpleAggregateFunction {
+                name:       "sum".to_string(),
+                parameters: vec![],
+                types:      vec![Type::UInt64],
+            }
+            .write_default(&mut writer)
+            .await
+            .is_ok()
+        );
+        assert!(
+            Type::Nested(vec![("x".to_string(), Type::UInt32), ("y".to_string(), Type::String)])
+                .write_default(&mut writer)
+                .await
+                .is_ok()
+        );
+        assert!(Type::Variant(vec![Type::UInt8]).write_default(&mut writer).await.is_err());
+        assert!(Type::Dynamic { max_types: 32 }.write_default(&mut writer).await.is_err());
+        assert!(
+            Type::AggregateFunction {
+                name:       "sumState".to_string(),
+                parameters: vec![],
+                types:      vec![Type::UInt64],
+                version:    0,
+            }
+            .write_default(&mut writer)
+            .await
+            .is_err()
+        );
+    }
 }
 
 #[test]
@@ -1093,6 +1203,40 @@ fn test_put_default() {
     // Test low cardinality
     assert!(Type::LowCardinality(Box::new(Type::String)).put_default(&mut writer).is_ok());
 
-    // Test unsupported type (should return error)
-    assert!(Type::Point.put_default(&mut writer).is_err());
+    // Test geo/object aliases
+    assert!(Type::Point.put_default(&mut writer).is_ok());
+    assert!(Type::Ring.put_default(&mut writer).is_ok());
+    assert!(Type::Polygon.put_default(&mut writer).is_ok());
+    assert!(Type::MultiPolygon.put_default(&mut writer).is_ok());
+    assert!(Type::Object.put_default(&mut writer).is_ok());
+
+    #[cfg(feature = "extended-types")]
+    {
+        assert!(Type::Variant(vec![Type::UInt8]).put_default(&mut writer).is_err());
+        assert!(Type::Dynamic { max_types: 32 }.put_default(&mut writer).is_err());
+        assert!(
+            Type::AggregateFunction {
+                name:       "sumState".to_string(),
+                parameters: vec![],
+                types:      vec![Type::UInt64],
+                version:    0,
+            }
+            .put_default(&mut writer)
+            .is_err()
+        );
+        assert!(
+            Type::SimpleAggregateFunction {
+                name:       "sum".to_string(),
+                parameters: vec![],
+                types:      vec![Type::UInt64],
+            }
+            .put_default(&mut writer)
+            .is_ok()
+        );
+        assert!(
+            Type::Nested(vec![("x".to_string(), Type::UInt32), ("y".to_string(), Type::String)])
+                .put_default(&mut writer)
+                .is_ok()
+        );
+    }
 }

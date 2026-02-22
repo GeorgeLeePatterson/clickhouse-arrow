@@ -1,6 +1,7 @@
 pub(crate) mod dictionary;
 pub(crate) mod list;
 pub(crate) mod map;
+pub(crate) mod union;
 
 use std::sync::Arc;
 
@@ -8,6 +9,9 @@ use arrow::array::*;
 use arrow::datatypes::*;
 use strum::AsRefStr;
 
+use self::dictionary::LowCardinalityBuilder;
+use self::list::TypedListBuilder;
+use self::union::TypedUnionBuilder;
 use crate::constants::CLICKHOUSE_DEFAULT_CHUNK_ROWS;
 use crate::prelude::*;
 
@@ -42,9 +46,6 @@ macro_rules! typed_arrow_build {
     }
 }
 pub(super) use typed_arrow_build;
-
-use self::dictionary::LowCardinalityBuilder;
-use self::list::TypedListBuilder;
 
 macro_rules! typed_build {
     ($type_hint:expr, { $(
@@ -94,6 +95,7 @@ pub(crate) enum TypedBuilder {
     Decimal256(Decimal256Builder),
 
     // Date/Time types
+    Null,
     Date(Date32Builder),
     Date32(Date32Builder),
     DateTime(TimestampSecondBuilder),
@@ -126,6 +128,7 @@ pub(crate) enum TypedBuilder {
     // Complex types
     Map((Box<TypedBuilder>, Box<TypedBuilder>)),
     Tuple(Vec<TypedBuilder>),
+    Union(TypedUnionBuilder),
 }
 
 impl TypedBuilder {
@@ -169,6 +172,7 @@ impl TypedBuilder {
             ));
         }
 
+        #[cfg(feature = "extended-types")]
         if let Type::Nested(fields) = type_ {
             let DataType::Struct(arrow_fields) = data_type else {
                 return Err(Error::ArrowDeserialize(format!(
@@ -180,19 +184,52 @@ impl TypedBuilder {
                     "Nested field length mismatch: {fields:?} != {arrow_fields:?}",
                 )));
             }
-            let nested_tuple = fields
-                .iter()
-                .map(|(_, type_)| Type::Array(Box::new(type_.clone())))
-                .collect::<Vec<_>>();
-            return Ok(Self::Tuple(
-                nested_tuple
-                    .iter()
-                    .zip(arrow_fields.iter())
-                    .map(|(type_, field)| TypedBuilder::try_new(type_, field.data_type()))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ));
+
+            let mut tuple_types = Vec::with_capacity(fields.len());
+            let mut tuple_fields = Vec::with_capacity(fields.len());
+            for ((nested_name, inner_type), arrow_field) in fields.iter().zip(arrow_fields.iter()) {
+                if arrow_field.name() != nested_name {
+                    return Err(Error::ArrowDeserialize(format!(
+                        "Nested field name mismatch: expected '{nested_name}', got '{}'",
+                        arrow_field.name()
+                    )));
+                }
+
+                let item_type = match arrow_field.data_type() {
+                    DataType::List(item) | DataType::LargeList(item) => item.data_type().clone(),
+                    other => {
+                        return Err(Error::ArrowDeserialize(format!(
+                            "Nested field '{nested_name}' expected List/LargeList datatype, got \
+                             {other:?}"
+                        )));
+                    }
+                };
+
+                tuple_types.push(inner_type.clone());
+                tuple_fields.push(Field::new(nested_name, item_type, inner_type.is_nullable()));
+            }
+
+            let tuple_data_type = DataType::Struct(tuple_fields.into());
+            return TypedBuilder::try_new(&Type::Tuple(tuple_types), &tuple_data_type);
         }
 
+        #[cfg(feature = "extended-types")]
+        if let Type::QBit { element_type, dimension } = type_ {
+            let DataType::FixedSizeList(_, size) = data_type else {
+                return Err(Error::ArrowDeserialize(format!(
+                    "Unexpected datatype for QBit: {data_type:?}",
+                )));
+            };
+            #[expect(clippy::cast_sign_loss)]
+            if *size as usize != *dimension {
+                return Err(Error::ArrowDeserialize(format!(
+                    "QBit dimension mismatch: type={dimension}, arrow={size}"
+                )));
+            }
+            return Ok(Self::List(TypedListBuilder::try_new(element_type, data_type)?));
+        }
+
+        #[cfg(feature = "extended-types")]
         if let Type::SimpleAggregateFunction { types, .. } = type_ {
             if let Some(inner) = types.first() {
                 return TypedBuilder::try_new(inner, data_type);
@@ -202,8 +239,44 @@ impl TypedBuilder {
             ));
         }
 
+        #[cfg(feature = "extended-types")]
         if let Type::AggregateFunction { .. } = type_ {
             return TypedBuilder::try_new(&Type::Binary, data_type);
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::Variant(_) = type_ {
+            return Ok(Self::Union(TypedUnionBuilder::try_new(data_type)?));
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::Dynamic { .. } = type_ {
+            return Ok(Self::Union(TypedUnionBuilder::try_new(data_type)?));
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::Time = type_ {
+            return Ok(Self::Time32(Time32SecondBuilder::with_capacity(ROWS)));
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::Time64(0..=3) = type_ {
+            return Ok(Self::Time64Ms(Time32MillisecondBuilder::with_capacity(ROWS)));
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::Time64(4..=6) = type_ {
+            return Ok(Self::Time64Mu(Time64MicrosecondBuilder::with_capacity(ROWS)));
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::Time64(7..=9) = type_ {
+            return Ok(Self::Time64Nano(Time64NanosecondBuilder::with_capacity(ROWS)));
+        }
+
+        #[cfg(feature = "extended-types")]
+        if let Type::BFloat16 = type_ {
+            return Ok(Self::Float32(PrimitiveBuilder::<Float32Type>::with_capacity(ROWS)));
         }
 
         if let Type::Map(key, value) = type_ {
@@ -211,6 +284,10 @@ impl TypedBuilder {
             let kbuilder = Box::new(TypedBuilder::try_new(key, kfield.data_type())?);
             let vbuilder = Box::new(TypedBuilder::try_new(value, vfield.data_type())?);
             return Ok(Self::Map((kbuilder, vbuilder)));
+        }
+
+        if matches!(type_, Type::Nothing) {
+            return Ok(Self::Null);
         }
 
         // Rest of the types
@@ -271,22 +348,6 @@ impl TypedBuilder {
                 TimestampNanosecondBuilder::with_capacity(ROWS)
                     .with_timezone_opt(tz_some.then_some(Arc::from(tz.name())))
             ),
-            Type::Time => (
-                Time32,
-                Time32SecondBuilder::with_capacity(ROWS)
-            ),
-            Type::Time64(0..=3) => (
-                Time64Ms,
-                Time32MillisecondBuilder::with_capacity(ROWS)
-            ),
-            Type::Time64(4..=6) => (
-                Time64Mu,
-                Time64MicrosecondBuilder::with_capacity(ROWS)
-            ),
-            Type::Time64(7..=9) => (
-                Time64Nano,
-                Time64NanosecondBuilder::with_capacity(ROWS)
-            ),
             // String, Binary, UUID, IPv4, IPv6
             Type::String => (
                 String, StringBuilder::with_capacity(ROWS, ROWS * 64)
@@ -341,10 +402,6 @@ impl TypedBuilder {
                 Enum16,
                 StringDictionaryBuilder::<Int16Type>::with_capacity(ROWS, p.len(), ROWS * p.len() * 4)
             ),
-            Type::BFloat16 => (
-                Float32,
-                PrimitiveBuilder::<Float32Type>::with_capacity(ROWS)
-            ),
         }))
     }
 }
@@ -356,6 +413,7 @@ impl std::fmt::Debug for TypedBuilder {
             Self::LowCardinality(l) => write!(f, "TypedBuilder::LowCardinality({l:?})"),
             Self::Map((k, v)) => write!(f, "TypedBuilder::Map({k:?}, {v:?})"),
             Self::Tuple(t) => write!(f, "TypedBuilder::Tuple({t:?})"),
+            Self::Union(u) => write!(f, "TypedBuilder::Union({u:?})"),
             Self::String(_) => write!(f, "TypedBuilder::String"),
             b => write!(f, "TypedBuilder::{}", b.as_ref()),
         }

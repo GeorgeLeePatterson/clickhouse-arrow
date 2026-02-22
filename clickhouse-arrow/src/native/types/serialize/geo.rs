@@ -5,6 +5,16 @@ use crate::{Result, Value};
 pub(crate) struct PointSerializer;
 
 impl Serializer for PointSerializer {
+    fn write_prefix_sync(
+        _type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        for _ in 0..2 {
+            Type::Float64.serialize_prefix(writer, state);
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         _type_: &Type,
         writer: &mut W,

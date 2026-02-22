@@ -22,6 +22,7 @@ use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
+#[expect(unused_macro_rules)] // Sync path no longer used
 macro_rules! primitive_bulk {
     ($reader:expr, $rows:expr, $buf:expr, $type:ty) => {{
         let byte_count = $rows * std::mem::size_of::<$type>();
@@ -87,7 +88,6 @@ macro_rules! primitive {
         }
     }};
 }
-pub(crate) use primitive;
 
 // NOTE: Some of these are unused and tbe bulk variation above is used. But useful to keep around
 #[expect(unused)]
@@ -185,7 +185,8 @@ pub(super) use primitive_async;
 /// let expected = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
 /// assert_eq!(array.as_ref(), expected.as_ref());
 /// ```
-pub(crate) async fn deserialize_async<R: ClickHouseRead>(
+#[expect(clippy::too_many_lines)]
+pub(crate) async fn deserialize<R: ClickHouseRead>(
     type_hint: &Type,
     builder: &mut TypedBuilder,
     reader: &mut R,
@@ -197,6 +198,7 @@ pub(crate) async fn deserialize_async<R: ClickHouseRead>(
 
     use crate::arrow::builder::TypedBuilder as B;
 
+    #[cfg(feature = "extended-types")]
     if matches!(type_hint.strip_null(), Type::BFloat16) {
         let B::Float32(float_builder) = builder else {
             return Err(Error::ArrowDeserialize(
@@ -336,7 +338,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Int8");
         let array = result.as_any().downcast_ref::<Int8Array>().unwrap();
@@ -358,7 +360,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Int8)");
         let array = result.as_any().downcast_ref::<Int8Array>().unwrap();
@@ -383,7 +385,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Int16");
         let array = result.as_any().downcast_ref::<Int16Array>().unwrap();
@@ -408,7 +410,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Int16)");
         let array = result.as_any().downcast_ref::<Int16Array>().unwrap();
@@ -433,7 +435,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Int32");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -458,7 +460,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Int32)");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
@@ -483,7 +485,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Int64");
         let array = result.as_any().downcast_ref::<Int64Array>().unwrap();
@@ -508,7 +510,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Int64)");
         let array = result.as_any().downcast_ref::<Int64Array>().unwrap();
@@ -530,7 +532,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize UInt8");
         let array = result.as_any().downcast_ref::<UInt8Array>().unwrap();
@@ -552,7 +554,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(UInt8)");
         let array = result.as_any().downcast_ref::<UInt8Array>().unwrap();
@@ -577,7 +579,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize UInt16");
         let array = result.as_any().downcast_ref::<UInt16Array>().unwrap();
@@ -602,7 +604,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(UInt16)");
         let array = result.as_any().downcast_ref::<UInt16Array>().unwrap();
@@ -627,7 +629,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize UInt32");
         let array = result.as_any().downcast_ref::<UInt32Array>().unwrap();
@@ -652,7 +654,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(UInt32)");
         let array = result.as_any().downcast_ref::<UInt32Array>().unwrap();
@@ -677,7 +679,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize UInt64");
         let array = result.as_any().downcast_ref::<UInt64Array>().unwrap();
@@ -702,7 +704,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(UInt64)");
         let array = result.as_any().downcast_ref::<UInt64Array>().unwrap();
@@ -729,7 +731,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Float32");
         let array = result.as_any().downcast_ref::<Float32Array>().unwrap();
@@ -756,7 +758,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Float32)");
         let array = result.as_any().downcast_ref::<Float32Array>().unwrap();
@@ -783,7 +785,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Float64");
         let array = result.as_any().downcast_ref::<Float64Array>().unwrap();
@@ -810,7 +812,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Float64)");
         let array = result.as_any().downcast_ref::<Float64Array>().unwrap();
@@ -835,7 +837,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Date");
         let array = result.as_any().downcast_ref::<Date32Array>().unwrap();
@@ -860,7 +862,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Date)");
         let array = result.as_any().downcast_ref::<Date32Array>().unwrap();
@@ -886,7 +888,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize DateTime");
         let array = result.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
@@ -915,7 +917,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(DateTime)");
         let array = result.as_any().downcast_ref::<TimestampSecondArray>().unwrap();
@@ -944,7 +946,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize DateTime64(3)");
         let array = result.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap();
@@ -973,7 +975,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(DateTime64(3))");
         let array = result.as_any().downcast_ref::<TimestampMillisecondArray>().unwrap();
@@ -1002,7 +1004,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize DateTime64(6)");
         let array = result.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
@@ -1031,7 +1033,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(DateTime64(6))");
         let array = result.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
@@ -1060,7 +1062,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize DateTime64(9)");
         let array = result.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
@@ -1089,7 +1091,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(DateTime64(9))");
         let array = result.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
@@ -1117,7 +1119,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Decimal32");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -1146,7 +1148,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Decimal32)");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -1176,7 +1178,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Decimal64");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -1205,7 +1207,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Decimal64)");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -1235,7 +1237,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Decimal128");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -1264,7 +1266,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Decimal128)");
         let array = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -1299,7 +1301,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Decimal256");
         let array = result.as_any().downcast_ref::<Decimal256Array>().unwrap();
@@ -1348,7 +1350,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Nullable(Decimal256)");
         let array = result.as_any().downcast_ref::<Decimal256Array>().unwrap();
@@ -1374,7 +1376,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
 
         let result =
-            deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
+            deserialize(&type_hint, &mut builder, &mut reader, rows, &null_mask, &mut vec![])
                 .await
                 .expect("Failed to deserialize Int32 with zero rows");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();

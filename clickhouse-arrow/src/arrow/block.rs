@@ -6,20 +6,24 @@ use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(feature = "extended-types")]
+use super::ArrowSchemaHint;
 use super::builder::TypedBuilder;
-use super::deserialize::{ArrowDeserializerState, ClickHouseArrowDeserializer};
+use super::deserialize::{ArrowDeserializerState, ArrowFieldCtx, ClickHouseArrowDeserializer};
 use super::serialize::ClickHouseArrowSerializer;
 use super::types::arrow_to_ch_type;
 pub use super::types::{
     LIST_ITEM_FIELD_NAME, MAP_FIELD_NAME, STRUCT_KEY_FIELD_NAME, STRUCT_VALUE_FIELD_NAME,
-    TUPLE_FIELD_NAME_PREFIX,
+    TUPLE_FIELD_NAME_PREFIX, ch_to_arrow_type,
 };
 use crate::deserialize::ClickHouseNativeDeserializer;
 use crate::flags::debug_arrow;
+#[cfg(feature = "extended-types")]
+use crate::formats::DynamicPrefixState;
 use crate::formats::protocol_data::ProtocolData;
 use crate::formats::{DeserializerState, SerializerState};
 use crate::geo::normalize_geo_type;
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::block_info::BlockInfo;
 use crate::native::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::prelude::*;
@@ -112,14 +116,22 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                 writer.write_u8(0).await?;
             }
 
+            #[cfg(feature = "extended-types")]
+            if matches!(type_.strip_null(), Type::Dynamic { .. }) {
+                drop(state.take_dynamic_prefix());
+                drop(
+                    DynamicPrefixState::from_field(field, Some(options))?
+                        .and_then(|p| state.replace_dynamic_prefix(p)),
+                );
+            }
+
+            type_.serialize_prefix_async(writer, &mut state).await?;
             if column.is_empty() {
                 if debug_arrow() {
                     warn!(name, "column {i} empty");
                 }
                 continue;
             }
-
-            type_.serialize_prefix_async(writer, &mut state).await?;
             type_.serialize_async(writer, column, data_type, &mut state).await?;
         }
 
@@ -180,14 +192,22 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                 writer.put_u8(0);
             }
 
+            #[cfg(feature = "extended-types")]
+            if matches!(type_.strip_null(), Type::Dynamic { .. }) {
+                drop(state.take_dynamic_prefix());
+                drop(
+                    DynamicPrefixState::from_field(field, Some(options))?
+                        .and_then(|p| state.replace_dynamic_prefix(p)),
+                );
+            }
+
+            type_.serialize_prefix(writer, &mut state);
             if column.is_empty() {
                 if debug_arrow() {
                     warn!(name, "column {i} empty");
                 }
                 continue;
             }
-
-            type_.serialize_prefix(writer, &mut state);
             type_.serialize(writer, column, data_type, &mut state)?;
         }
 
@@ -195,7 +215,7 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
     }
 
     #[instrument(level = "trace", name = "clickhouse.deserialize.arrow" skip_all)]
-    async fn read_async<R: ClickHouseRead>(
+    async fn read<R: ClickHouseRead>(
         reader: &mut R,
         revision: u64,
         options: ArrowOptions,
@@ -215,16 +235,40 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             debug!(columns, rows, "Deserializing arrow");
         }
 
-        let mut prefix_state = DeserializerState::default();
-
-        let deser = state.deserializer();
-        let _ = deser.with_capacity(columns, rows);
+        let _ = state.format_state().with_capacity(columns, rows);
 
         for i in 0..columns {
             let name = reader.read_utf8_string().await?;
             let type_name = reader.read_utf8_string().await?;
             let internal_type = Type::from_str(&type_name)?;
-            let (arrow_type, is_nullable) = internal_type.arrow_type(Some(options))?;
+
+            let has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
+                reader.read_u8().await? != 0
+            } else {
+                false
+            };
+
+            if has_custom {
+                internal_type.deserialize_custom_serialization_prefix(reader).await?;
+            }
+
+            internal_type.deserialize_prefix(reader, state).await?;
+
+            // Pull out dynamic prefix if available and create ArrowSchemaHint
+            #[cfg(feature = "extended-types")]
+            let (mut schema_hints, dynamic_prefix_version) = {
+                let prefix = state.take_dynamic_prefix();
+                let version = prefix.as_ref().map(|p| p.serialization_version).unwrap_or_default();
+                let hints = prefix.map(|p| ArrowSchemaHint { dynamic_types: p.flattened_types });
+                (hints, version)
+            };
+            #[cfg(feature = "extended-types")]
+            let variant_prefix = state.take_variant_prefix();
+            #[cfg(not(feature = "extended-types"))]
+            let schema_hints = None;
+
+            let (arrow_type, is_nullable) =
+                ch_to_arrow_type(&internal_type, Some(options), schema_hints.as_ref())?;
 
             // Verify the resulting type against the arrow type, otherwise the builders will fail
             let type_hint =
@@ -235,14 +279,10 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                 trace!(?field, ?type_hint, ?options, "deserializing column {i}");
             }
 
-            let _has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                reader.read_u8().await? != 0
-            } else {
-                false
-            };
-
             let array = if rows > 0 {
+                let deser = state.format_state();
                 let dt = field.data_type();
+
                 let builders = &mut deser.builders;
                 let builder = if let Some(b) = builders.get_mut(i) {
                     b
@@ -251,93 +291,30 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                     builders.last_mut().unwrap()
                 };
 
-                let row_buffer = &mut deser.buffer;
-                type_hint.deserialize_prefix_async(reader, &mut prefix_state).await?;
+                let mut ctx = ArrowFieldCtx {
+                    row_buffer: &mut deser.buffer,
+                    #[cfg(feature = "extended-types")]
+                    dynamic_prefix: schema_hints.take().map(|h| DynamicPrefixState {
+                        serialization_version: dynamic_prefix_version,
+                        flattened_types:       h.dynamic_types,
+                    }),
+                    #[cfg(feature = "extended-types")]
+                    variant_prefix,
+                };
+
                 type_hint
-                    .deserialize_arrow_async(builder, reader, dt, rows, &[], row_buffer)
+                    .deserialize_arrow(builder, reader, dt, rows, &[], &mut ctx)
                     .await
                     .inspect_err(|error| error!(?error, ?field, "col {i} deserialize"))?
             } else {
                 new_empty_array(field.data_type())
             };
 
+            let deser = state.format_state();
             let _ = deser.push_array(array).push_field(Arc::new(field));
         }
 
-        let (fields, arrays) = state.deserializer().take();
-        Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)?)
-    }
-
-    #[instrument(level = "trace", name = "clickhouse.deserialize.arrow" skip_all)]
-    fn read<R: ClickHouseBytesRead>(
-        reader: &mut R,
-        revision: u64,
-        options: ArrowOptions,
-        state: &mut DeserializerState<ArrowDeserializerState>,
-    ) -> Result<RecordBatch> {
-        let _ = BlockInfo::read(reader).inspect_err(|error| {
-            error!(?error, "failed to read block info");
-        })?;
-
-        #[allow(clippy::cast_possible_truncation)]
-        let (columns, rows) =
-            (reader.try_get_var_uint()? as usize, reader.try_get_var_uint()? as usize);
-
-        if columns == 0 && rows == 0 {
-            return Ok(RecordBatch::new_empty(Arc::new(Schema::empty())));
-        } else if debug_arrow() {
-            debug!(columns, rows, "Deserializing arrow");
-        }
-
-        let deser = state.deserializer();
-        let _ = deser.with_capacity(columns, rows);
-
-        for i in 0..columns {
-            let name = reader.try_get_string()?;
-            let name = String::from_utf8_lossy(&name);
-            let type_name = reader.try_get_string()?;
-            let internal_type = Type::from_str(String::from_utf8_lossy(&type_name).as_ref())?;
-            let (arrow_type, is_nullable) = internal_type.arrow_type(Some(options))?;
-
-            // Verify the resulting type against the arrow type, otherwise the builders will fail
-            let type_hint =
-                super::types::normalize_type(&internal_type, &arrow_type).unwrap_or(internal_type);
-            let field = Field::new(name.as_ref(), arrow_type, is_nullable);
-
-            if debug_arrow() {
-                trace!(?field, ?type_hint, ?options, "deserializing column {i}");
-            }
-
-            // TODO: Ignored - pass this to prefix deserialization
-            let _has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                reader.try_get_u8()? != 0
-            } else {
-                false
-            };
-
-            let array = if rows > 0 {
-                let dt = field.data_type();
-
-                let builders = &mut deser.builders;
-                let builder = if let Some(b) = builders.get_mut(i) {
-                    b
-                } else {
-                    builders.push(TypedBuilder::try_new(&type_hint, dt)?);
-                    builders.last_mut().unwrap()
-                };
-
-                type_hint.deserialize_prefix(reader)?;
-                type_hint
-                    .deserialize_arrow(builder, reader, dt, rows, &[], &mut deser.buffer)
-                    .inspect_err(|error| error!(?error, ?type_hint, ?field, "deserialize {i}"))?
-            } else {
-                new_empty_array(field.data_type())
-            };
-
-            let _ = deser.push_array(array).push_field(Arc::new(field));
-        }
-
-        let (fields, arrays) = deser.take();
+        let (fields, arrays) = state.format_state().take();
         Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)?)
     }
 }
@@ -370,6 +347,20 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn dynamic_mode_guards_require_strict_mode() {
+        let dynamic_type = Type::Dynamic { max_types: 8 };
+        let strict = ArrowOptions::default();
+        assert!(ensure_dynamic_mode_for_write(&strict, &dynamic_type).is_ok());
+
+        let permissive =
+            ArrowOptions { disabled_strict_dynamic_mode: true, ..ArrowOptions::default() };
+        assert!(matches!(
+            ensure_dynamic_mode_for_write(&permissive, &dynamic_type),
+            Err(Error::ArrowSerialize(msg)) if msg.contains("strict mode only")
+        ));
+    }
+
     #[tokio::test]
     async fn test_serialize_record_batch() {
         let batch = create_test_batch();
@@ -398,16 +389,12 @@ mod tests {
             .unwrap();
 
         // Deserialize back
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         // Verify schema and data
         assert_eq!(deserialized.schema(), batch.schema());
@@ -442,7 +429,7 @@ mod tests {
 
         let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
-        let result = RecordBatch::read_async(
+        let result = RecordBatch::read(
             &mut reader,
             DBMS_TCP_PROTOCOL_VERSION,
             ArrowOptions::default(),
@@ -468,7 +455,7 @@ mod tests {
 
         let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
-        let result = RecordBatch::read_async(
+        let result = RecordBatch::read(
             &mut reader,
             DBMS_TCP_PROTOCOL_VERSION,
             ArrowOptions::default(),
@@ -490,7 +477,7 @@ mod tests {
         // Incomplete: missing row count and metadata
         let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
-        let result = RecordBatch::read_async(
+        let result = RecordBatch::read(
             &mut reader,
             DBMS_TCP_PROTOCOL_VERSION,
             ArrowOptions::default(),
@@ -522,16 +509,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -571,16 +554,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -636,16 +615,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -682,17 +657,13 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .inspect_err(|error| eprintln!("Error deserializing RecordBatch: {error:?}"))
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .inspect_err(|error| eprintln!("Error deserializing RecordBatch: {error:?}"))
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 0);
@@ -717,16 +688,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         let schema = deserialized.schema();
         assert!(schema.fields().is_empty());
@@ -753,16 +720,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -793,16 +756,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -831,16 +790,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -873,16 +828,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -917,16 +868,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -964,16 +911,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -1007,16 +950,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         let expected_schema = Arc::new(Schema::new(vec![Field::new(
             "status",
@@ -1066,16 +1005,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         // Assert basics
         assert_eq!(deserialized.schema(), schema);
@@ -1130,16 +1065,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         let expected_schema = Arc::new(Schema::new(vec![Field::new(
             "status",
@@ -1179,16 +1110,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         let expected_schema = Arc::new(Schema::new(vec![Field::new(
             "status",
@@ -1229,16 +1156,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -1282,16 +1205,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -1324,16 +1243,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
 
@@ -1363,16 +1278,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 2);
@@ -1404,16 +1315,12 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 3);
@@ -1495,16 +1402,12 @@ mod tests {
         ];
         assert_eq!(output, expected);
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(writer.into_inner());
-        let deserialized = RecordBatch::read_async(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            arrow_options,
-            &mut state,
-        )
-        .await
-        .unwrap();
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
         assert_eq!(deserialized.num_rows(), 5);
@@ -1587,7 +1490,7 @@ mod tests_sync {
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
         // Deserialize back
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1695,7 +1598,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1736,7 +1639,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1792,7 +1695,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1829,7 +1732,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1855,7 +1758,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1885,7 +1788,7 @@ mod tests_sync {
             .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1916,7 +1819,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1945,7 +1848,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -1978,7 +1881,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2013,7 +1916,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2051,7 +1954,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2085,7 +1988,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2138,7 +2041,7 @@ mod tests_sync {
             .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2196,7 +2099,7 @@ mod tests_sync {
             .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
             .unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2236,7 +2139,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2277,7 +2180,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2321,7 +2224,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2354,7 +2257,7 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
@@ -2370,8 +2273,8 @@ mod tests_sync {
 
     /// Tests round-trip serialization and deserialization of a `RecordBatch` with non-UTF-8 Binary
     /// data.
-    #[test]
-    fn test_round_trip_non_utf8_binary() {
+    #[tokio::test]
+    async fn test_round_trip_non_utf8_binary() {
         let schema = Arc::new(Schema::new(vec![Field::new("data", DataType::Binary, false)]));
         let batch =
             RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(BinaryArray::from_vec(vec![
@@ -2384,10 +2287,11 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
                 .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
@@ -2401,8 +2305,8 @@ mod tests_sync {
 
     /// Tests round-trip serialization and deserialization of a `RecordBatch` with max/min Int32
     /// values.
-    #[test]
-    fn test_round_trip_max_min_int32() {
+    #[tokio::test]
+    async fn test_round_trip_max_min_int32() {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
         let batch =
             RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![
@@ -2416,10 +2320,11 @@ mod tests_sync {
         let mut buffer = Vec::new();
         batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
                 .unwrap();
 
         assert_eq!(deserialized.schema(), schema);
@@ -2457,8 +2362,8 @@ mod tests_sync {
     }
 
     /// Test low cardinality nullable string round trip
-    #[test]
-    fn test_low_cardinality_nullable() {
+    #[tokio::test]
+    async fn test_low_cardinality_nullable() {
         let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
         let schema = Arc::new(Schema::new(vec![Field::new(
             "low_cardinality_nullable_string_col",
@@ -2501,10 +2406,11 @@ mod tests_sync {
         ];
         assert_eq!(output, expected);
 
-        let mut state = DeserializerState::default().with_arrow_options(arrow_options);
+        let mut state = DeserializerState::default();
         let mut reader = Cursor::new(writer);
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
                 .unwrap();
 
         assert_eq!(deserialized.schema(), schema);

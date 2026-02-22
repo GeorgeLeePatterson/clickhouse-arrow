@@ -10,4 +10,5 @@ pub mod utils;
 // Re-exports
 pub use arrow;
 pub(crate) use deserialize::ArrowDeserializerState;
+pub use schema::{ArrowSchemaHint, ArrowSchemaHints};
 pub use types::ch_to_arrow_type;

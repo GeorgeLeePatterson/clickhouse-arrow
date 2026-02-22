@@ -7,22 +7,25 @@ use crate::{Error, Result, Value};
 pub(crate) struct MapSerializer;
 
 impl Serializer for MapSerializer {
+    fn write_prefix_sync(
+        type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        if let Type::Map(k, v) = type_ {
+            super::super::map::normalize_map_type(k, v).serialize_prefix(writer, state);
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         type_: &Type,
         writer: &mut W,
         state: &mut SerializerState,
     ) -> Result<()> {
-        match type_ {
-            Type::Map(key, value) => {
-                let nested =
-                    Type::Array(Box::new(Type::Tuple(vec![(**key).clone(), (**value).clone()])));
-                nested.serialize_prefix_async(writer, state).await?;
-            }
-            _ => {
-                return Err(Error::SerializeError(format!(
-                    "MapSerializer called with non-map type: {type_:?}"
-                )));
-            }
+        if let Type::Map(k, v) = type_ {
+            super::super::map::normalize_map_type(k, v)
+                .serialize_prefix_async(writer, state)
+                .await?;
         }
         Ok(())
     }

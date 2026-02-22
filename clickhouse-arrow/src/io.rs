@@ -259,13 +259,11 @@ mod tests {
 
     struct PartialVectoredWriter {
         max_chunk: usize,
-        out: Vec<u8>,
+        out:       Vec<u8>,
     }
 
     impl PartialVectoredWriter {
-        fn new(max_chunk: usize) -> Self {
-            Self { max_chunk, out: Vec::new() }
-        }
+        fn new(max_chunk: usize) -> Self { Self { max_chunk, out: Vec::new() } }
     }
 
     impl AsyncWrite for PartialVectoredWriter {
@@ -302,9 +300,7 @@ mod tests {
             Poll::Ready(Ok(written))
         }
 
-        fn is_write_vectored(&self) -> bool {
-            true
-        }
+        fn is_write_vectored(&self) -> bool { true }
 
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))

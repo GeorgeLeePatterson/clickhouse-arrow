@@ -7,6 +7,8 @@ pub use arrow::ArrowFormat;
 pub use native::NativeFormat;
 
 use crate::ArrowOptions;
+#[cfg(feature = "extended-types")]
+use crate::Type;
 
 /// Marker trait for various client formats.
 ///
@@ -59,29 +61,67 @@ pub(crate) mod sealed {
     }
 }
 
+#[cfg(feature = "extended-types")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DynamicPrefixState {
+    pub(crate) serialization_version: u64,
+    pub(crate) flattened_types:       Vec<Type>,
+}
+
+#[cfg(feature = "extended-types")]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub(crate) struct VariantPrefixState {
+    pub(crate) discriminator_mode: u8,
+}
+
 /// Context maintained during deserialization
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct DeserializerState<T: Default = ()> {
-    pub(crate) options:      Option<ArrowOptions>,
-    pub(crate) deserializer: T,
+    pub(crate) format_state: T,
+    #[cfg(feature = "extended-types")]
+    dynamic_prefix:          Option<DynamicPrefixState>,
+    #[cfg(feature = "extended-types")]
+    variant_prefix:          Option<VariantPrefixState>,
 }
 
 impl<T: Default> DeserializerState<T> {
     #[must_use]
-    pub(crate) fn with_arrow_options(mut self, options: ArrowOptions) -> Self {
-        self.options = Some(options);
-        self
+    pub(crate) fn format_state(&mut self) -> &mut T { &mut self.format_state }
+
+    #[cfg(feature = "extended-types")]
+    pub(crate) fn replace_dynamic_prefix(
+        &mut self,
+        dynamic_prefix: DynamicPrefixState,
+    ) -> Option<DynamicPrefixState> {
+        self.dynamic_prefix.replace(dynamic_prefix)
     }
 
-    #[must_use]
-    pub(crate) fn deserializer(&mut self) -> &mut T { &mut self.deserializer }
+    #[cfg(feature = "extended-types")]
+    pub(crate) fn take_dynamic_prefix(&mut self) -> Option<DynamicPrefixState> {
+        self.dynamic_prefix.take()
+    }
+
+    #[cfg(feature = "extended-types")]
+    pub(crate) fn replace_variant_prefix(
+        &mut self,
+        variant_prefix: VariantPrefixState,
+    ) -> Option<VariantPrefixState> {
+        self.variant_prefix.replace(variant_prefix)
+    }
+
+    #[cfg(feature = "extended-types")]
+    pub(crate) fn take_variant_prefix(&mut self) -> Option<VariantPrefixState> {
+        self.variant_prefix.take()
+    }
 }
 
 /// Context maintained during serialization
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct SerializerState<T: Default = ()> {
     pub(crate) options:    Option<ArrowOptions>,
     pub(crate) serializer: T,
+    #[cfg(feature = "extended-types")]
+    dynamic_prefix:        Option<DynamicPrefixState>,
 }
 
 impl<T: Default> SerializerState<T> {
@@ -94,4 +134,17 @@ impl<T: Default> SerializerState<T> {
     #[expect(unused)]
     #[must_use]
     pub(crate) fn serializer(&mut self) -> &mut T { &mut self.serializer }
+
+    #[cfg(feature = "extended-types")]
+    pub(crate) fn replace_dynamic_prefix(
+        &mut self,
+        dynamic_prefix: DynamicPrefixState,
+    ) -> Option<DynamicPrefixState> {
+        self.dynamic_prefix.replace(dynamic_prefix)
+    }
+
+    #[cfg(feature = "extended-types")]
+    pub(crate) fn take_dynamic_prefix(&mut self) -> Option<DynamicPrefixState> {
+        self.dynamic_prefix.take()
+    }
 }

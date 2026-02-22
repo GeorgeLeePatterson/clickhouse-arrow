@@ -1,11 +1,21 @@
+#[cfg(feature = "extended-types")]
+mod aggregate_function;
 mod binary;
+#[cfg(feature = "extended-types")]
+mod dynamic;
 mod enums;
 mod list;
 mod low_cardinality;
 mod map;
+#[cfg(feature = "extended-types")]
+mod nested;
 mod null;
 mod primitive;
+#[cfg(feature = "extended-types")]
+mod qbit;
 mod tuple;
+#[cfg(feature = "extended-types")]
+mod variant;
 
 use arrow::array::*;
 use arrow::datatypes::*;
@@ -108,7 +118,7 @@ impl ClickHouseArrowSerializer for Type {
         let base_type = self.strip_null();
 
         if self.is_nullable() {
-            null::serialize_nulls_async(self, writer, column, state).await?;
+            null::serialize_nulls_async(self, writer, column).await?;
         }
 
         match base_type {
@@ -135,22 +145,22 @@ impl ClickHouseArrowSerializer for Type {
             | Type::Date32
             | Type::DateTime(_)
             | Type::DateTime64(_, _)
-            | Type::BFloat16
-            | Type::Time
-            | Type::Time64(_)
             | Type::Ipv4
             | Type::Ipv6
             | Type::Uuid => {
                 primitive::serialize_async(self, writer, column, data_type).await?;
             }
+            #[cfg(feature = "extended-types")]
+            Type::BFloat16 | Type::Time | Type::Time64(_) => {
+                primitive::serialize_async(self, writer, column, data_type).await?;
+            }
+            Type::Nothing => {}
             // Strings/Binary
             Type::String
             | Type::Binary
             | Type::FixedSizedString(_)
             | Type::FixedSizedBinary(_)
-            | Type::Object => {
-                binary::serialize_async(self, writer, column).await?;
-            }
+            | Type::Object => binary::serialize_async(self, writer, column).await?,
             // Dictionary-Like
             Type::Enum8(_) | Type::Enum16(_) => {
                 enums::serialize_async(self, writer, column).await?;
@@ -172,25 +182,30 @@ impl ClickHouseArrowSerializer for Type {
             Type::Tuple(_) => {
                 Box::pin(tuple::serialize_async(self, writer, column, state)).await?;
             }
-            Type::Nested(fields) => {
-                let nested_tuple = Type::Tuple(
-                    fields.iter().map(|(_, type_)| Type::Array(Box::new(type_.clone()))).collect(),
-                );
-                Box::pin(nested_tuple.serialize_async(writer, column, data_type, state)).await?;
+            #[cfg(feature = "extended-types")]
+            Type::Nested(_) => {
+                Box::pin(nested::serialize_async(self, writer, column, data_type, state)).await?;
             }
+            #[cfg(feature = "extended-types")]
+            Type::AggregateFunction { .. } => {
+                aggregate_function::serialize_async(self, writer, column).await?;
+            }
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
-                if let Some(inner) = types.first() {
-                    Box::pin(inner.serialize_async(writer, column, data_type, state)).await?;
-                } else {
+                let Some(inner) = types.first() else {
                     return Err(crate::Error::ArrowSerialize(
                         "SimpleAggregateFunction has no inner type".to_string(),
                     ));
-                }
+                };
+                Box::pin(inner.serialize_async(writer, column, data_type, state)).await?;
             }
-            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                return Err(crate::Error::ArrowSerialize(format!(
-                    "Arrow serialization is not implemented for type '{self}'"
-                )));
+            #[cfg(feature = "extended-types")]
+            Type::QBit { .. } => qbit::serialize_async(self, writer, column).await?,
+            #[cfg(feature = "extended-types")]
+            Type::Variant(_) => variant::serialize_async(self, writer, column, state).await?,
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { .. } => {
+                dynamic::serialize_async(self, writer, column, data_type, state).await?
             }
             Type::Ring | Type::Polygon | Type::Point | Type::MultiPolygon => {
                 // Type should be converted earlier, if not this is a fallback
@@ -217,7 +232,7 @@ impl ClickHouseArrowSerializer for Type {
         let base_type = self.strip_null();
 
         if self.is_nullable() {
-            null::serialize_nulls(self, writer, column, state);
+            null::serialize_nulls(self, writer, column);
         }
 
         match base_type {
@@ -244,22 +259,22 @@ impl ClickHouseArrowSerializer for Type {
             | Type::Date32
             | Type::DateTime(_)
             | Type::DateTime64(_, _)
-            | Type::BFloat16
-            | Type::Time
-            | Type::Time64(_)
             | Type::Ipv4
             | Type::Ipv6
             | Type::Uuid => {
                 primitive::serialize(self, writer, column, data_type)?;
             }
+            #[cfg(feature = "extended-types")]
+            Type::BFloat16 | Type::Time | Type::Time64(_) => {
+                primitive::serialize(self, writer, column, data_type)?;
+            }
+            Type::Nothing => {}
             // Strings/Binary
             Type::String
             | Type::Binary
             | Type::FixedSizedString(_)
             | Type::FixedSizedBinary(_)
-            | Type::Object => {
-                binary::serialize(self, writer, column)?;
-            }
+            | Type::Object => binary::serialize(self, writer, column)?,
             // Dictionary-Like
             Type::Enum8(_) | Type::Enum16(_) => enums::serialize(self, writer, column)?,
             // LowCardinality
@@ -267,36 +282,35 @@ impl ClickHouseArrowSerializer for Type {
                 low_cardinality::serialize(self, writer, column, data_type, state)?;
             }
             // Lists
-            Type::Array(_) => {
-                list::serialize(self, writer, column, data_type, state)?;
-            }
+            Type::Array(_) => list::serialize(self, writer, column, data_type, state)?,
             // Maps
-            Type::Map(_, _) => {
-                map::serialize(self, writer, column, data_type, state)?;
-            }
+            Type::Map(_, _) => map::serialize(self, writer, column, data_type, state)?,
             // Tuples
             Type::Tuple(_) => {
                 tuple::serialize(self, writer, column, state)?;
             }
-            Type::Nested(fields) => {
-                let nested_tuple = Type::Tuple(
-                    fields.iter().map(|(_, type_)| Type::Array(Box::new(type_.clone()))).collect(),
-                );
-                nested_tuple.serialize(writer, column, data_type, state)?;
+            #[cfg(feature = "extended-types")]
+            Type::Nested(_) => {
+                nested::serialize(self, writer, column, data_type, state)?;
             }
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
-                if let Some(inner) = types.first() {
-                    inner.serialize(writer, column, data_type, state)?;
-                } else {
+                let Some(inner) = types.first() else {
                     return Err(crate::Error::ArrowSerialize(
                         "SimpleAggregateFunction has no inner type".to_string(),
                     ));
-                }
+                };
+                inner.serialize(writer, column, data_type, state)?;
             }
-            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                return Err(crate::Error::ArrowSerialize(format!(
-                    "Arrow serialization is not implemented for type '{self}'"
-                )));
+            #[cfg(feature = "extended-types")]
+            Type::QBit { .. } => qbit::serialize(self, writer, column)?,
+            #[cfg(feature = "extended-types")]
+            Type::Variant(_) => variant::serialize(self, writer, column, state)?,
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { .. } => dynamic::serialize(self, writer, column, data_type, state)?,
+            #[cfg(feature = "extended-types")]
+            Type::AggregateFunction { .. } => {
+                aggregate_function::serialize(self, writer, column)?;
             }
             Type::Ring | Type::Polygon | Type::Point | Type::MultiPolygon => {
                 // Type should be converted earlier, if not this is a fallback
@@ -341,14 +355,11 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-            ]
-        );
+        assert_eq!(output, vec![
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+        ]);
     }
 
     /// Tests serialization of `Nullable(Int32)` array with nulls.
@@ -364,16 +375,13 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                // Null mask: [0, 1, 0] (0=non-null, 1=null)
-                0, 1, 0, // Values: [1, 0, 3]
-                1, 0, 0, 0, // 1
-                0, 0, 0, 0, // null
-                3, 0, 0, 0, // 3
-            ]
-        );
+        assert_eq!(output, vec![
+            // Null mask: [0, 1, 0] (0=non-null, 1=null)
+            0, 1, 0, // Values: [1, 0, 3]
+            1, 0, 0, 0, // 1
+            0, 0, 0, 0, // null
+            3, 0, 0, 0, // 3
+        ]);
     }
 
     /// Tests serialization of `String` array.
@@ -389,14 +397,11 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                5, b'h', b'e', b'l', b'l', b'o', // "hello"
-                0,    // ""
-                5, b'w', b'o', b'r', b'l', b'd', // "world"
-            ]
-        );
+        assert_eq!(output, vec![
+            5, b'h', b'e', b'l', b'l', b'o', // "hello"
+            0,    // ""
+            5, b'w', b'o', b'r', b'l', b'd', // "world"
+        ]);
     }
 
     /// Tests serialization of `Nullable(String)` array with nulls.
@@ -412,16 +417,13 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                // Null mask: [0, 1, 0]
-                0, 1, 0, // Values: ["a", "", "c"]
-                1, b'a', // "a"
-                0,    // null (empty string)
-                1, b'c', // "c"
-            ]
-        );
+        assert_eq!(output, vec![
+            // Null mask: [0, 1, 0]
+            0, 1, 0, // Values: ["a", "", "c"]
+            1, b'a', // "a"
+            0,    // null (empty string)
+            1, b'c', // "c"
+        ]);
     }
 
     /// Tests serialization of `Array(Int32)` with non-nullable inner values.
@@ -441,21 +443,18 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                // Offsets: [2, 3, 5] (skipping first 0)
-                2, 0, 0, 0, 0, 0, 0, 0, // 2
-                3, 0, 0, 0, 0, 0, 0, 0, // 3
-                5, 0, 0, 0, 0, 0, 0, 0, // 5
-                // Values: [1, 2, 3, 4, 5]
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-                4, 0, 0, 0, // 4
-                5, 0, 0, 0, // 5
-            ]
-        );
+        assert_eq!(output, vec![
+            // Offsets: [2, 3, 5] (skipping first 0)
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            3, 0, 0, 0, 0, 0, 0, 0, // 3
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            // Values: [1, 2, 3, 4, 5]
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ]);
     }
 
     /// Tests serialization of `Nullable(Array(Int32))` with null arrays.
@@ -477,21 +476,18 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                // Null mask: [] (0=non-null, 1=null)
-                2, 0, 0, 0, 0, 0, 0, 0, // 2
-                2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
-                5, 0, 0, 0, 0, 0, 0, 0, // 5
-                // Values: [1, 2, 3, 4, 5]
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-                4, 0, 0, 0, // 4
-                5, 0, 0, 0, // 5
-            ]
-        );
+        assert_eq!(output, vec![
+            // Null mask: [] (0=non-null, 1=null)
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            // Values: [1, 2, 3, 4, 5]
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ]);
     }
 
     /// Tests serialization of `Map(String, Int32)` with non-nullable key-value pairs.
@@ -523,27 +519,24 @@ mod tests {
             .unwrap();
 
         let output = buffer.into_inner();
-        assert_eq!(
-            output,
-            vec![
-                // Offsets: [2, 3, 5] (skipping first 0)
-                2, 0, 0, 0, 0, 0, 0, 0, // 2
-                3, 0, 0, 0, 0, 0, 0, 0, // 3
-                5, 0, 0, 0, 0, 0, 0, 0, // 5
-                // Keys: ["a", "b", "c", "d", "e"]
-                1, b'a', // "a"
-                1, b'b', // "b"
-                1, b'c', // "c"
-                1, b'd', // "d"
-                1, b'e', // "e"
-                // Values: [1, 2, 3, 4, 5]
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-                4, 0, 0, 0, // 4
-                5, 0, 0, 0, // 5
-            ]
-        );
+        assert_eq!(output, vec![
+            // Offsets: [2, 3, 5] (skipping first 0)
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            3, 0, 0, 0, 0, 0, 0, 0, // 3
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            // Keys: ["a", "b", "c", "d", "e"]
+            1, b'a', // "a"
+            1, b'b', // "b"
+            1, b'c', // "c"
+            1, b'd', // "d"
+            1, b'e', // "e"
+            // Values: [1, 2, 3, 4, 5]
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ]);
     }
 
     /// Tests serialization of `Int32` array with zero rows.
@@ -860,14 +853,11 @@ mod tests_sync {
 
         Type::Int32.serialize(&mut buffer, &column, &DataType::Int32, &mut state).unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-            ]
-        );
+        assert_eq!(buffer, vec![
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+        ]);
     }
 
     /// Tests serialization of `Nullable(Int32)` array with nulls.
@@ -881,16 +871,13 @@ mod tests_sync {
             .serialize(&mut buffer, &column, &DataType::Int32, &mut state)
             .unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                // Null mask: [0, 1, 0] (0=non-null, 1=null)
-                0, 1, 0, // Values: [1, 0, 3]
-                1, 0, 0, 0, // 1
-                0, 0, 0, 0, // null
-                3, 0, 0, 0, // 3
-            ]
-        );
+        assert_eq!(buffer, vec![
+            // Null mask: [0, 1, 0] (0=non-null, 1=null)
+            0, 1, 0, // Values: [1, 0, 3]
+            1, 0, 0, 0, // 1
+            0, 0, 0, 0, // null
+            3, 0, 0, 0, // 3
+        ]);
     }
 
     /// Tests serialization of `String` array.
@@ -902,14 +889,11 @@ mod tests_sync {
 
         Type::String.serialize(&mut buffer, &column, &DataType::Utf8, &mut state).unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                5, b'h', b'e', b'l', b'l', b'o', // "hello"
-                0,    // ""
-                5, b'w', b'o', b'r', b'l', b'd', // "world"
-            ]
-        );
+        assert_eq!(buffer, vec![
+            5, b'h', b'e', b'l', b'l', b'o', // "hello"
+            0,    // ""
+            5, b'w', b'o', b'r', b'l', b'd', // "world"
+        ]);
     }
 
     /// Tests serialization of `Nullable(String)` array with nulls.
@@ -923,16 +907,13 @@ mod tests_sync {
             .serialize(&mut buffer, &column, &DataType::Utf8, &mut state)
             .unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                // Null mask: [0, 1, 0]
-                0, 1, 0, // Values: ["a", "", "c"]
-                1, b'a', // "a"
-                0,    // null (empty string)
-                1, b'c', // "c"
-            ]
-        );
+        assert_eq!(buffer, vec![
+            // Null mask: [0, 1, 0]
+            0, 1, 0, // Values: ["a", "", "c"]
+            1, b'a', // "a"
+            0,    // null (empty string)
+            1, b'c', // "c"
+        ]);
     }
 
     /// Tests serialization of `Array(Int32)` with non-nullable inner values.
@@ -950,21 +931,18 @@ mod tests_sync {
             .serialize(&mut buffer, &column, &DataType::List(inner_field), &mut state)
             .unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                // Offsets: [2, 3, 5] (skipping first 0)
-                2, 0, 0, 0, 0, 0, 0, 0, // 2
-                3, 0, 0, 0, 0, 0, 0, 0, // 3
-                5, 0, 0, 0, 0, 0, 0, 0, // 5
-                // Values: [1, 2, 3, 4, 5]
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-                4, 0, 0, 0, // 4
-                5, 0, 0, 0, // 5
-            ]
-        );
+        assert_eq!(buffer, vec![
+            // Offsets: [2, 3, 5] (skipping first 0)
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            3, 0, 0, 0, 0, 0, 0, 0, // 3
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            // Values: [1, 2, 3, 4, 5]
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ]);
     }
 
     /// Tests serialization of `Nullable(Array(Int32))` with null arrays.
@@ -984,22 +962,19 @@ mod tests_sync {
             .serialize(&mut buffer, &column, field.data_type(), &mut state)
             .unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                // Null mask: []
-                // Offsets: [2, 2, 5] (skipping first 0, null array repeats offset)
-                2, 0, 0, 0, 0, 0, 0, 0, // 2
-                2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
-                5, 0, 0, 0, 0, 0, 0, 0, // 5
-                // Values: [1, 2, 3, 4, 5]
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-                4, 0, 0, 0, // 4
-                5, 0, 0, 0, // 5
-            ]
-        );
+        assert_eq!(buffer, vec![
+            // Null mask: []
+            // Offsets: [2, 2, 5] (skipping first 0, null array repeats offset)
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            // Values: [1, 2, 3, 4, 5]
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ]);
     }
 
     /// Tests serialization of `Map(String, Int32)` with non-nullable key-value pairs.
@@ -1029,27 +1004,24 @@ mod tests_sync {
             .serialize(&mut buffer, &column, field.data_type(), &mut state)
             .unwrap();
 
-        assert_eq!(
-            buffer,
-            vec![
-                // Offsets: [2, 3, 5] (skipping first 0)
-                2, 0, 0, 0, 0, 0, 0, 0, // 2
-                3, 0, 0, 0, 0, 0, 0, 0, // 3
-                5, 0, 0, 0, 0, 0, 0, 0, // 5
-                // Keys: ["a", "b", "c", "d", "e"]
-                1, b'a', // "a"
-                1, b'b', // "b"
-                1, b'c', // "c"
-                1, b'd', // "d"
-                1, b'e', // "e"
-                // Values: [1, 2, 3, 4, 5]
-                1, 0, 0, 0, // 1
-                2, 0, 0, 0, // 2
-                3, 0, 0, 0, // 3
-                4, 0, 0, 0, // 4
-                5, 0, 0, 0, // 5
-            ]
-        );
+        assert_eq!(buffer, vec![
+            // Offsets: [2, 3, 5] (skipping first 0)
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            3, 0, 0, 0, 0, 0, 0, 0, // 3
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            // Keys: ["a", "b", "c", "d", "e"]
+            1, b'a', // "a"
+            1, b'b', // "b"
+            1, b'c', // "c"
+            1, b'd', // "d"
+            1, b'e', // "e"
+            // Values: [1, 2, 3, 4, 5]
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ]);
     }
 
     /// Tests serialization of `Int32` array with zero rows.

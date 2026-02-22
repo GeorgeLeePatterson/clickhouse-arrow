@@ -1,20 +1,20 @@
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::native::values::Value;
 use crate::{Error, Result};
 
 pub(crate) struct TupleDeserializer;
 
 impl Deserializer for TupleDeserializer {
-    async fn read_prefix<R: ClickHouseRead>(
+    async fn read_prefix<R: ClickHouseRead, T: Default + Send>(
         type_: &Type,
         reader: &mut R,
-        state: &mut DeserializerState,
+        state: &mut DeserializerState<T>,
     ) -> Result<()> {
         match type_ {
             Type::Tuple(inner) => {
                 for item in inner {
-                    item.deserialize_prefix_async(reader, state).await?;
+                    item.deserialize_prefix(reader, state).await?;
                 }
             }
             _ => {
@@ -51,12 +51,13 @@ impl Deserializer for TupleDeserializer {
         Ok(tuples)
     }
 
-    fn read_sync(
-        _type_: &Type,
-        _reader: &mut impl ClickHouseBytesRead,
-        _rows: usize,
-        _state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError("TupleDeserializer sync not yet implemented".to_string()))
-    }
+    // TODO: Remove
+    // fn read_sync(
+    //     _type_: &Type,
+    //     _reader: &mut impl ClickHouseBytesRead,
+    //     _rows: usize,
+    //     _state: &mut DeserializerState,
+    // ) -> Result<Vec<Value>> {
+    //     Err(Error::DeserializeError("TupleDeserializer sync not yet implemented".to_string()))
+    // }
 }

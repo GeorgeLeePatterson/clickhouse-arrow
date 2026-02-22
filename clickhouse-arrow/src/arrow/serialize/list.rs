@@ -93,23 +93,20 @@ fn unwrap_array_data_type(dt: &DataType) -> Result<&DataType> {
 ///   invalid.
 /// - Returns an error is the type is not an `Array`
 /// - Returns `Io` if writing to the writer fails.
-pub(super) async fn serialize_async<W: ClickHouseWrite>(
-    type_hint: &Type,
+pub(super) async fn serialize_with_inner_async<W: ClickHouseWrite>(
+    inner_type: &Type,
     writer: &mut W,
     values: &ArrayRef,
     data_type: &DataType,
     state: &mut SerializerState,
 ) -> Result<()> {
-    // Unwrap the inner type
-    let inner_type = type_hint.strip_null().unwrap_array()?;
-
     macro_rules! write_list_array {
         ($( $array_ty:ty ),* $(,)?) => {{
             $(
             if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
                 let inner_dt = unwrap_array_data_type(data_type)?;
-                let offsets = array.value_offsets();
                 let values = array.values();
+                let offsets = array.value_offsets();
 
                 // Note: ClickHouse server accepts offsets starting from the second value
                 // (e.g., [2, 3, 5] for [0, 2, 3, 5]), inferring the first 0 based on row count.
@@ -158,7 +155,7 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
     )))
 }
 
-pub(super) fn serialize<W: ClickHouseBytesWrite>(
+pub(super) async fn serialize_async<W: ClickHouseWrite>(
     type_hint: &Type,
     writer: &mut W,
     values: &ArrayRef,
@@ -167,16 +164,24 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
 ) -> Result<()> {
     // Unwrap the inner type
     let inner_type = type_hint.strip_null().unwrap_array()?;
+    serialize_with_inner_async(inner_type, writer, values, data_type, state).await
+}
 
+pub(super) fn serialize_with_inner<W: ClickHouseBytesWrite>(
+    inner_type: &Type,
+    writer: &mut W,
+    values: &ArrayRef,
+    data_type: &DataType,
+    state: &mut SerializerState,
+) -> Result<()> {
     macro_rules! put_list_array {
         ($( $array_ty:ty ),* $(,)?) => {{
             $(
             if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
                 // TODO: Should this fallback to a best effort conversion of type_hint -> arrow?
                 let inner_dt = unwrap_array_data_type(data_type)?;
-
-                let offsets = array.value_offsets();
                 let values = array.values();
+                let offsets = array.value_offsets();
 
                 // Note: ClickHouse server accepts offsets starting from the second value
                 // (e.g., [2, 3, 5] for [0, 2, 3, 5]), inferring the first 0 based on row count.
@@ -223,6 +228,18 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
     Err(Error::ArrowSerialize(format!(
         "Expected ListArray or FixedSizeListArray: type={inner_type:?}, data_type={data_type:?}"
     )))
+}
+
+pub(super) fn serialize<W: ClickHouseBytesWrite>(
+    type_hint: &Type,
+    writer: &mut W,
+    values: &ArrayRef,
+    data_type: &DataType,
+    state: &mut SerializerState,
+) -> Result<()> {
+    // Unwrap the inner type
+    let inner_type = type_hint.strip_null().unwrap_array()?;
+    serialize_with_inner(inner_type, writer, values, data_type, state)
 }
 
 #[cfg(test)]

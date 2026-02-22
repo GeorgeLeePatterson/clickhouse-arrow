@@ -1,9 +1,6 @@
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::connection::ClientMetadata;
 use crate::Result;
@@ -172,89 +169,11 @@ impl<W: ClickHouseWrite> Writer<W> {
     }
 
     // NOTE: Not used currently
+    #[allow(unused)]
     pub(super) async fn send_cancel(writer: &mut W) -> Result<()> {
         writer.write_var_uint(ClientPacketId::Cancel as u64).await?;
         writer.flush().instrument(trace_span!("flush_cancel")).await?;
         Ok(())
-    }
-}
-
-/// A wrapper around a [`ClickHouseWrite`] that logs all writes. Useful for testing.
-struct LoggingWriter<W> {
-    inner: W,
-}
-
-impl<W: ClickHouseWrite + Unpin> LoggingWriter<W> {
-    async fn flush_with_timeout(&mut self) -> Result<()> {
-        debug!("Attempting flush with timeout");
-        if let Ok(result) = tokio::time::timeout(Duration::from_secs(5), self.inner.flush()).await {
-            match result {
-                Ok(()) => {
-                    debug!("Flush completed successfully within timeout");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Flush error within timeout: {:?}", e);
-                    Err(e.into())
-                }
-            }
-        } else {
-            error!("Flush operation timed out");
-            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Flush timed out").into())
-        }
-    }
-}
-
-impl<W: AsyncWrite + ClickHouseWrite + Unpin> AsyncWrite for LoggingWriter<W> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::result::Result<usize, std::io::Error>> {
-        debug!("poll_write called with {} bytes", buf.len());
-        match Pin::new(&mut self.inner).poll_write(cx, buf) {
-            Poll::Ready(Ok(n)) => {
-                debug!("poll_write wrote {} bytes", n);
-                Poll::Ready(Ok(n))
-            }
-            Poll::Ready(Err(e)) => {
-                error!("poll_write error: {:?}", e);
-                Poll::Ready(Err(e))
-            }
-            Poll::Pending => {
-                debug!("poll_write pending");
-                Poll::Pending
-            }
-        }
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<(), std::io::Error>> {
-        debug!("poll_flush called");
-        match Pin::new(&mut self.inner).poll_flush(cx) {
-            Poll::Ready(Ok(())) => {
-                debug!("poll_flush completed");
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(e)) => {
-                error!("poll_flush error: {:?}", e);
-                Poll::Ready(Err(e))
-            }
-            Poll::Pending => {
-                debug!("poll_flush pending");
-                Poll::Pending
-            }
-        }
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<(), std::io::Error>> {
-        debug!("poll_shutdown called");
-        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 
@@ -288,14 +207,11 @@ mod tests {
     #[tokio::test]
     async fn send_hello_writes_expected_packet_layout() {
         let mut writer = Cursor::new(Vec::new());
-        Writer::<Cursor<Vec<u8>>>::send_hello(
-            &mut writer,
-            ClientHello {
-                default_database: "default".to_string(),
-                username: "user".to_string(),
-                password: "secret".to_string(),
-            },
-        )
+        Writer::<Cursor<Vec<u8>>>::send_hello(&mut writer, ClientHello {
+            default_database: "default".to_string(),
+            username:         "user".to_string(),
+            password:         "secret".to_string(),
+        })
         .await
         .unwrap();
 
@@ -303,27 +219,12 @@ mod tests {
         assert_eq!(buf.try_get_var_uint().unwrap(), ClientPacketId::Hello as u64);
         let client_name = String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap();
         assert!(client_name.starts_with("ClickHouseArrow Rust "));
-        assert_eq!(
-            buf.try_get_var_uint().unwrap(),
-            crate::constants::VERSION_MAJOR
-        );
-        assert_eq!(
-            buf.try_get_var_uint().unwrap(),
-            crate::constants::VERSION_MINOR
-        );
+        assert_eq!(buf.try_get_var_uint().unwrap(), crate::constants::VERSION_MAJOR);
+        assert_eq!(buf.try_get_var_uint().unwrap(), crate::constants::VERSION_MINOR);
         assert_eq!(buf.try_get_var_uint().unwrap(), DBMS_TCP_PROTOCOL_VERSION);
-        assert_eq!(
-            String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap(),
-            "default"
-        );
-        assert_eq!(
-            String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap(),
-            "user"
-        );
-        assert_eq!(
-            String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap(),
-            "secret"
-        );
+        assert_eq!(String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap(), "default");
+        assert_eq!(String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap(), "user");
+        assert_eq!(String::from_utf8(buf.try_get_string().unwrap().to_vec()).unwrap(), "secret");
         assert!(!buf.has_remaining());
     }
 
@@ -375,12 +276,12 @@ mod tests {
     async fn send_query_skips_params_for_older_revisions() {
         let mut writer = Cursor::new(Vec::new());
         let query = Query {
-            qid: Qid::default(),
-            info: ClientInfo::default(),
+            qid:      Qid::default(),
+            info:     ClientInfo::default(),
             settings: None,
-            stage: QueryProcessingStage::Complete,
-            query: "SELECT 1",
-            params: Some(QueryParams::from([("name", "alice")])),
+            stage:    QueryProcessingStage::Complete,
+            query:    "SELECT 1",
+            params:   Some(QueryParams::from([("name", "alice")])),
         };
 
         Writer::<Cursor<Vec<u8>>>::send_query(
@@ -402,10 +303,10 @@ mod tests {
     async fn send_data_addendum_and_control_packets_encode_expected_markers() {
         let mut data_writer = Cursor::new(Vec::new());
         let block = Block {
-            info: BlockInfo::default(),
-            rows: 0,
+            info:         BlockInfo::default(),
+            rows:         0,
             column_types: vec![],
-            column_data: vec![],
+            column_data:  vec![],
         };
         let qid = Qid::from(Uuid::from_u128(0x7777));
 
@@ -424,21 +325,14 @@ mod tests {
         assert_eq!(data_bytes.try_get_var_uint().unwrap(), ClientPacketId::Data as u64);
 
         let mut ping_writer = Cursor::new(Vec::new());
-        Writer::<Cursor<Vec<u8>>>::send_ping(&mut ping_writer)
-            .await
-            .unwrap();
+        Writer::<Cursor<Vec<u8>>>::send_ping(&mut ping_writer).await.unwrap();
         let mut ping_bytes = Bytes::from(ping_writer.into_inner());
         assert_eq!(ping_bytes.try_get_var_uint().unwrap(), ClientPacketId::Ping as u64);
 
         let mut cancel_writer = Cursor::new(Vec::new());
-        Writer::<Cursor<Vec<u8>>>::send_cancel(&mut cancel_writer)
-            .await
-            .unwrap();
+        Writer::<Cursor<Vec<u8>>>::send_cancel(&mut cancel_writer).await.unwrap();
         let mut cancel_bytes = Bytes::from(cancel_writer.into_inner());
-        assert_eq!(
-            cancel_bytes.try_get_var_uint().unwrap(),
-            ClientPacketId::Cancel as u64
-        );
+        assert_eq!(cancel_bytes.try_get_var_uint().unwrap(), ClientPacketId::Cancel as u64);
 
         let mut addendum_writer = Cursor::new(Vec::new());
         let server_hello = ServerHello {
@@ -457,10 +351,7 @@ mod tests {
         addendum_writer.flush().await.unwrap();
 
         let mut addendum = Bytes::from(addendum_writer.into_inner());
-        assert_eq!(
-            String::from_utf8(addendum.try_get_string().unwrap().to_vec()).unwrap(),
-            ""
-        );
+        assert_eq!(String::from_utf8(addendum.try_get_string().unwrap().to_vec()).unwrap(), "");
         assert_eq!(
             String::from_utf8(addendum.try_get_string().unwrap().to_vec()).unwrap(),
             "chunked"
@@ -469,10 +360,7 @@ mod tests {
             String::from_utf8(addendum.try_get_string().unwrap().to_vec()).unwrap(),
             "notchunked"
         );
-        assert_eq!(
-            addendum.try_get_var_uint().unwrap(),
-            DBMS_PARALLEL_REPLICAS_PROTOCOL_VERSION
-        );
+        assert_eq!(addendum.try_get_var_uint().unwrap(), DBMS_PARALLEL_REPLICAS_PROTOCOL_VERSION);
 
         let mut old_writer = Cursor::new(Vec::new());
         let old_hello = ServerHello {
@@ -488,17 +376,5 @@ mod tests {
         .unwrap();
         old_writer.flush().await.unwrap();
         assert!(old_writer.into_inner().is_empty());
-    }
-
-    #[tokio::test]
-    async fn logging_writer_wraps_async_write_operations() {
-        let mut writer = LoggingWriter {
-            inner: Cursor::new(Vec::new()),
-        };
-
-        writer.flush_with_timeout().await.unwrap();
-        writer.write_all(b"payload").await.unwrap();
-        writer.flush().await.unwrap();
-        writer.shutdown().await.unwrap();
     }
 }

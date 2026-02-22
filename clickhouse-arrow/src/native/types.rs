@@ -20,7 +20,7 @@ use super::values::{
     u256,
 };
 use crate::formats::{DeserializerState, SerializerState};
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::{Date32, Error, Result};
 
 /// A raw `ClickHouse` type.
@@ -45,22 +45,23 @@ pub enum Type {
     Float64,
 
     // Inner value is SCALE
-    Decimal32(usize),
-    Decimal64(usize),
-    Decimal128(usize),
-    Decimal256(usize),
+    Decimal32(u8),
+    Decimal64(u8),
+    Decimal128(u8),
+    Decimal256(u8),
 
     String,
     FixedSizedString(usize),
     Binary,
     FixedSizedBinary(usize),
+    Nothing,
 
     Uuid,
 
     Date,
     Date32, // NOTE: This is i32 days since 1900-01-01
     DateTime(Tz),
-    DateTime64(usize, Tz),
+    DateTime64(u8, Tz),
 
     Ipv4,
     Ipv6,
@@ -85,14 +86,38 @@ pub enum Type {
     Object,
 
     // ClickHouse 24.x+ types
+    #[cfg(feature = "extended-types")]
     Variant(Vec<Type>),
-    Dynamic { max_types: Option<usize> },
+    #[cfg(feature = "extended-types")]
+    Dynamic {
+        max_types: u8,
+    },
+    #[cfg(feature = "extended-types")]
     Nested(Vec<(String, Type)>),
+    #[cfg(feature = "extended-types")]
     BFloat16,
+    #[cfg(feature = "extended-types")]
     Time,
-    Time64(usize),
-    AggregateFunction { name: String, types: Vec<Type> },
-    SimpleAggregateFunction { name: String, types: Vec<Type> },
+    #[cfg(feature = "extended-types")]
+    Time64(u8),
+    #[cfg(feature = "extended-types")]
+    QBit {
+        element_type: Box<Type>,
+        dimension:    usize,
+    },
+    #[cfg(feature = "extended-types")]
+    AggregateFunction {
+        name:       String,
+        parameters: Vec<AggregateParameter>,
+        types:      Vec<Type>,
+        version:    u64,
+    },
+    #[cfg(feature = "extended-types")]
+    SimpleAggregateFunction {
+        name:       String,
+        parameters: Vec<AggregateParameter>,
+        types:      Vec<Type>,
+    },
 }
 
 impl Type {
@@ -161,9 +186,7 @@ impl Type {
         }
     }
 
-    pub fn is_nullable(&self) -> bool {
-        matches!(self, Type::Nullable(_))
-    }
+    pub fn is_nullable(&self) -> bool { matches!(self, Type::Nullable(_)) }
 
     pub fn strip_low_cardinality(&self) -> &Type {
         match self {
@@ -198,17 +221,20 @@ impl Type {
             Type::UInt256 => Value::UInt256(u256::default()),
             Type::Float32 => Value::Float32(0.0),
             Type::Float64 => Value::Float64(0.0),
-            Type::Decimal32(s) => Value::Decimal32(*s, 0),
-            Type::Decimal64(s) => Value::Decimal64(*s, 0),
-            Type::Decimal128(s) => Value::Decimal128(*s, 0),
-            Type::Decimal256(s) => Value::Decimal256(*s, i256::default()),
+            Type::Decimal32(s) => Value::Decimal32(usize::from(*s), 0),
+            Type::Decimal64(s) => Value::Decimal64(usize::from(*s), 0),
+            Type::Decimal128(s) => Value::Decimal128(usize::from(*s), 0),
+            Type::Decimal256(s) => Value::Decimal256(usize::from(*s), i256::default()),
             Type::String | Type::FixedSizedString(_) | Type::Binary | Type::FixedSizedBinary(_) => {
                 Value::String(vec![])
             }
+            Type::Nothing => Value::Null,
             Type::Date => Value::Date(Date(0)),
             Type::Date32 => Value::Date32(Date32(0)),
             Type::DateTime(tz) => Value::DateTime(DateTime(*tz, 0)),
-            Type::DateTime64(precision, tz) => Value::DateTime64(DynDateTime64(*tz, 0, *precision)),
+            Type::DateTime64(precision, tz) => {
+                Value::DateTime64(DynDateTime64(*tz, 0, usize::from(*precision)))
+            }
             Type::Ipv4 => Value::Ipv4(Ipv4::default()),
             Type::Ipv6 => Value::Ipv6(Ipv6::default()),
             Type::Enum8(_) => Value::Enum8(String::new(), 0),
@@ -224,14 +250,23 @@ impl Type {
             Type::MultiPolygon => Value::MultiPolygon(MultiPolygon::default()),
             Type::Uuid => Value::Uuid(Uuid::from_u128(0)),
             Type::Object => Value::Object("{}".as_bytes().to_vec()),
+            #[cfg(feature = "extended-types")]
             Type::Variant(_) | Type::Dynamic { .. } => Value::Null,
+            #[cfg(feature = "extended-types")]
             Type::Nested(fields) => Value::Tuple(
                 fields.iter().map(|(_, inner)| Value::Array(vec![inner.default_value()])).collect(),
             ),
+            #[cfg(feature = "extended-types")]
             Type::BFloat16 => Value::UInt16(0),
+            #[cfg(feature = "extended-types")]
             Type::Time => Value::UInt32(0),
+            #[cfg(feature = "extended-types")]
             Type::Time64(_) => Value::Int64(0),
+            #[cfg(feature = "extended-types")]
+            Type::QBit { .. } => Value::Array(vec![]),
+            #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => Value::String(vec![]),
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 if let Some(inner) = types.first() {
                     inner.default_value()
@@ -244,6 +279,7 @@ impl Type {
 }
 
 impl Display for Type {
+    #[expect(clippy::too_many_lines)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Int8 => write!(f, "Int8"),
@@ -266,6 +302,7 @@ impl Display for Type {
             Type::Decimal256(s) => write!(f, "Decimal256({s})"),
             Type::String | Type::Binary => write!(f, "String"),
             Type::FixedSizedBinary(s) | Type::FixedSizedString(s) => write!(f, "FixedString({s})"),
+            Type::Nothing => write!(f, "Nothing"),
             Type::Uuid => write!(f, "UUID"),
             Type::Date => write!(f, "Date"),
             Type::Date32 => write!(f, "Date32"),
@@ -313,18 +350,21 @@ impl Display for Type {
             Type::Nullable(inner) => write!(f, "Nullable({inner})"),
             Type::Map(key, value) => write!(f, "Map({key},{value})"),
             Type::Object => write!(f, "JSON"),
+            #[cfg(feature = "extended-types")]
             Type::Variant(types) => write!(
                 f,
                 "Variant({})",
                 types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
             ),
+            #[cfg(feature = "extended-types")]
             Type::Dynamic { max_types } => {
-                if let Some(max_types) = max_types {
-                    write!(f, "Dynamic(max_types={max_types})")
-                } else {
+                if *max_types == 32 {
                     write!(f, "Dynamic")
+                } else {
+                    write!(f, "Dynamic(max_types={max_types})")
                 }
             }
+            #[cfg(feature = "extended-types")]
             Type::Nested(fields) => write!(
                 f,
                 "Nested({})",
@@ -334,33 +374,43 @@ impl Display for Type {
                     .collect::<Vec<_>>()
                     .join(",")
             ),
+            #[cfg(feature = "extended-types")]
             Type::BFloat16 => write!(f, "BFloat16"),
+            #[cfg(feature = "extended-types")]
             Type::Time => write!(f, "Time"),
+            #[cfg(feature = "extended-types")]
             Type::Time64(precision) => write!(f, "Time64({precision})"),
-            Type::AggregateFunction { name, types } => write!(
-                f,
-                "AggregateFunction({name}{})",
-                if types.is_empty() {
-                    String::new()
+            #[cfg(feature = "extended-types")]
+            Type::QBit { element_type, dimension } => write!(f, "QBit({element_type},{dimension})"),
+            #[cfg(feature = "extended-types")]
+            t @ (Type::SimpleAggregateFunction { name, parameters, types }
+            | Type::AggregateFunction { name, parameters, types, .. }) => {
+                let function = if parameters.is_empty() {
+                    name.clone()
                 } else {
                     format!(
-                        ",{}",
-                        types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+                        "{name}({})",
+                        parameters.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
                     )
-                }
-            ),
-            Type::SimpleAggregateFunction { name, types } => write!(
-                f,
-                "SimpleAggregateFunction({name}{})",
-                if types.is_empty() {
-                    String::new()
+                };
+                let func_type = if matches!(t, Type::AggregateFunction { .. }) {
+                    "AggregateFunction"
                 } else {
-                    format!(
-                        ",{}",
-                        types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
-                    )
-                }
-            ),
+                    "SimpleAggregateFunction"
+                };
+                write!(
+                    f,
+                    "{func_type}({function}{})",
+                    if types.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ",{}",
+                            types.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+                        )
+                    }
+                )
+            }
         }
     }
 }
@@ -407,12 +457,14 @@ impl Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_)
-                | Type::BFloat16
-                | Type::Time
-                | Type::Time64(_) => {
+                | Type::Enum16(_) => {
                     sized::SizedDeserializer::read(self, reader, rows, state).await?
                 }
+                #[cfg(feature = "extended-types")]
+                Type::BFloat16 | Type::Time | Type::Time64(_) => {
+                    sized::SizedDeserializer::read(self, reader, rows, state).await?
+                }
+                Type::Nothing => vec![Value::Null; rows],
                 Type::String
                 | Type::FixedSizedString(_)
                 | Type::Binary
@@ -436,12 +488,14 @@ impl Type {
                         .await?
                 }
                 Type::Object => object::ObjectDeserializer::read(self, reader, rows, state).await?,
+                #[cfg(feature = "extended-types")]
                 Type::Nested(fields) => {
                     let tuple_type = Type::Tuple(
                         fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
                     );
                     tuple_type.deserialize_column(reader, rows, state).await?
                 }
+                #[cfg(feature = "extended-types")]
                 Type::SimpleAggregateFunction { types, .. } => {
                     if let Some(inner) = types.first() {
                         inner.deserialize_column(reader, rows, state).await?
@@ -451,7 +505,11 @@ impl Type {
                         ));
                     }
                 }
-                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
+                #[cfg(feature = "extended-types")]
+                Type::Variant(_)
+                | Type::Dynamic { .. }
+                | Type::QBit { .. }
+                | Type::AggregateFunction { .. } => {
                     return Err(Error::DeserializeError(format!(
                         "native value deserialization for type '{self}' is not implemented"
                     )));
@@ -461,94 +519,7 @@ impl Type {
         .boxed()
     }
 
-    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
-    pub(crate) fn deserialize_column_sync(
-        &self,
-        reader: &mut impl ClickHouseBytesRead,
-        rows: usize,
-        state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        use deserialize::*;
-
-        if rows > MAX_STRING_SIZE {
-            return Err(Error::Protocol(format!(
-                "deserialize response size too large. {rows} > {MAX_STRING_SIZE}"
-            )));
-        }
-
-        Ok(match self {
-            Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::Int64
-            | Type::Int128
-            | Type::Int256
-            | Type::UInt8
-            | Type::UInt16
-            | Type::UInt32
-            | Type::UInt64
-            | Type::UInt128
-            | Type::UInt256
-            | Type::Float32
-            | Type::Float64
-            | Type::Decimal32(_)
-            | Type::Decimal64(_)
-            | Type::Decimal128(_)
-            | Type::Decimal256(_)
-            | Type::Uuid
-            | Type::Date
-            | Type::Date32
-            | Type::DateTime(_)
-            | Type::DateTime64(_, _)
-            | Type::Ipv4
-            | Type::Ipv6
-            | Type::Enum8(_)
-            | Type::Enum16(_)
-            | Type::BFloat16
-            | Type::Time
-            | Type::Time64(_) => sized::SizedDeserializer::read_sync(self, reader, rows, state)?,
-            Type::String | Type::FixedSizedString(_) | Type::Binary | Type::FixedSizedBinary(_) => {
-                string::StringDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Array(_) => array::ArrayDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Ring => geo::RingDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Polygon => geo::PolygonDeserializer::read_sync(self, reader, rows, state)?,
-            Type::MultiPolygon => {
-                geo::MultiPolygonDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Tuple(_) => tuple::TupleDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Point => geo::PointDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Nullable(_) => {
-                nullable::NullableDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Map(_, _) => map::MapDeserializer::read_sync(self, reader, rows, state)?,
-            Type::LowCardinality(_) => {
-                low_cardinality::LowCardinalityDeserializer::read_sync(self, reader, rows, state)?
-            }
-            Type::Object => object::ObjectDeserializer::read_sync(self, reader, rows, state)?,
-            Type::Nested(fields) => {
-                let tuple_type = Type::Tuple(
-                    fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
-                );
-                tuple_type.deserialize_column_sync(reader, rows, state)?
-            }
-            Type::SimpleAggregateFunction { types, .. } => {
-                if let Some(inner) = types.first() {
-                    inner.deserialize_column_sync(reader, rows, state)?
-                } else {
-                    return Err(Error::DeserializeError(
-                        "SimpleAggregateFunction has no inner type".to_string(),
-                    ));
-                }
-            }
-            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                return Err(Error::DeserializeError(format!(
-                    "native value deserialization for type '{self}' is not implemented"
-                )));
-            }
-        })
-    }
-
+    #[expect(clippy::too_many_lines)]
     pub(crate) fn serialize_column<'a, W: ClickHouseWrite>(
         &'a self,
         values: Vec<Value>,
@@ -584,20 +555,26 @@ impl Type {
                 | Type::Ipv4
                 | Type::Ipv6
                 | Type::Enum8(_)
-                | Type::Enum16(_)
-                | Type::BFloat16
-                | Type::Time
-                | Type::Time64(_) => {
+                | Type::Enum16(_) => {
                     sized::SizedSerializer::write(self, values, writer, state).await?;
                 }
-
+                #[cfg(feature = "extended-types")]
+                Type::BFloat16 | Type::Time | Type::Time64(_) => {
+                    sized::SizedSerializer::write(self, values, writer, state).await?;
+                }
+                Type::Nothing => {
+                    if values.iter().any(|value| !matches!(value, Value::Null)) {
+                        return Err(Error::SerializeError(
+                            "Nothing type only supports NULL values".to_string(),
+                        ));
+                    }
+                }
                 Type::String
                 | Type::FixedSizedString(_)
                 | Type::Binary
                 | Type::FixedSizedBinary(_) => {
                     string::StringSerializer::write(self, values, writer, state).await?;
                 }
-
                 Type::Array(_) => {
                     array::ArraySerializer::write(self, values, writer, state).await?;
                 }
@@ -621,12 +598,14 @@ impl Type {
                 Type::Object => {
                     object::ObjectSerializer::write(self, values, writer, state).await?;
                 }
+                #[cfg(feature = "extended-types")]
                 Type::Nested(fields) => {
                     let tuple_type = Type::Tuple(
                         fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
                     );
                     tuple_type.serialize_column(values, writer, state).await?;
                 }
+                #[cfg(feature = "extended-types")]
                 Type::SimpleAggregateFunction { types, .. } => {
                     if let Some(inner) = types.first() {
                         inner.serialize_column(values, writer, state).await?;
@@ -636,10 +615,24 @@ impl Type {
                         ));
                     }
                 }
-                Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                    return Err(Error::SerializeError(format!(
-                        "native value serialization for type '{self}' is not implemented"
-                    )));
+                #[cfg(feature = "extended-types")]
+                Type::Variant(_) => {
+                    variant::VariantSerializer::write(self, values, writer, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::Dynamic { .. } => {
+                    dynamic::DynamicSerializer::write(self, values, writer, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::QBit { .. } => {
+                    qbit::QBitSerializer::write(self, values, writer, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::AggregateFunction { .. } => {
+                    aggregate_function::AggregateFunctionSerializer::write(
+                        self, values, writer, state,
+                    )
+                    .await?;
                 }
             }
             Ok(())
@@ -681,23 +674,19 @@ impl Type {
             | Type::Ipv4
             | Type::Ipv6
             | Type::Enum8(_)
-            | Type::Enum16(_)
-            | Type::BFloat16
-            | Type::Time
-            | Type::Time64(_) => {
+            | Type::Enum16(_) => sized::SizedSerializer::write_sync(self, values, writer, state)?,
+            #[cfg(feature = "extended-types")]
+            Type::BFloat16 | Type::Time | Type::Time64(_) => {
                 sized::SizedSerializer::write_sync(self, values, writer, state)?;
             }
+            Type::Nothing => {}
 
             Type::String | Type::FixedSizedString(_) | Type::Binary | Type::FixedSizedBinary(_) => {
                 string::StringSerializer::write_sync(self, values, writer, state)?;
             }
 
-            Type::Array(_) => {
-                array::ArraySerializer::write_sync(self, values, writer, state)?;
-            }
-            Type::Tuple(_) => {
-                tuple::TupleSerializer::write_sync(self, values, writer, state)?;
-            }
+            Type::Array(_) => array::ArraySerializer::write_sync(self, values, writer, state)?,
+            Type::Tuple(_) => tuple::TupleSerializer::write_sync(self, values, writer, state)?,
             Type::Point => geo::PointSerializer::write_sync(self, values, writer, state)?,
             Type::Ring => geo::RingSerializer::write_sync(self, values, writer, state)?,
             Type::Polygon => geo::PolygonSerializer::write_sync(self, values, writer, state)?,
@@ -711,15 +700,15 @@ impl Type {
             Type::LowCardinality(_) => {
                 low_cardinality::LowCardinalitySerializer::write_sync(self, values, writer, state)?;
             }
-            Type::Object => {
-                object::ObjectSerializer::write_sync(self, values, writer, state)?;
-            }
+            Type::Object => object::ObjectSerializer::write_sync(self, values, writer, state)?,
+            #[cfg(feature = "extended-types")]
             Type::Nested(fields) => {
                 let tuple_type = Type::Tuple(
                     fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
                 );
                 tuple_type.serialize_column_sync(values, writer, state)?;
             }
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 if let Some(inner) = types.first() {
                     inner.serialize_column_sync(values, writer, state)?;
@@ -729,11 +718,34 @@ impl Type {
                     ));
                 }
             }
-            Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. } => {
-                return Err(Error::SerializeError(format!(
-                    "native value serialization for type '{self}' is not implemented"
-                )));
+            #[cfg(feature = "extended-types")]
+            Type::Variant(_) => {
+                variant::VariantSerializer::write_sync(self, values, writer, state)?;
             }
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { .. } => {
+                dynamic::DynamicSerializer::write_sync(self, values, writer, state)?;
+            }
+            #[cfg(feature = "extended-types")]
+            Type::QBit { .. } => {
+                qbit::QBitSerializer::write_sync(self, values, writer, state)?;
+            }
+            #[cfg(feature = "extended-types")]
+            Type::AggregateFunction { .. } => {
+                aggregate_function::AggregateFunctionSerializer::write_sync(
+                    self, values, writer, state,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_value(&self, value: &Value) -> Result<()> {
+        self.validate()?;
+        if !self.inner_validate_value(value) {
+            return Err(Error::TypeParseError(format!(
+                "could not assign value '{value:?}' to type '{self:?}'"
+            )));
         }
         Ok(())
     }
@@ -744,50 +756,61 @@ impl Type {
             Type::Decimal32(scale) => {
                 if *scale == 0 || *scale > 9 {
                     return Err(Error::TypeParseError(format!(
-                        "scale out of bounds for Decimal32({}) must be in range (1..=9)",
-                        *scale
+                        "scale out of bounds for Decimal32({scale}), range (1..=9)"
                     )));
                 }
             }
-
             Type::Decimal128(scale) => {
                 if *scale == 0 || *scale > 38 {
                     return Err(Error::TypeParseError(format!(
-                        "scale out of bounds for Decimal128({}) must be in range (1..=38)",
-                        *scale
+                        "scale out of bounds for Decimal128({scale}), range (1..=38)"
                     )));
                 }
             }
             Type::Decimal256(scale) => {
                 if *scale == 0 || *scale > 76 {
                     return Err(Error::TypeParseError(format!(
-                        "scale out of bounds for Decimal256({}) must be in range (1..=76)",
-                        *scale
+                        "scale out of bounds for Decimal256({scale}), range (1..=76)"
                     )));
                 }
             }
             Type::Decimal64(precision) => {
                 if *precision == 0 || *precision > 18 {
                     return Err(Error::TypeParseError(format!(
-                        "precision out of bounds for Decimal64({}) must be in range (1..=18)",
-                        *precision
+                        "precision out of bounds for Decimal64({precision}), range (1..=18)"
                     )));
                 }
             }
             Type::DateTime64(precision, _) => {
                 if *precision > 9 {
                     return Err(Error::TypeParseError(format!(
-                        "precision out of bounds for DateTime64({}) must be in range (0..=9)",
-                        *precision
+                        "precision out of bounds for DateTime64({precision}), range (0..=9)"
                     )));
                 }
             }
+            #[cfg(feature = "extended-types")]
             Type::Time64(precision) => {
                 if *precision > 9 {
                     return Err(Error::TypeParseError(format!(
                         "precision out of bounds for Time64({precision}) must be in range (0..=9)"
                     )));
                 }
+            }
+            #[cfg(feature = "extended-types")]
+            Type::QBit { element_type, dimension } => {
+                if *dimension == 0 {
+                    return Err(Error::TypeParseError("QBit dims must be greater than 0".into()));
+                }
+                match element_type.strip_null() {
+                    Type::BFloat16 | Type::Float32 | Type::Float64 => {}
+                    other => {
+                        return Err(Error::TypeParseError(format!(
+                            "QBit element type must be BFloat16, Float32, or Float64, got \
+                             '{other}'"
+                        )));
+                    }
+                }
+                element_type.validate()?;
             }
             Type::LowCardinality(inner) => match inner.strip_null() {
                 Type::String
@@ -831,9 +854,7 @@ impl Type {
                 | Type::LowCardinality(_)
                 | Type::Tuple(_)
                 | Type::Nullable(_) => {
-                    return Err(Error::TypeParseError(format!(
-                        "nullable cannot contain composite type '{inner:?}'"
-                    )));
+                    Err(Error::TypeParseError(format!("nullable composite type '{inner:?}'")))?;
                 }
                 _ => inner.validate()?,
             },
@@ -871,6 +892,7 @@ impl Type {
                 key.validate()?;
                 value.validate()?;
             }
+            #[cfg(feature = "extended-types")]
             Type::Variant(types) => {
                 if types.is_empty() {
                     return Err(Error::TypeParseError(
@@ -881,12 +903,15 @@ impl Type {
                     type_.validate()?;
                 }
             }
-            Type::Dynamic { max_types: Some(0) } => {
-                return Err(Error::TypeParseError(
-                    "Dynamic max_types must be greater than 0 when set".to_string(),
-                ));
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { max_types } => {
+                if *max_types > 254 {
+                    return Err(Error::TypeParseError(format!(
+                        "Dynamic max_types out of bounds ({max_types}), must be in range (0..=254)"
+                    )));
+                }
             }
-            Type::Dynamic { .. } => {}
+            #[cfg(feature = "extended-types")]
             Type::Nested(fields) => {
                 if fields.is_empty() {
                     return Err(Error::TypeParseError(
@@ -897,11 +922,13 @@ impl Type {
                     type_.validate()?;
                 }
             }
+            #[cfg(feature = "extended-types")]
             Type::AggregateFunction { types, .. } => {
                 for type_ in types {
                     type_.validate()?;
                 }
             }
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 if types.is_empty() {
                     return Err(Error::TypeParseError(
@@ -918,16 +945,7 @@ impl Type {
         Ok(())
     }
 
-    pub(crate) fn validate_value(&self, value: &Value) -> Result<()> {
-        self.validate()?;
-        if !self.inner_validate_value(value) {
-            return Err(Error::TypeParseError(format!(
-                "could not assign value '{value:?}' to type '{self:?}'"
-            )));
-        }
-        Ok(())
-    }
-
+    #[expect(clippy::too_many_lines)]
     fn inner_validate_value(&self, value: &Value) -> bool {
         match (self, value) {
             (Type::Int8, Value::Int8(_))
@@ -954,17 +972,21 @@ impl Type {
             | (Type::Ring, Value::Ring(_))
             | (Type::Polygon, Value::Polygon(_))
             | (Type::MultiPolygon, Value::MultiPolygon(_))
-            | (Type::BFloat16, Value::UInt16(_))
+            | (Type::Nothing, Value::Null) => true,
+            #[cfg(feature = "extended-types")]
+            (Type::BFloat16, Value::UInt16(_))
             | (Type::Time, Value::UInt32(_))
             | (Type::Time64(_), Value::Int64(_)) => true,
             (Type::DateTime(tz1), Value::DateTime(date)) => tz1 == &date.0,
             (Type::DateTime64(precision1, tz1), Value::DateTime64(tz2)) => {
-                tz1 == &tz2.0 && precision1 == &tz2.2
+                tz1 == &tz2.0 && usize::from(*precision1) == tz2.2
             }
             (Type::Decimal32(scale1), Value::Decimal32(scale2, _))
             | (Type::Decimal64(scale1), Value::Decimal64(scale2, _))
             | (Type::Decimal128(scale1), Value::Decimal128(scale2, _))
-            | (Type::Decimal256(scale1), Value::Decimal256(scale2, _)) => scale1 >= scale2,
+            | (Type::Decimal256(scale1), Value::Decimal256(scale2, _)) => {
+                usize::from(*scale1) >= *scale2
+            }
             (Type::FixedSizedString(_) | Type::String, Value::Array(items))
                 if items.iter().all(|item| matches!(item, Value::UInt8(_) | Value::Int8(_))) =>
             {
@@ -993,11 +1015,25 @@ impl Type {
                     && keys.iter().all(|x| key.inner_validate_value(x))
                     && values.iter().all(|x| value.inner_validate_value(x))
             }
+            #[cfg(feature = "extended-types")]
             (Type::Variant(types), Value::Null) => !types.is_empty(),
+            #[cfg(feature = "extended-types")]
             (Type::Variant(types), value) => {
                 types.iter().any(|type_| type_.inner_validate_value(value))
             }
+            #[cfg(feature = "extended-types")]
             (Type::Dynamic { .. }, _) => true,
+            #[cfg(feature = "extended-types")]
+            (Type::QBit { element_type, dimension }, Value::Array(values)) => {
+                values.len() == *dimension
+                    && values.iter().all(|value| match element_type.strip_null() {
+                        Type::BFloat16 => {
+                            matches!(value, Value::UInt16(_) | Value::Float32(_))
+                        }
+                        _ => element_type.inner_validate_value(value),
+                    })
+            }
+            #[cfg(feature = "extended-types")]
             (Type::Nested(fields), Value::Tuple(values)) => {
                 fields.len() == values.len()
                     && fields.iter().zip(values.iter()).all(
@@ -1009,7 +1045,9 @@ impl Type {
                         },
                     )
             }
+            #[cfg(feature = "extended-types")]
             (Type::AggregateFunction { .. }, Value::String(_)) => true,
+            #[cfg(feature = "extended-types")]
             (Type::SimpleAggregateFunction { types, .. }, value) => {
                 types.first().is_some_and(|inner| inner.inner_validate_value(value))
             }
@@ -1032,9 +1070,23 @@ impl Type {
             Type::Int128 | Type::UInt128 | Type::Uuid | Type::Ipv6 | Type::Point => 16,
             Type::Int256 | Type::UInt256 | Type::String | Type::Binary => 32,
             Type::FixedSizedString(n) | Type::FixedSizedBinary(n) => *n,
+            #[cfg(feature = "extended-types")]
             Type::BFloat16 => 2,
+            #[cfg(feature = "extended-types")]
             Type::Time => 4,
+            #[cfg(feature = "extended-types")]
             Type::Time64(_) => 8,
+            Type::Nothing => 0,
+            #[cfg(feature = "extended-types")]
+            Type::QBit { element_type, dimension } => {
+                let element_size = match element_type.strip_null() {
+                    Type::BFloat16 => 2,
+                    Type::Float32 => 4,
+                    Type::Float64 => 8,
+                    _ => 0,
+                };
+                element_size * dimension
+            }
 
             // Complex types
             Type::Array(inner) => {
@@ -1048,12 +1100,17 @@ impl Type {
                 let value_data = value.estimate_capacity();
                 4 + key_data + value_data // 4 bytes for offsets
             }
+            #[cfg(feature = "extended-types")]
             Type::Variant(types) => 1 + types.first().map_or(64, Type::estimate_capacity),
+            #[cfg(feature = "extended-types")]
             Type::Dynamic { .. } => 64,
+            #[cfg(feature = "extended-types")]
             Type::Nested(fields) => {
                 fields.iter().map(|(_, type_)| type_.estimate_capacity() * 8).sum()
             }
+            #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => 64,
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 types.first().map_or(64, Type::estimate_capacity)
             }
@@ -1071,6 +1128,7 @@ impl Type {
     /// # Errors
     /// Returns `SerializeError` if the `Type` is not handled.
     /// Returns `Io` error if the write fails.
+    #[expect(clippy::too_many_lines)]
     pub(crate) async fn write_default<W: ClickHouseWrite>(&self, writer: &mut W) -> Result<()> {
         match self.strip_null() {
             Type::String | Type::Binary => {
@@ -1091,14 +1149,41 @@ impl Type {
             }
             Type::UInt8 => writer.write_u8(0).await?,
             Type::UInt16 | Type::Date => writer.write_u16_le(0).await?,
+            #[cfg(feature = "extended-types")]
             Type::BFloat16 => writer.write_u16_le(0).await?,
             Type::UInt32 | Type::Ipv4 | Type::DateTime(_) => writer.write_u32_le(0).await?,
+            #[cfg(feature = "extended-types")]
             Type::Time => writer.write_u32_le(0).await?,
             Type::UInt64 => writer.write_u64_le(0).await?,
             Type::Float32 => writer.write_f32_le(0.0).await?,
             Type::Float64 => writer.write_f64_le(0.0).await?,
             Type::DateTime64(_, _) => writer.write_i64_le(0).await?,
+            #[cfg(feature = "extended-types")]
             Type::Time64(_) => writer.write_i64_le(0).await?,
+            Type::Nullable(inner) => Box::pin(inner.write_default(writer)).await?,
+            Type::Nothing => {}
+            Type::Point => {
+                writer.write_f64_le(0.0).await?;
+                writer.write_f64_le(0.0).await?;
+            }
+            Type::Ring | Type::Polygon | Type::MultiPolygon => writer.write_var_uint(0).await?,
+            Type::Object => writer.write_string("{}").await?,
+            #[cfg(feature = "extended-types")]
+            Type::QBit { element_type, dimension } => {
+                writer.write_var_uint(*dimension as u64).await?;
+                for _ in 0..*dimension {
+                    match element_type.strip_null() {
+                        Type::BFloat16 => writer.write_u16_le(0).await?,
+                        Type::Float32 => writer.write_f32_le(0.0).await?,
+                        Type::Float64 => writer.write_f64_le(0.0).await?,
+                        other => {
+                            return Err(Error::SerializeError(format!(
+                                "unsupported QBit element type for default value: {other}"
+                            )));
+                        }
+                    }
+                }
+            }
             Type::Array(_) | Type::Map(_, _) => writer.write_var_uint(0).await?, // Empty array/map
             // Recursive
             Type::LowCardinality(inner) => Box::pin(inner.write_default(writer)).await?,
@@ -1107,6 +1192,7 @@ impl Type {
                     Box::pin(t.write_default(writer)).await?;
                 }
             }
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 if let Some(inner) = types.first() {
                     Box::pin(inner.write_default(writer)).await?;
@@ -1116,8 +1202,33 @@ impl Type {
                     ));
                 }
             }
-            _ => {
-                return Err(Error::SerializeError(format!("No default value for type: {self:?}")));
+            #[cfg(feature = "extended-types")]
+            Type::Nested(fields) => {
+                for _ in fields {
+                    writer.write_var_uint(0).await?;
+                }
+            }
+            #[cfg(feature = "extended-types")]
+            Type::Variant(_) => {
+                return Err(Error::SerializeError(
+                    "default value serialization is not implemented for Variant in native format"
+                        .to_string(),
+                ));
+            }
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { .. } => {
+                return Err(Error::SerializeError(
+                    "default value serialization is not implemented for Dynamic in native format"
+                        .to_string(),
+                ));
+            }
+            #[cfg(feature = "extended-types")]
+            Type::AggregateFunction { .. } => {
+                return Err(Error::SerializeError(
+                    "default value serialization is not implemented for AggregateFunction in \
+                     native format"
+                        .to_string(),
+                ));
             }
         }
         Ok(())
@@ -1141,16 +1252,43 @@ impl Type {
             Type::Int256 | Type::UInt256 | Type::Decimal256(_) => writer.put_slice(&[0; 32]),
             Type::UInt8 => writer.put_u8(0),
             Type::UInt16 | Type::Date => writer.put_u16_le(0),
+            #[cfg(feature = "extended-types")]
             Type::BFloat16 => writer.put_u16_le(0),
             Type::UInt32 | Type::Ipv4 | Type::DateTime(_) => writer.put_u32_le(0),
+            #[cfg(feature = "extended-types")]
             Type::Time => writer.put_u32_le(0),
             Type::UInt64 => writer.put_u64_le(0),
             Type::Float32 => writer.put_f32_le(0.0),
             Type::Float64 => writer.put_f64_le(0.0),
             Type::DateTime64(_, _) => writer.put_i64_le(0),
+            #[cfg(feature = "extended-types")]
             Type::Time64(_) => writer.put_i64_le(0),
+            Type::Nullable(inner) => inner.put_default(writer)?,
+            Type::Nothing => {}
+            Type::Point => {
+                writer.put_f64_le(0.0);
+                writer.put_f64_le(0.0);
+            }
+            Type::Ring | Type::Polygon | Type::MultiPolygon => writer.put_var_uint(0)?,
+            Type::Object => writer.put_string("{}")?,
+            #[cfg(feature = "extended-types")]
+            Type::QBit { element_type, dimension } => {
+                writer.put_var_uint(*dimension as u64)?;
+                for _ in 0..*dimension {
+                    match element_type.strip_null() {
+                        Type::BFloat16 => writer.put_u16_le(0),
+                        Type::Float32 => writer.put_f32_le(0.0),
+                        Type::Float64 => writer.put_f64_le(0.0),
+                        other => {
+                            return Err(Error::SerializeError(format!(
+                                "unsupported QBit element type for default value: {other}"
+                            )));
+                        }
+                    }
+                }
+            }
             Type::Array(_) | Type::Map(_, _) => writer.put_var_uint(0)?, // Empty array/map
-            Type::Enum16(_) => writer.put_i16(0),
+            Type::Enum16(_) => writer.put_i16_le(0),
             // Recursive
             Type::LowCardinality(inner) => inner.put_default(writer)?,
             Type::Tuple(inner) => {
@@ -1158,6 +1296,7 @@ impl Type {
                     t.put_default(writer)?;
                 }
             }
+            #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 if let Some(inner) = types.first() {
                     inner.put_default(writer)?;
@@ -1167,11 +1306,83 @@ impl Type {
                     ));
                 }
             }
-            _ => {
-                return Err(Error::SerializeError(format!("No default value for type: {self:?}")));
+            #[cfg(feature = "extended-types")]
+            Type::Nested(fields) => {
+                for _ in fields {
+                    writer.put_var_uint(0)?;
+                }
+            }
+            #[cfg(feature = "extended-types")]
+            Type::Variant(_) => {
+                return Err(Error::SerializeError(
+                    "default value serialization is not implemented for Variant in native format"
+                        .to_string(),
+                ));
+            }
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { .. } => {
+                return Err(Error::SerializeError(
+                    "default value serialization is not implemented for Dynamic in native format"
+                        .to_string(),
+                ));
+            }
+            #[cfg(feature = "extended-types")]
+            Type::AggregateFunction { .. } => {
+                return Err(Error::SerializeError(
+                    "default value serialization is not implemented for AggregateFunction in \
+                     native format"
+                        .to_string(),
+                ));
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "extended-types")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AggregateParameter {
+    Null,
+    Bool(bool),
+    UInt64(u64),
+    Int64(i64),
+    Float64(u64),
+    String(String),
+}
+
+#[cfg(feature = "extended-types")]
+impl Display for AggregateParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => write!(f, "NULL"),
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::UInt64(value) => write!(f, "{value}"),
+            Self::Int64(value) => write!(f, "{value}"),
+            Self::Float64(bits) => {
+                let value = f64::from_bits(*bits);
+                if value.is_infinite() {
+                    if value.is_sign_positive() { write!(f, "inf") } else { write!(f, "-inf") }
+                } else {
+                    write!(f, "{value}")
+                }
+            }
+            Self::String(value) => {
+                write!(f, "'")?;
+                for ch in value.chars() {
+                    match ch {
+                        '\'' => write!(f, "''")?,
+                        '\\' => write!(f, "\\\\")?,
+                        '\0' => write!(f, "\\0")?,
+                        '\n' => write!(f, "\\n")?,
+                        '\r' => write!(f, "\\r")?,
+                        '\t' => write!(f, "\\t")?,
+                        _ => write!(f, "{ch}")?,
+                    }
+                }
+                write!(f, "'")
+            }
+        }
     }
 }
 
@@ -1186,10 +1397,10 @@ pub(crate) trait Deserializer {
     //         if use_custom_serialization:
     //             self.serialization = SparseSerialization(self)
     // ```
-    fn read_prefix<R: ClickHouseRead>(
+    fn read_prefix<R: ClickHouseRead, T: Default + Send>(
         _type_: &Type,
         _reader: &mut R,
-        _state: &mut DeserializerState,
+        _state: &mut DeserializerState<T>,
     ) -> impl Future<Output = Result<()>> {
         async { Ok(()) }
     }
@@ -1200,14 +1411,6 @@ pub(crate) trait Deserializer {
         rows: usize,
         state: &mut DeserializerState,
     ) -> impl Future<Output = Result<Vec<Value>>>;
-
-    #[allow(dead_code)] // TODO: remove once synchronous native path is fully retired
-    fn read_sync(
-        type_: &Type,
-        reader: &mut impl ClickHouseBytesRead,
-        rows: usize,
-        state: &mut DeserializerState,
-    ) -> Result<Vec<Value>>;
 }
 
 pub(crate) trait Serializer {
@@ -1217,6 +1420,13 @@ pub(crate) trait Serializer {
         _state: &mut SerializerState,
     ) -> impl Future<Output = Result<()>> {
         async { Ok(()) }
+    }
+
+    fn write_prefix_sync(
+        _type_: &Type,
+        _writer: &mut impl ClickHouseBytesWrite,
+        _state: &mut SerializerState,
+    ) {
     }
 
     fn write<W: ClickHouseWrite>(
