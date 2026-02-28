@@ -271,6 +271,7 @@ impl Value {
     pub fn from_value<T: ToSql>(value: T) -> Result<Self> { value.to_sql(None) }
 
     /// Guesses a [`Type`] from the value, may not correspond to actual column type in `ClickHouse`
+    #[expect(clippy::cast_possible_truncation)]
     pub fn guess_type(&self) -> Type {
         match self {
             Value::Int8(_) => Type::Int8,
@@ -302,7 +303,9 @@ impl Value {
             Value::Array(x) => {
                 Type::Array(Box::new(x.first().map_or(Type::String, Value::guess_type)))
             }
-            Value::Tuple(values) => Type::Tuple(values.iter().map(Value::guess_type).collect()),
+            Value::Tuple(values) => {
+                Type::tuple_anon(values.iter().map(Value::guess_type).collect())
+            }
             Value::Null => Type::Nullable(Box::new(Type::String)),
             Value::Map(k, v) => Type::Map(
                 Box::new(k.first().map_or(Type::String, Value::guess_type)),
@@ -352,6 +355,7 @@ impl fmt::Debug for Value {
 
 impl fmt::Display for Value {
     #[expect(clippy::too_many_lines)]
+    #[expect(clippy::cast_possible_truncation)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[expect(clippy::match_same_arms)]
         match self {

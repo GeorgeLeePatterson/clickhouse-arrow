@@ -11,7 +11,7 @@ impl Serializer for TupleSerializer {
         state: &mut SerializerState,
     ) {
         if let Type::Tuple(inner) = type_ {
-            for item in inner {
+            for (_, item) in inner {
                 item.serialize_prefix(writer, state);
             }
         }
@@ -23,7 +23,7 @@ impl Serializer for TupleSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         if let Type::Tuple(inner) = type_ {
-            for item in inner {
+            for (_, item) in inner {
                 item.serialize_prefix_async(writer, state).await?;
             }
         }
@@ -48,7 +48,7 @@ impl Serializer for TupleSerializer {
                 columns[i].push(value);
             }
         }
-        for (inner_type, column) in inner_types.iter().zip(columns.into_iter()) {
+        for ((_, inner_type), column) in inner_types.iter().zip(columns.into_iter()) {
             inner_type.serialize_column(column, writer, state).await?;
         }
         Ok(())
@@ -72,7 +72,7 @@ impl Serializer for TupleSerializer {
                 columns[i].push(value);
             }
         }
-        for (inner_type, column) in inner_types.iter().zip(columns.into_iter()) {
+        for ((_, inner_type), column) in inner_types.iter().zip(columns.into_iter()) {
             inner_type.serialize_column_sync(column, writer, state)?;
         }
         Ok(())

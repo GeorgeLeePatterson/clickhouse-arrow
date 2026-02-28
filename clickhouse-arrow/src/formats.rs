@@ -74,10 +74,22 @@ pub(crate) struct VariantPrefixState {
     pub(crate) discriminator_mode: u8,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CustomSerializationEntry {
+    pub(crate) stack_type: u8,
+    pub(crate) kinds:      Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CustomSerializationState {
+    pub(crate) entries: Vec<CustomSerializationEntry>,
+}
+
 /// Context maintained during deserialization
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct DeserializerState<T: Default = ()> {
     pub(crate) format_state: T,
+    custom_serialization:    Option<CustomSerializationState>,
     #[cfg(feature = "extended-types")]
     dynamic_prefix:          Option<DynamicPrefixState>,
     #[cfg(feature = "extended-types")]
@@ -87,6 +99,17 @@ pub(crate) struct DeserializerState<T: Default = ()> {
 impl<T: Default> DeserializerState<T> {
     #[must_use]
     pub(crate) fn format_state(&mut self) -> &mut T { &mut self.format_state }
+
+    pub(crate) fn replace_custom_serialization(
+        &mut self,
+        custom_serialization: CustomSerializationState,
+    ) -> Option<CustomSerializationState> {
+        self.custom_serialization.replace(custom_serialization)
+    }
+
+    pub(crate) fn take_custom_serialization(&mut self) -> Option<CustomSerializationState> {
+        self.custom_serialization.take()
+    }
 
     #[cfg(feature = "extended-types")]
     pub(crate) fn replace_dynamic_prefix(
@@ -120,6 +143,7 @@ impl<T: Default> DeserializerState<T> {
 pub(crate) struct SerializerState<T: Default = ()> {
     pub(crate) options:    Option<ArrowOptions>,
     pub(crate) serializer: T,
+    custom_serialization:  Option<CustomSerializationState>,
     #[cfg(feature = "extended-types")]
     dynamic_prefix:        Option<DynamicPrefixState>,
 }
@@ -134,6 +158,19 @@ impl<T: Default> SerializerState<T> {
     #[expect(unused)]
     #[must_use]
     pub(crate) fn serializer(&mut self) -> &mut T { &mut self.serializer }
+
+    #[allow(dead_code)]
+    pub(crate) fn replace_custom_serialization(
+        &mut self,
+        custom_serialization: CustomSerializationState,
+    ) -> Option<CustomSerializationState> {
+        self.custom_serialization.replace(custom_serialization)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn take_custom_serialization(&mut self) -> Option<CustomSerializationState> {
+        self.custom_serialization.take()
+    }
 
     #[cfg(feature = "extended-types")]
     pub(crate) fn replace_dynamic_prefix(

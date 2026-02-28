@@ -1,5 +1,3 @@
-#[cfg(feature = "extended-types")]
-mod aggregate_function;
 mod binary;
 #[cfg(feature = "extended-types")]
 mod dynamic;
@@ -188,7 +186,11 @@ impl ClickHouseArrowSerializer for Type {
             }
             #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => {
-                aggregate_function::serialize_async(self, writer, column).await?;
+                return Err(crate::Error::ArrowSerialize(
+                    "Arrow serialization for AggregateFunction is not supported: aggregate states \
+                     are function-specific opaque binary blobs"
+                        .to_string(),
+                ));
             }
             #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
@@ -205,7 +207,7 @@ impl ClickHouseArrowSerializer for Type {
             Type::Variant(_) => variant::serialize_async(self, writer, column, state).await?,
             #[cfg(feature = "extended-types")]
             Type::Dynamic { .. } => {
-                dynamic::serialize_async(self, writer, column, data_type, state).await?
+                dynamic::serialize_async(self, writer, column, data_type, state).await?;
             }
             Type::Ring | Type::Polygon | Type::Point | Type::MultiPolygon => {
                 // Type should be converted earlier, if not this is a fallback
@@ -310,7 +312,11 @@ impl ClickHouseArrowSerializer for Type {
             Type::Dynamic { .. } => dynamic::serialize(self, writer, column, data_type, state)?,
             #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => {
-                aggregate_function::serialize(self, writer, column)?;
+                return Err(crate::Error::ArrowSerialize(
+                    "Arrow serialization for AggregateFunction is not supported: aggregate states \
+                     are function-specific opaque binary blobs"
+                        .to_string(),
+                ));
             }
             Type::Ring | Type::Polygon | Type::Point | Type::MultiPolygon => {
                 // Type should be converted earlier, if not this is a fallback
@@ -336,7 +342,6 @@ mod tests {
 
     use super::*;
     use crate::ArrowOptions;
-    use crate::arrow::deserialize::ClickHouseArrowDeserializer;
     use crate::arrow::types::{
         LIST_ITEM_FIELD_NAME, MAP_FIELD_NAME, STRUCT_KEY_FIELD_NAME, STRUCT_VALUE_FIELD_NAME,
     };
@@ -604,7 +609,7 @@ mod tests {
 
         // Point = Tuple(Float64, Float64)
         let type_ = Type::Point;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let (data_type, _) = crate::arrow::ch_to_arrow_type(&type_, None, None).unwrap();
 
         // Create a struct array with 3 points
         let x_values = Float64Array::from(vec![1.0, 2.5, 3.7]);
@@ -655,7 +660,7 @@ mod tests {
 
         // Ring = Array(Point) = Array(Tuple(Float64, Float64))
         let type_ = Type::Ring;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let (data_type, _) = crate::arrow::ch_to_arrow_type(&type_, None, None).unwrap();
 
         // Create a ring with 4 points
         let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
@@ -701,7 +706,7 @@ mod tests {
 
         // Polygon = Array(Ring) = Array(Array(Tuple(Float64, Float64)))
         let type_ = Type::Polygon;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let (data_type, _) = crate::arrow::ch_to_arrow_type(&type_, None, None).unwrap();
 
         // Create a polygon with one ring of 4 points
         let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
@@ -761,7 +766,7 @@ mod tests {
 
         // MultiPolygon = Array(Polygon) = Array(Array(Array(Tuple(Float64, Float64))))
         let type_ = Type::MultiPolygon;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
+        let (data_type, _) = crate::arrow::ch_to_arrow_type(&type_, None, None).unwrap();
 
         // Create a multipolygon with one polygon containing one ring of 4 points
         let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
@@ -812,481 +817,6 @@ mod tests {
         assert_eq!(output.len(), 8 + 8 + 8 + 4 * 2 * 8); // num_polygons + num_rings + ring_size + points
 
         let mut cursor = Cursor::new(output);
-        let mut bytes = [0u8; 8];
-
-        // Read number of polygons
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(u64::from_le_bytes(bytes), 1);
-
-        // Read number of rings
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(u64::from_le_bytes(bytes), 1);
-
-        // Read ring size
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(u64::from_le_bytes(bytes), 4);
-    }
-}
-
-#[cfg(test)]
-mod tests_sync {
-    use std::sync::Arc;
-
-    use arrow::array::*;
-    use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::{DataType, Field, Fields};
-
-    use super::*;
-    use crate::ArrowOptions;
-    use crate::arrow::deserialize::ClickHouseArrowDeserializer;
-    use crate::arrow::types::{
-        LIST_ITEM_FIELD_NAME, MAP_FIELD_NAME, STRUCT_KEY_FIELD_NAME, STRUCT_VALUE_FIELD_NAME,
-    };
-    use crate::native::types::Type;
-
-    /// Tests serialization of `Int32` array.
-    #[test]
-    fn test_serialize_int32() {
-        let column = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Int32.serialize(&mut buffer, &column, &DataType::Int32, &mut state).unwrap();
-
-        assert_eq!(buffer, vec![
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-        ]);
-    }
-
-    /// Tests serialization of `Nullable(Int32)` array with nulls.
-    #[test]
-    fn test_serialize_nullable_int32() {
-        let column = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Nullable(Box::new(Type::Int32))
-            .serialize(&mut buffer, &column, &DataType::Int32, &mut state)
-            .unwrap();
-
-        assert_eq!(buffer, vec![
-            // Null mask: [0, 1, 0] (0=non-null, 1=null)
-            0, 1, 0, // Values: [1, 0, 3]
-            1, 0, 0, 0, // 1
-            0, 0, 0, 0, // null
-            3, 0, 0, 0, // 3
-        ]);
-    }
-
-    /// Tests serialization of `String` array.
-    #[test]
-    fn test_serialize_string() {
-        let column = Arc::new(StringArray::from(vec!["hello", "", "world"])) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::String.serialize(&mut buffer, &column, &DataType::Utf8, &mut state).unwrap();
-
-        assert_eq!(buffer, vec![
-            5, b'h', b'e', b'l', b'l', b'o', // "hello"
-            0,    // ""
-            5, b'w', b'o', b'r', b'l', b'd', // "world"
-        ]);
-    }
-
-    /// Tests serialization of `Nullable(String)` array with nulls.
-    #[test]
-    fn test_serialize_nullable_string() {
-        let column = Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Nullable(Box::new(Type::String))
-            .serialize(&mut buffer, &column, &DataType::Utf8, &mut state)
-            .unwrap();
-
-        assert_eq!(buffer, vec![
-            // Null mask: [0, 1, 0]
-            0, 1, 0, // Values: ["a", "", "c"]
-            1, b'a', // "a"
-            0,    // null (empty string)
-            1, b'c', // "c"
-        ]);
-    }
-
-    /// Tests serialization of `Array(Int32)` with non-nullable inner values.
-    #[test]
-    fn test_serialize_array_int32() {
-        let inner_field = Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false));
-        let values = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
-        let offsets = OffsetBuffer::new(vec![0, 2, 3, 5].into());
-        let column =
-            Arc::new(ListArray::new(Arc::clone(&inner_field), offsets, values, None)) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Array(Box::new(Type::Int32))
-            .serialize(&mut buffer, &column, &DataType::List(inner_field), &mut state)
-            .unwrap();
-
-        assert_eq!(buffer, vec![
-            // Offsets: [2, 3, 5] (skipping first 0)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            3, 0, 0, 0, 0, 0, 0, 0, // 3
-            5, 0, 0, 0, 0, 0, 0, 0, // 5
-            // Values: [1, 2, 3, 4, 5]
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-            4, 0, 0, 0, // 4
-            5, 0, 0, 0, // 5
-        ]);
-    }
-
-    /// Tests serialization of `Nullable(Array(Int32))` with null arrays.
-    #[test]
-    fn test_serialize_nullable_array_int32() {
-        let inner_field = Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false));
-        let field = Field::new("col", DataType::List(Arc::clone(&inner_field)), true);
-        let values = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
-        let offsets = OffsetBuffer::new(vec![0, 2, 2, 5].into());
-        let null_buffer = Some(NullBuffer::from(vec![true, false, true]));
-        let column =
-            Arc::new(ListArray::new(inner_field, offsets, values, null_buffer)) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Nullable(Box::new(Type::Array(Box::new(Type::Int32))))
-            .serialize(&mut buffer, &column, field.data_type(), &mut state)
-            .unwrap();
-
-        assert_eq!(buffer, vec![
-            // Null mask: []
-            // Offsets: [2, 2, 5] (skipping first 0, null array repeats offset)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            2, 0, 0, 0, 0, 0, 0, 0, // 2 (null)
-            5, 0, 0, 0, 0, 0, 0, 0, // 5
-            // Values: [1, 2, 3, 4, 5]
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-            4, 0, 0, 0, // 4
-            5, 0, 0, 0, // 5
-        ]);
-    }
-
-    /// Tests serialization of `Map(String, Int32)` with non-nullable key-value pairs.
-    #[test]
-    fn test_serialize_map_string_int32() {
-        let key_field = Field::new(STRUCT_KEY_FIELD_NAME, DataType::Utf8, false);
-        let value_field = Field::new(STRUCT_VALUE_FIELD_NAME, DataType::Int32, false);
-        let struct_field = Arc::new(Field::new(
-            MAP_FIELD_NAME,
-            DataType::Struct(Fields::from(vec![key_field.clone(), value_field.clone()])),
-            false,
-        ));
-        let field = Field::new("col", DataType::Map(Arc::clone(&struct_field), false), false);
-        let keys = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
-        let values = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
-        let struct_array = StructArray::from(vec![
-            (Arc::new(key_field), keys as ArrayRef),
-            (Arc::new(value_field), values as ArrayRef),
-        ]);
-        let offsets = OffsetBuffer::new(vec![0, 2, 3, 5].into());
-        let column =
-            Arc::new(MapArray::new(struct_field, offsets, struct_array, None, false)) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Map(Box::new(Type::String), Box::new(Type::Int32))
-            .serialize(&mut buffer, &column, field.data_type(), &mut state)
-            .unwrap();
-
-        assert_eq!(buffer, vec![
-            // Offsets: [2, 3, 5] (skipping first 0)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            3, 0, 0, 0, 0, 0, 0, 0, // 3
-            5, 0, 0, 0, 0, 0, 0, 0, // 5
-            // Keys: ["a", "b", "c", "d", "e"]
-            1, b'a', // "a"
-            1, b'b', // "b"
-            1, b'c', // "c"
-            1, b'd', // "d"
-            1, b'e', // "e"
-            // Values: [1, 2, 3, 4, 5]
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-            4, 0, 0, 0, // 4
-            5, 0, 0, 0, // 5
-        ]);
-    }
-
-    /// Tests serialization of `Int32` array with zero rows.
-    #[test]
-    fn test_serialize_int32_zero_rows() {
-        let field = Field::new("col", DataType::Int32, false);
-        let column = Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef;
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        Type::Int32.serialize(&mut buffer, &column, field.data_type(), &mut state).unwrap();
-
-        assert!(buffer.is_empty()); // No data for zero rows
-    }
-
-    #[test]
-    fn test_serialize_list_zero_rows() {
-        let inner_field = Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false));
-        let data_type = DataType::List(Arc::clone(&inner_field));
-        let values = Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef;
-        let offsets = OffsetBuffer::new(vec![0].into());
-        let array = ListArray::new(inner_field, offsets, values, None);
-        let column = Arc::new(array) as ArrayRef;
-
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-
-        let type_ = Type::Array(Type::Int32.into());
-        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
-
-        assert!(buffer.is_empty()); // No data for zero rows
-    }
-
-    #[test]
-    fn test_serialize_lowcard_zero_rows() {
-        let type_ = Type::LowCardinality(Box::new(Type::String));
-        let data_type = DataType::Dictionary(DataType::Int32.into(), DataType::Utf8.into());
-
-        let array = Arc::new(
-            DictionaryArray::<Int32Type>::try_new(
-                Int32Array::from(Vec::<i32>::new()),
-                Arc::new(StringArray::from(Vec::<&str>::new())),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default()
-            .with_arrow_options(ArrowOptions::default().with_strings_as_strings(true));
-        type_.serialize(&mut buffer, &array, &data_type, &mut state).unwrap();
-
-        assert!(buffer.is_empty()); // No data for zero rows
-    }
-
-    /// Tests serialization of a `Point` array.
-    #[test]
-    fn test_serialize_point() {
-        use std::io::Read;
-
-        // Point = Tuple(Float64, Float64)
-        let type_ = Type::Point;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
-
-        // Create a struct array with 3 points
-        let x_values = Float64Array::from(vec![1.0, 2.5, 3.7]);
-        let y_values = Float64Array::from(vec![10.0, 20.5, 30.7]);
-        let fields = Fields::from(vec![
-            Field::new("x", DataType::Float64, false),
-            Field::new("y", DataType::Float64, false),
-        ]);
-        let struct_array = StructArray::new(
-            fields,
-            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
-            None,
-        );
-        let column = Arc::new(struct_array) as ArrayRef;
-
-        let mut buffer = Vec::new();
-        let mut state = SerializerState::default();
-        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
-
-        assert_eq!(buffer.len(), 6 * 8); // 3 points * 2 coordinates * 8 bytes each
-
-        // Verify the serialized data (column-wise: all x values, then all y values)
-        let mut cursor = std::io::Cursor::new(buffer);
-        let mut bytes = [0u8; 8];
-
-        // X values
-        cursor.read_exact(&mut bytes).unwrap();
-        assert!((f64::from_le_bytes(bytes) - 1.0).abs() < f64::EPSILON);
-        cursor.read_exact(&mut bytes).unwrap();
-        assert!((f64::from_le_bytes(bytes) - 2.5).abs() < f64::EPSILON);
-        cursor.read_exact(&mut bytes).unwrap();
-        assert!((f64::from_le_bytes(bytes) - 3.7).abs() < f64::EPSILON);
-
-        // Y values
-        cursor.read_exact(&mut bytes).unwrap();
-        assert!((f64::from_le_bytes(bytes) - 10.0).abs() < f64::EPSILON);
-        cursor.read_exact(&mut bytes).unwrap();
-        assert!((f64::from_le_bytes(bytes) - 20.5).abs() < f64::EPSILON);
-        cursor.read_exact(&mut bytes).unwrap();
-        assert!((f64::from_le_bytes(bytes) - 30.7).abs() < f64::EPSILON);
-    }
-
-    /// Tests serialization of a `Ring` array.
-    #[test]
-    fn test_serialize_ring() {
-        use std::io::Read;
-
-        // Ring = Array(Point) = Array(Tuple(Float64, Float64))
-        let type_ = Type::Ring;
-
-        // Create a ring with 4 points
-        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
-        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
-        let fields = Fields::from(vec![
-            Field::new("x", DataType::Float64, false),
-            Field::new("y", DataType::Float64, false),
-        ]);
-        let struct_array = StructArray::new(
-            fields,
-            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
-            None,
-        );
-
-        let offsets = OffsetBuffer::new(vec![0, 4].into());
-        let list_array = ListArray::new(
-            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
-            offsets,
-            Arc::new(struct_array) as ArrayRef,
-            None,
-        );
-
-        let mut buffer = Vec::new();
-        let column = Arc::new(list_array) as ArrayRef;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
-        let mut state = SerializerState::default();
-        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
-
-        assert_eq!(buffer.len(), 8 + 4 * 2 * 8); // size (8) + 4 points * 2 coords * 8 bytes
-
-        let mut cursor = std::io::Cursor::new(buffer);
-        let mut bytes = [0u8; 8];
-
-        // Read size
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(u64::from_le_bytes(bytes), 4);
-    }
-
-    /// Tests serialization of a `Polygon` array.
-    #[test]
-    fn test_serialize_polygon() {
-        use std::io::Read;
-
-        // Polygon = Array(Ring) = Array(Array(Tuple(Float64, Float64)))
-        let type_ = Type::Polygon;
-
-        // Create a polygon with one ring of 4 points
-        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
-        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
-        let fields = Fields::from(vec![
-            Field::new("x", DataType::Float64, false),
-            Field::new("y", DataType::Float64, false),
-        ]);
-        let struct_array = StructArray::new(
-            fields,
-            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
-            None,
-        );
-
-        // Create ring array
-        let ring_offsets = OffsetBuffer::new(vec![0, 4].into());
-        let ring_array = ListArray::new(
-            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
-            ring_offsets,
-            Arc::new(struct_array) as ArrayRef,
-            None,
-        );
-
-        // Create polygon array
-        let polygon_offsets = OffsetBuffer::new(vec![0, 1].into());
-        let polygon_array = ListArray::new(
-            Arc::new(Field::new("item", ring_array.data_type().clone(), false)),
-            polygon_offsets,
-            Arc::new(ring_array) as ArrayRef,
-            None,
-        );
-
-        let mut buffer = Vec::new();
-        let column = Arc::new(polygon_array) as ArrayRef;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
-        let mut state = SerializerState::default();
-        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
-
-        assert_eq!(buffer.len(), 8 + 8 + 4 * 2 * 8); // num_rings + ring_size + points
-
-        let mut cursor = std::io::Cursor::new(buffer);
-        let mut bytes = [0u8; 8];
-
-        // Read number of rings
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(u64::from_le_bytes(bytes), 1);
-
-        // Read ring size
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(u64::from_le_bytes(bytes), 4);
-    }
-
-    /// Tests serialization of a `MultiPolygon` array.
-    #[test]
-    fn test_serialize_multipolygon() {
-        use std::io::Read;
-
-        // MultiPolygon = Array(Polygon) = Array(Array(Array(Tuple(Float64, Float64))))
-        let type_ = Type::MultiPolygon;
-
-        // Create a multipolygon with one polygon containing one ring of 4 points
-        let x_values = Float64Array::from(vec![0.0, 1.0, 0.5, 0.0]);
-        let y_values = Float64Array::from(vec![0.0, 0.0, 1.0, 0.0]);
-        let fields = Fields::from(vec![
-            Field::new("x", DataType::Float64, false),
-            Field::new("y", DataType::Float64, false),
-        ]);
-        let struct_array = StructArray::new(
-            fields,
-            vec![Arc::new(x_values) as ArrayRef, Arc::new(y_values) as ArrayRef],
-            None,
-        );
-
-        // Create ring array
-        let ring_offsets = OffsetBuffer::new(vec![0, 4].into());
-        let ring_array = ListArray::new(
-            Arc::new(Field::new("item", struct_array.data_type().clone(), false)),
-            ring_offsets,
-            Arc::new(struct_array) as ArrayRef,
-            None,
-        );
-
-        // Create polygon array
-        let polygon_offsets = OffsetBuffer::new(vec![0, 1].into());
-        let polygon_array = ListArray::new(
-            Arc::new(Field::new("item", ring_array.data_type().clone(), false)),
-            polygon_offsets,
-            Arc::new(ring_array) as ArrayRef,
-            None,
-        );
-
-        // Create multipolygon array
-        let multipolygon_offsets = OffsetBuffer::new(vec![0, 1].into());
-        let multipolygon_array = ListArray::new(
-            Arc::new(Field::new("item", polygon_array.data_type().clone(), false)),
-            multipolygon_offsets,
-            Arc::new(polygon_array) as ArrayRef,
-            None,
-        );
-
-        let mut buffer = Vec::new();
-        let column = Arc::new(multipolygon_array) as ArrayRef;
-        let (data_type, _) = type_.arrow_type(None).unwrap();
-        let mut state = SerializerState::default();
-        type_.serialize(&mut buffer, &column, &data_type, &mut state).unwrap();
-
-        assert_eq!(buffer.len(), 8 + 8 + 8 + 4 * 2 * 8); // num_polygons + num_rings + ring_size + points
-
-        let mut cursor = std::io::Cursor::new(buffer);
         let mut bytes = [0u8; 8];
 
         // Read number of polygons

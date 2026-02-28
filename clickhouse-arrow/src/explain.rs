@@ -156,18 +156,12 @@ pub enum ExplainResult {
 impl ExplainResult {
     #[must_use]
     pub fn as_text(&self) -> Option<&str> {
-        match self {
-            ExplainResult::Text(text) => Some(text),
-            _ => None,
-        }
+        if let ExplainResult::Text(text) = self { Some(text) } else { None }
     }
 
     #[must_use]
     pub fn as_arrow(&self) -> Option<&RecordBatch> {
-        match self {
-            ExplainResult::Arrow(batch) => Some(batch),
-            _ => None,
-        }
+        if let ExplainResult::Arrow(batch) = self { Some(batch) } else { None }
     }
 
     #[cfg(feature = "serde")]
@@ -209,42 +203,44 @@ pub struct ExplainEstimateRow {
 }
 
 impl ExplainEstimateRow {
+    /// # Errors
+    /// - Returns error if columns don't exist on `RecordBatch`
     pub fn from_batch(batch: &RecordBatch) -> crate::Result<Vec<Self>> {
         use arrow::array::{AsArray, StringArray};
 
         let database_col = batch
             .column_by_name("database")
-            .ok_or_else(|| crate::Error::DeserializeError("Missing 'database' column".into()))?;
+            .ok_or_else(|| crate::Error::Deserialize("Missing 'database' column".into()))?;
         let table_col = batch
             .column_by_name("table")
-            .ok_or_else(|| crate::Error::DeserializeError("Missing 'table' column".into()))?;
+            .ok_or_else(|| crate::Error::Deserialize("Missing 'table' column".into()))?;
         let parts_col = batch
             .column_by_name("parts")
-            .ok_or_else(|| crate::Error::DeserializeError("Missing 'parts' column".into()))?;
+            .ok_or_else(|| crate::Error::Deserialize("Missing 'parts' column".into()))?;
         let rows_col = batch
             .column_by_name("rows")
-            .ok_or_else(|| crate::Error::DeserializeError("Missing 'rows' column".into()))?;
+            .ok_or_else(|| crate::Error::Deserialize("Missing 'rows' column".into()))?;
         let marks_col = batch
             .column_by_name("marks")
-            .ok_or_else(|| crate::Error::DeserializeError("Missing 'marks' column".into()))?;
+            .ok_or_else(|| crate::Error::Deserialize("Missing 'marks' column".into()))?;
 
         let databases = database_col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-            crate::Error::DeserializeError("'database' column is not a string array".into())
+            crate::Error::Deserialize("'database' column is not a string array".into())
         })?;
         let tables = table_col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-            crate::Error::DeserializeError("'table' column is not a string array".into())
+            crate::Error::Deserialize("'table' column is not a string array".into())
         })?;
         let parts =
             parts_col.as_primitive_opt::<arrow::datatypes::UInt64Type>().ok_or_else(|| {
-                crate::Error::DeserializeError("'parts' column is not a UInt64 array".into())
+                crate::Error::Deserialize("'parts' column is not a UInt64 array".into())
             })?;
         let rows =
             rows_col.as_primitive_opt::<arrow::datatypes::UInt64Type>().ok_or_else(|| {
-                crate::Error::DeserializeError("'rows' column is not a UInt64 array".into())
+                crate::Error::Deserialize("'rows' column is not a UInt64 array".into())
             })?;
         let marks =
             marks_col.as_primitive_opt::<arrow::datatypes::UInt64Type>().ok_or_else(|| {
-                crate::Error::DeserializeError("'marks' column is not a UInt64 array".into())
+                crate::Error::Deserialize("'marks' column is not a UInt64 array".into())
             })?;
 
         let mut out = Vec::with_capacity(batch.num_rows());
@@ -295,6 +291,13 @@ impl QueryOptions {
     }
 }
 
+#[cfg_attr(
+    not(feature = "serde"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "Signature stays uniform across serde/non-serde builds"
+    )
+)]
 pub(crate) fn explain_result_from_batches(
     batches: Vec<RecordBatch>,
     format: ExplainFormat,
@@ -311,7 +314,7 @@ pub(crate) fn explain_result_from_batches(
         ExplainFormat::Json => {
             let text = explain_text_from_batches(&batches);
             let json = serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
-                crate::Error::DeserializeError(format!("Failed to parse EXPLAIN JSON: {e}"))
+                crate::Error::Deserialize(format!("Failed to parse EXPLAIN JSON: {e}"))
             })?;
             Ok(ExplainResult::Json(json))
         }

@@ -117,7 +117,7 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
         TUINT32 => Type::UInt32,
         TUINT64 => Type::UInt64,
         x => {
-            return Err(Error::DeserializeError(format!("LowCardinality: bad index type: {x}")));
+            return Err(Error::deserialize(format!("LowCardinality: bad index type: {x}")));
         }
     };
 
@@ -142,13 +142,13 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
 
     // No dictionary found
     } else {
-        return Err(Error::DeserializeError("LowCardinality: no dictionary provided".to_string()));
+        return Err(Error::deserialize("LowCardinality: no dictionary provided"));
     };
 
     // Read number of rows in this chunk
     let num_rows = reader.read_u64_le().await? as usize;
     if num_rows != rows {
-        return Err(Error::DeserializeError(format!(
+        return Err(Error::deserialize(format!(
             "LowCardinality must be read in full. Expect {rows} rows, got {num_rows}"
         )));
     }
@@ -157,29 +157,29 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
         (($sz:ty, $m:ident) => [$(($osz:ty, $o:ident)),* $(,)?]) => {
             match keys {
                 Lckb::$m(b) => {
-                    super::deser_bulk_async!(b, reader, rows, nulls, ctx.row_buffer, $sz);
+                    super::deser_bulk!(b, reader, rows, nulls, ctx.row_buffer, $sz);
                     Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
                 $(
                     Lckb::$o(b) => {
-                        super::deser_bulk_async!(raw; b, reader, rows, nulls, ctx.row_buffer, $sz => $osz);
+                        super::deser_bulk!(cast; b, reader, rows, nulls, ctx.row_buffer, $sz => $osz);
                         Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                     },
                 )*
                 Lckb::Int8(b) => {
-                    super::deser_bulk_async!(raw; b, reader, rows, nulls, ctx.row_buffer, $sz => i8);
+                    super::deser_bulk!(cast; b, reader, rows, nulls, ctx.row_buffer, $sz => i8);
                     Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
                 Lckb::Int16(b) => {
-                    super::deser_bulk_async!(raw; b, reader, rows, nulls, ctx.row_buffer, $sz => i16);
+                    super::deser_bulk!(cast; b, reader, rows, nulls, ctx.row_buffer, $sz => i16);
                     Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
                 Lckb::Int32(b) => {
-                    super::deser_bulk_async!(raw; b, reader, rows, nulls, ctx.row_buffer, $sz => i32);
+                    super::deser_bulk!(cast; b, reader, rows, nulls, ctx.row_buffer, $sz => i32);
                     Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
                 Lckb::Int64(b) => {
-                    super::deser_bulk_async!(raw; b, reader, rows, nulls, ctx.row_buffer, $sz => i64);
+                    super::deser_bulk!(cast; b, reader, rows, nulls, ctx.row_buffer, $sz => i64);
                     Ok(Arc::new(DictionaryArray::new(b.finish(), dictionary)))
                 },
             }
@@ -191,7 +191,7 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
         Type::UInt16 => deser_key!((u16, UInt16) => [(u8, UInt8), (u32, UInt32), (u64, UInt64)]),
         Type::UInt32 => deser_key!((u32, UInt32) => [(u8, UInt8), (u16, UInt16), (u64, UInt64)]),
         Type::UInt64 => deser_key!((u64, UInt64) => [(u8, UInt8), (u16, UInt16), (u32, UInt32)]),
-        _ => Err(Error::DeserializeError(format!("LowCardinality: index type {indexed_type:?}"))),
+        _ => Err(Error::deserialize(format!("LowCardinality: index type {indexed_type:?}"))),
     }
 }
 
@@ -223,16 +223,17 @@ mod tests {
         let mut builder =
             TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
                 .unwrap();
-        let result = deserialize(
-            &inner_type,
-            &mut builder,
-            &data_type,
-            &mut reader,
-            rows,
-            nulls,
-            &mut vec![],
-        )
-        .await?;
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
+        let result =
+            deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, nulls, &mut ctx)
+                .await?;
 
         let dict_array = result.as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
         let indices = dict_array.keys();
@@ -463,12 +464,22 @@ mod tests {
         let mut builder =
             TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
                 .unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
+
         let result =
-            deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, &[], &mut vec![])
+            deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, &[], &mut ctx)
                 .await;
         assert!(matches!(
             result,
-            Err(Error::DeserializeError(msg))
+            Err(Error::Deserialize(msg))
             if msg.contains("LowCardinality must be read in full. Expect 3 rows, got 4")
         ));
     }
@@ -489,295 +500,23 @@ mod tests {
         let mut builder =
             TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
                 .unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
+
         let result =
-            deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, &[], &mut vec![])
+            deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, &[], &mut ctx)
                 .await;
+
         assert!(matches!(
             result,
-            Err(Error::DeserializeError(msg)) if msg.contains("no dictionary provided")
-        ));
-    }
-}
-
-#[cfg(test)]
-mod tests_sync {
-    use std::io::Cursor;
-
-    use arrow::array::{DictionaryArray, Int32Array, StringArray};
-
-    use super::*;
-    use crate::ArrowOptions;
-    use crate::arrow::ch_to_arrow_type;
-    use crate::native::types::Type;
-
-    // nction for testing LowCardinality deserialization
-    fn test_low_cardinality(
-        inner_type: &Type,
-        input: Vec<u8>,
-        nulls: &[u8],
-        expected_indices: Vec<Option<i32>>,
-        expected_values: Vec<Option<&str>>,
-    ) -> Result<ArrayRef> {
-        let mut reader = Cursor::new(input);
-        let rows = expected_indices.len();
-        let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let key_type = DataType::Int32;
-        let value_type = ch_to_arrow_type(inner_type, opts, None)?.0;
-        let data_type = DataType::Dictionary(Box::new(key_type), Box::new(value_type));
-        let mut builder = LowCardinalityBuilder::try_new(inner_type, &data_type)?;
-        let result = deserialize(
-            &mut builder,
-            &mut reader,
-            inner_type,
-            &data_type,
-            rows,
-            nulls,
-            &mut vec![],
-        )?;
-
-        let dict_array = result.as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-        let indices = dict_array.keys();
-
-        let dictionary = dict_array.downcast_dict::<StringArray>().unwrap();
-        let mapped_values: Vec<Option<&str>> = dictionary.into_iter().collect::<Vec<_>>();
-        let expected_array = StringArray::from(mapped_values);
-
-        assert_eq!(indices, &Int32Array::from(expected_indices), "Indices mismatch");
-        assert_eq!(&expected_array, &StringArray::from(expected_values), "Values mismatch");
-
-        Ok(result)
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_string() {
-        let inner_type = Type::String;
-        let input = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Indices: [0, 1, 0]
-        ];
-
-        let expected_idx = vec![Some(0), Some(1), Some(0)];
-        let expected_values = vec![Some("a"), Some("b"), Some("a")];
-        drop(test_low_cardinality(&inner_type, input, &[], expected_idx, expected_values).unwrap());
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_nullable_string() {
-        let inner_type = Type::Nullable(Box::new(Type::String));
-        let nulls = [];
-        let input = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            3, 0, 0, 0, 0, 0, 0, 0, // Dict size: 3
-            0, // Null value
-            1, b'a', 1, b'b', // Dict: ["a", null, "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            1, 0, 2, // Indices: [1, 0, 2]
-        ];
-        let expected_idx = vec![Some(1), Some(0), Some(2)];
-        let expected_values = vec![Some("a"), None, Some("b")];
-        drop(
-            test_low_cardinality(&inner_type, input, &nulls, expected_idx, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_string_uint16() {
-        let inner_type = Type::String;
-        let input = vec![
-            1, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt16 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 0, 1, 0, 0, 0, // Indices: [0, 1, 0] (UInt16)
-        ];
-        let expected_indices = vec![Some(0), Some(1), Some(0)];
-        let expected_values = vec![Some("a"), Some("b"), Some("a")];
-        drop(
-            test_low_cardinality(&inner_type, input, &[], expected_indices, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_string_uint32() {
-        let inner_type = Type::String;
-        let input = vec![
-            2, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt32 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, // Indices: [0, 1, 0] (UInt32)
-        ];
-        let expected_indices = vec![Some(0), Some(1), Some(0)];
-        let expected_values = vec![Some("a"), Some("b"), Some("a")];
-        drop(
-            test_low_cardinality(&inner_type, input, &[], expected_indices, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_string_uint64() {
-        let inner_type = Type::String;
-        let input = vec![
-            3, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt64 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, // Indices: [0, 1, 0] (UInt64)
-        ];
-        let expected_indices = vec![Some(0), Some(1), Some(0)];
-        let expected_values = vec![Some("a"), Some("b"), Some("a")];
-        drop(
-            test_low_cardinality(&inner_type, input, &[], expected_indices, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_nullable_low_cardinality_string() {
-        let inner_type = Type::String;
-        let input = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 0, 1, // Indices: [0, 0, 1]
-        ];
-        let nulls = vec![0, 1, 0]; // 0=non-null, 1=null
-        let expected_indices = vec![Some(0), None, Some(1)];
-        let expected_values = vec![Some("a"), None, Some("b")];
-        drop(
-            test_low_cardinality(&inner_type, input, &nulls, expected_indices, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_global_dictionary() {
-        let inner_type = Type::String;
-        let input = vec![
-            0, 2, 0, 0, 1, 0, 0,
-            0, // Flags: UInt8 | HasAdditionalKeysBit | NeedsGlobalDictionaryBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Indices: [0, 1, 0]
-        ];
-        let expected_indices = vec![Some(0), Some(1), Some(0)];
-        let expected_values = vec![Some("a"), Some("b"), Some("a")];
-        drop(
-            test_low_cardinality(&inner_type, input, &[], expected_indices, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_zero_rows() {
-        let inner_type = Type::String;
-        let input = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            0, 0, 0, 0, 0, 0, 0, 0, // Dict size: 0
-            0, 0, 0, 0, 0, 0, 0, 0, // Key count: 0
-        ];
-        let expected_indices = vec![];
-        let expected_values = vec![];
-        drop(
-            test_low_cardinality(&inner_type, input, &[], expected_indices, expected_values)
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn test_low_cardinality_large_dataset() {
-        let inner_type = Type::String;
-        let rows = 1000;
-        // Generate large dataset
-        let mut input = Vec::new();
-        // Flags: UInt8 | HasAdditionalKeysBit
-        input.extend_from_slice(&[0, 2, 0, 0, 0, 0, 0, 0]);
-        // Dict size: a-z (26)
-        input.extend_from_slice(&[26, 0, 0, 0, 0, 0, 0, 0]);
-        // Dictionary: a-z
-        for ch in b'a'..=b'z' {
-            input.push(1); // string length
-            input.push(ch); // character
-        }
-        // Key count: 1000
-        input.extend_from_slice(&(rows as u64).to_le_bytes());
-
-        // Expected values: a-z
-        let char_values: Vec<String> =
-            (b'a'..=b'z').map(|c| String::from_utf8(vec![c]).unwrap()).collect();
-
-        // Indices: 0-25 repeated
-        let mut indices = Vec::with_capacity(rows);
-        let mut expected_indices = Vec::with_capacity(rows);
-        let mut expected_values = Vec::with_capacity(rows);
-        #[expect(clippy::cast_possible_truncation)]
-        for i in 0..rows {
-            let idx = (i % 26) as u8;
-            indices.push(idx);
-            expected_indices.push(Some(i32::from(idx)));
-            expected_values.push(Some(char_values[idx as usize].as_str()));
-        }
-        input.extend_from_slice(&indices);
-
-        drop(
-            test_low_cardinality(&inner_type, input, &[], expected_indices, expected_values)
-                .expect("Failed to deserialize large LowCardinality(String) dataset"),
-        );
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_invalid_num_rows() {
-        let inner_type = Type::String;
-        let rows = 3;
-        let input = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', 1, b'b', // Dict: ["a", "b"]
-            4, 0, 0, 0, 0, 0, 0, 0, // Key count: 4 (invalid)
-            0, 1, 0, 1, // Indices: [0, 1, 0, 1]
-        ];
-        let mut reader = Cursor::new(input);
-        let key_type = DataType::Int32;
-        let value_type = ch_to_arrow_type(&inner_type, None, None).unwrap().0;
-        let data_type = DataType::Dictionary(Box::new(key_type), Box::new(value_type));
-        let mut builder = LowCardinalityBuilder::try_new(&inner_type, &data_type).unwrap();
-        let result =
-            deserialize(&mut builder, &mut reader, &inner_type, &data_type, rows, &[], &mut vec![]);
-        assert!(matches!(
-            result,
-            Err(Error::DeserializeError(msg))
-            if msg.contains("LowCardinality must be read in full. Expect 3 rows, got 4")
-        ));
-    }
-
-    #[test]
-    fn test_deserialize_low_cardinality_missing_dictionary() {
-        let inner_type = Type::String;
-        let rows = 3;
-        let input = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, // Flags: UInt8 (no HasAdditionalKeysBit)
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 2, // Indices: [0, 1, 2]
-        ];
-        let mut reader = Cursor::new(input);
-        let key_type = DataType::Int32;
-        let value_type = ch_to_arrow_type(&inner_type, None, None).unwrap().0;
-        let data_type = DataType::Dictionary(Box::new(key_type), Box::new(value_type));
-        let mut builder = LowCardinalityBuilder::try_new(&inner_type, &data_type).unwrap();
-        let result =
-            deserialize(&mut builder, &mut reader, &inner_type, &data_type, rows, &[], &mut vec![]);
-        assert!(matches!(
-            result,
-            Err(Error::DeserializeError(msg)) if msg.contains("no dictionary provided")
+            Err(Error::Deserialize(msg)) if msg.contains("no dictionary provided")
         ));
     }
 }

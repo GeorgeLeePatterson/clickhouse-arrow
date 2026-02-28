@@ -13,7 +13,8 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) {
         if let Type::Map(k, v) = type_ {
-            super::super::map::normalize_map_type(k, v).serialize_prefix(writer, state);
+            k.serialize_prefix(writer, state);
+            v.serialize_prefix(writer, state);
         }
     }
 
@@ -23,9 +24,8 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         if let Type::Map(k, v) = type_ {
-            super::super::map::normalize_map_type(k, v)
-                .serialize_prefix_async(writer, state)
-                .await?;
+            k.serialize_prefix_async(writer, state).await?;
+            v.serialize_prefix_async(writer, state).await?;
         }
         Ok(())
     }
@@ -37,7 +37,7 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Map(key_type, value_type) = type_ else {
-            return Err(Error::SerializeError(format!(
+            return Err(Error::Serialize(format!(
                 "MapSerializer called with non-map type: {type_:?}"
             )));
         };
@@ -47,7 +47,7 @@ impl Serializer for MapSerializer {
 
         for value in values {
             let Value::Map(keys, values) = value else {
-                return Err(Error::SerializeError(format!(
+                return Err(Error::Serialize(format!(
                     "MapSerializer called with non-map value: {value:?}"
                 )));
             };
@@ -69,7 +69,7 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Map(key_type, value_type) = type_ else {
-            return Err(Error::SerializeError(format!(
+            return Err(Error::Serialize(format!(
                 "MapSerializer called with non-map type: {type_:?}"
             )));
         };
@@ -79,7 +79,7 @@ impl Serializer for MapSerializer {
 
         for value in values {
             let Value::Map(keys, values) = value else {
-                return Err(Error::SerializeError(format!(
+                return Err(Error::Serialize(format!(
                     "MapSerializer called with non-map value: {value:?}"
                 )));
             };

@@ -27,20 +27,12 @@ async fn roundtrip_values(type_: &Type, values: &[Value]) -> Result<Vec<Value>> 
     Ok(deserialized)
 }
 
-// TODO: Remove
-// fn roundtrip_values_sync(type_: &Type, values: &[Value]) -> Result<Vec<Value>> {
-//     let mut output = vec![];
-
-//     let mut state = SerializerState::default();
-//     // Most types don't have a prefix, so we can skip this for sync roundtrips
-//     type_.serialize_column_sync(values.to_vec(), &mut output, &mut state)?;
-//     let mut input = Cursor::new(output);
-//     let mut state = DeserializerState::default();
-//     // Most types don't have a prefix, so we can skip this for sync roundtrips
-//     let deserialized = type_.deserialize_column_sync(&mut input, values.len(), &mut state)?;
-
-//     Ok(deserialized)
-// }
+fn roundtrip_values_sync(type_: &Type, values: &[Value]) -> Result<Vec<Value>> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async { roundtrip_values(type_, values).await })
+}
 
 #[cfg(feature = "extended-types")]
 #[test]
@@ -49,7 +41,7 @@ fn nested_prefix_matches_tuple_of_arrays_prefix() {
         ("k".to_string(), Type::LowCardinality(Box::new(Type::String))),
         ("v".to_string(), Type::Object),
     ]);
-    let tuple = Type::Tuple(vec![
+    let tuple = Type::tuple_anon(vec![
         Type::Array(Box::new(Type::LowCardinality(Box::new(Type::String)))),
         Type::Array(Box::new(Type::Object)),
     ]);
@@ -452,7 +444,7 @@ async fn roundtrip_tuple() {
     ];
     assert_eq!(
         &values[..],
-        roundtrip_values(&Type::Tuple(vec![Type::UInt32, Type::UInt16]), &values[..])
+        roundtrip_values(&Type::tuple_anon(vec![Type::UInt32, Type::UInt16]), &values[..])
             .await
             .unwrap()
     );
@@ -477,7 +469,10 @@ async fn roundtrip_2tuple() {
     assert_eq!(
         &values[..],
         roundtrip_values(
-            &Type::Tuple(vec![Type::UInt32, Type::Tuple(vec![Type::UInt32, Type::UInt16])]),
+            &Type::tuple_anon(vec![
+                Type::UInt32,
+                Type::tuple_anon(vec![Type::UInt32, Type::UInt16])
+            ]),
             &values[..]
         )
         .await
@@ -498,7 +493,7 @@ async fn roundtrip_array_tuple() {
     assert_eq!(
         &values[..],
         roundtrip_values(
-            &Type::Array(Box::new(Type::Tuple(vec![Type::UInt32, Type::UInt16]))),
+            &Type::Array(Box::new(Type::tuple_anon(vec![Type::UInt32, Type::UInt16]))),
             &values[..]
         )
         .await
@@ -524,7 +519,7 @@ async fn roundtrip_tuple_array() {
     assert_eq!(
         &values[..],
         roundtrip_values(
-            &Type::Tuple(vec![
+            &Type::tuple_anon(vec![
                 Type::Array(Box::new(Type::UInt32)),
                 Type::Array(Box::new(Type::UInt16))
             ]),
@@ -817,10 +812,14 @@ fn test_type_methods() {
     assert_eq!(t.unwrap_map().unwrap(), (&Type::String, &Type::String));
     assert!(Type::String.unwrap_map().is_err());
 
-    let t = Type::Tuple(vec![Type::String]);
-    assert_eq!(t.untuple(), Some(&[Type::String] as &[_]));
+    let t = Type::tuple_anon(vec![Type::String]);
+    assert_eq!(t.untuple().unwrap().iter().map(|(_, type_)| type_).collect::<Vec<_>>(), vec![
+        &Type::String
+    ]);
     assert!(Type::String.untuple().is_none());
-    assert_eq!(t.unwrap_tuple().unwrap(), &[Type::String] as &[_]);
+    assert_eq!(t.unwrap_tuple().unwrap().iter().map(|(_, type_)| type_).collect::<Vec<_>>(), vec![
+        &Type::String
+    ]);
     assert!(Type::String.unwrap_tuple().is_err());
 
     let t = Type::Nullable(Box::new(Type::String));
@@ -840,7 +839,7 @@ fn test_type_validate() {
     assert!(Type::DateTime64(100, Tz::UTC).validate().is_err());
     assert!(Type::LowCardinality(Box::new(Type::MultiPolygon)).validate().is_err());
     assert!(Type::LowCardinality(Box::new(Type::String)).validate().is_ok());
-    assert!(Type::Tuple(vec![Type::String]).validate().is_ok());
+    assert!(Type::tuple_anon(vec![Type::String]).validate().is_ok());
     assert!(Type::Nullable(Box::new(Type::Nullable(Box::new(Type::String)))).validate().is_err());
     assert!(Type::Map(Box::new(Type::String), Box::new(Type::String)).validate().is_ok());
     assert!(Type::Map(Box::new(Type::Ipv4), Box::new(Type::String)).validate().is_err());
@@ -1098,7 +1097,9 @@ async fn test_write_default() {
     );
 
     // Test tuple type
-    assert!(Type::Tuple(vec![Type::Int32, Type::String]).write_default(&mut writer).await.is_ok());
+    assert!(
+        Type::tuple_anon(vec![Type::Int32, Type::String]).write_default(&mut writer).await.is_ok()
+    );
 
     // Test low cardinality
     assert!(Type::LowCardinality(Box::new(Type::String)).write_default(&mut writer).await.is_ok());
@@ -1198,7 +1199,7 @@ fn test_put_default() {
     );
 
     // Test tuple type
-    assert!(Type::Tuple(vec![Type::Int32, Type::String]).put_default(&mut writer).is_ok());
+    assert!(Type::tuple_anon(vec![Type::Int32, Type::String]).put_default(&mut writer).is_ok());
 
     // Test low cardinality
     assert!(Type::LowCardinality(Box::new(Type::String)).put_default(&mut writer).is_ok());

@@ -31,6 +31,8 @@ test-integration test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils --test "{{ test_name }}" -- --nocapture --show-output
 
+# --- COVERAGE ---
+
 coverage:
     cargo llvm-cov --html \
      --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
@@ -41,7 +43,6 @@ coverage-extended:
      --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
      --output-dir coverage -F "test-utils extended-types" --open
 
-# --- COVERAGE ---
 coverage-json:
     cargo llvm-cov --json \
      --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
@@ -185,7 +186,7 @@ fix:
 
 # Run checks CI will
 checks:
-    cargo +nightly fmt -- --check
+    cargo +nightly fmt --check -- --config-path ./rustfmt.toml
     cargo +nightly clippy --all-features --all-targets
     cargo +stable clippy --all-features --all-targets -- -D warnings
     just -f {{ justfile() }} test

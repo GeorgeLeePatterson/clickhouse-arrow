@@ -170,7 +170,7 @@ macro_rules! tuple_impls {
 
                     Ok(Value::Tuple(vec![
                         $(
-                            self.$n.to_sql(type_hint.and_then(|x| x.get($n)))?,
+                            self.$n.to_sql(type_hint.and_then(|x| x.get($n).map(|field| &field.1)))?,
                         )+
                     ]))
                 }

@@ -108,7 +108,7 @@ impl Serializer for LowCardinalitySerializer {
         let inner_type = match type_ {
             Type::LowCardinality(x) => &**x,
             _ => {
-                return Err(Error::SerializeError(format!(
+                return Err(Error::Serialize(format!(
                     "LowCardinalitySerializer called with non-low-cardinality type: {type_:?}"
                 )));
             }

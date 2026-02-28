@@ -16,6 +16,7 @@ const VARIANT_DISCRIMINATOR_MODE_COMPACT: u8 = 1;
 const VARIANT_COMPACT_GRANULE_FORMAT_PLAIN: u8 = 0;
 const VARIANT_COMPACT_GRANULE_FORMAT_COMPACT: u8 = 1;
 
+#[expect(clippy::too_many_lines)]
 #[expect(clippy::cast_possible_wrap)]
 #[expect(clippy::cast_possible_truncation)]
 pub(super) async fn deserialize<R: ClickHouseRead>(
@@ -40,10 +41,9 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
     };
 
     if variants.is_empty() {
-        return Err(Error::ArrowDeserialize(
-            "Variant requires at least one nested type".to_string(),
-        ));
+        return Err(Error::ArrowDeserialize("Variant requires at least one nested type".into()));
     }
+
     if union_schema_fields.len() != variants.len() + 1 {
         return Err(Error::ArrowDeserialize(format!(
             "Variant union child count mismatch: schema={}, expected={}",
@@ -51,6 +51,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
             variants.len() + 1
         )));
     }
+
     if !nulls.is_empty() && nulls.len() != rows {
         return Err(Error::ArrowDeserialize(format!(
             "Variant outer null mask length mismatch: {} != {rows}",
@@ -79,9 +80,8 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
     if discriminator_mode != VARIANT_DISCRIMINATOR_MODE_BASIC
         && discriminator_mode != VARIANT_DISCRIMINATOR_MODE_COMPACT
     {
-        return Err(Error::ArrowDeserialize(format!(
-            "unsupported Variant discriminator mode {discriminator_mode}; expected 0 (basic) or 1 \
-             (compact)"
+        return Err(Error::deserialize(format!(
+            "unsupported Variant discriminator mode {discriminator_mode}; expected 0 or 1 "
         )));
     }
 
@@ -102,15 +102,12 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
             if compact_granule_remaining_rows == 0 {
                 let granule_rows =
                     usize::try_from(reader.read_var_uint().await?).map_err(|_| {
-                        Error::ArrowDeserialize(
-                            "Variant compact discriminator granule row count exceeds usize"
-                                .to_string(),
+                        Error::deserialize(
+                            "Variant compact discriminator granule row count exceeds usize",
                         )
                     })?;
                 if granule_rows == 0 {
-                    return Err(Error::ArrowDeserialize(
-                        "Variant compact discriminator granule has zero rows".to_string(),
-                    ));
+                    return Err(Error::deserialize("Variant compact discriminator granule 0 rows"));
                 }
 
                 compact_granule_remaining_rows = granule_rows;
@@ -121,9 +118,8 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
                         compact_granule_discriminator = reader.read_u8().await?;
                     }
                     other => {
-                        return Err(Error::ArrowDeserialize(format!(
-                            "unsupported Variant compact granule format {other}; expected 0 \
-                             (plain) or 1 (compact)"
+                        return Err(Error::deserialize(format!(
+                            "unsupported Variant compact granule format {other}; expected 0 or 1"
                         )));
                     }
                 }
@@ -143,7 +139,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
         } else {
             let source_idx = usize::from(discriminator);
             if source_idx >= variants.len() {
-                return Err(Error::ArrowDeserialize(format!(
+                return Err(Error::deserialize(format!(
                     "Variant discriminator {discriminator} is out of bounds for {} nested type(s)",
                     variants.len()
                 )));
@@ -236,8 +232,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
     {
         return Err(Error::ArrowDeserialize(format!(
             "Variant compact discriminator granule declared more rows than available in column: \
-             {} trailing row(s)",
-            compact_granule_remaining_rows
+             {compact_granule_remaining_rows} trailing row(s)"
         )));
     }
 
@@ -250,4 +245,109 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
         Some(offsets.into()),
         children,
     )?))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use arrow::array::{Array, Int32Array, NullArray, StringArray};
+    use arrow::datatypes::{Field, UnionFields};
+
+    use super::*;
+    use crate::formats::VariantPrefixState;
+
+    fn variant_data_type() -> DataType {
+        DataType::Union(
+            UnionFields::new([0_i8, 1_i8, 2_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+                Field::new("Nothing", DataType::Null, false),
+            ]),
+            UnionMode::Dense,
+        )
+    }
+
+    fn variant_type() -> Type { Type::Variant(vec![Type::Int32, Type::String]) }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_basic_mode() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let mut input = vec![0_u8, 1_u8, 255_u8, 0_u8];
+        input.extend_from_slice(&10_i32.to_le_bytes());
+        input.extend_from_slice(&20_i32.to_le_bytes());
+        input.extend_from_slice(&[1_u8, b'a']);
+        let mut reader = Cursor::new(input);
+        let mut row_buffer = Vec::new();
+
+        let array = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            4,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: Some(VariantPrefixState { discriminator_mode: 0 }),
+            },
+        )
+        .await
+        .unwrap();
+
+        let union = array.as_any().downcast_ref::<UnionArray>().unwrap();
+        assert_eq!((0..4).map(|i| union.type_id(i)).collect::<Vec<_>>(), vec![0, 1, 2, 0]);
+        assert_eq!((0..4).map(|i| union.value_offset(i)).collect::<Vec<_>>(), vec![0, 0, 0, 1]);
+
+        let ints = union.child(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(ints, &Int32Array::from(vec![10, 20]));
+
+        let strings = union.child(1).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(strings, &StringArray::from(vec!["a"]));
+
+        let nulls = union.child(2).as_any().downcast_ref::<NullArray>().unwrap();
+        assert_eq!(nulls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_compact_mode_plain_granule() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let mut input = vec![
+            4_u8, // granule rows
+            0_u8, // granule format: plain
+            0_u8, 1_u8, 255_u8, 0_u8,
+        ];
+        input.extend_from_slice(&10_i32.to_le_bytes());
+        input.extend_from_slice(&20_i32.to_le_bytes());
+        input.extend_from_slice(&[1_u8, b'a']);
+        let mut reader = Cursor::new(input);
+        let mut row_buffer = Vec::new();
+
+        let array = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            4,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: Some(VariantPrefixState { discriminator_mode: 1 }),
+            },
+        )
+        .await
+        .unwrap();
+
+        let union = array.as_any().downcast_ref::<UnionArray>().unwrap();
+        assert_eq!((0..4).map(|i| union.type_id(i)).collect::<Vec<_>>(), vec![0, 1, 2, 0]);
+        assert_eq!((0..4).map(|i| union.value_offset(i)).collect::<Vec<_>>(), vec![0, 0, 0, 1]);
+    }
 }

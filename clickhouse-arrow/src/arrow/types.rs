@@ -90,24 +90,11 @@ impl DynamicPrefixState {
 
         let mut flattened_types = Vec::with_capacity(fields.len());
         for (_, child) in fields.iter() {
-            let type_ = if let Ok(parsed_from_name) = Type::from_str(child.name()) {
-                if let Ok((parsed_arrow_type, parsed_nullable)) =
-                    ch_to_arrow_type(&parsed_from_name, options, None)
-                {
-                    if parsed_arrow_type == *child.data_type()
-                        && parsed_nullable == child.is_nullable()
-                    {
-                        parsed_from_name
-                    } else {
-                        arrow_to_ch_type(child.data_type(), child.is_nullable(), options)?
-                    }
-                } else {
-                    arrow_to_ch_type(child.data_type(), child.is_nullable(), options)?
-                }
-            } else {
-                arrow_to_ch_type(child.data_type(), child.is_nullable(), options)?
-            };
-            flattened_types.push(type_);
+            flattened_types.push(arrow_to_ch_type(
+                child.data_type(),
+                child.is_nullable(),
+                options,
+            )?);
         }
 
         Ok(Some(Self { serialization_version: 3, flattened_types }))
@@ -150,8 +137,17 @@ pub(crate) fn schema_conversion(
             }
             _ => {
                 let normalized = normalize_type(conv, data_type).unwrap_or_else(|| conv.clone());
+                #[cfg(feature = "extended-types")]
+                let dynamic_hint = if matches!(normalized.strip_null(), Type::Dynamic { .. }) {
+                    DynamicPrefixState::from_field(field, Some(conversion_opts))?
+                        .map(|prefix| ArrowSchemaHint { dynamic_types: prefix.flattened_types })
+                } else {
+                    None
+                };
+                #[cfg(not(feature = "extended-types"))]
+                let dynamic_hint: Option<ArrowSchemaHint> = None;
                 let (normalized_arrow_type, normalized_nullable) =
-                    ch_to_arrow_type(&normalized, Some(conversion_opts), None)?;
+                    ch_to_arrow_type(&normalized, Some(conversion_opts), dynamic_hint.as_ref())?;
                 if normalized_arrow_type != *data_type || normalized_nullable != field_nullable {
                     return Err(Error::TypeConversion(format!(
                         "schema conversion for field '{name}' expects Arrow type \
@@ -221,9 +217,11 @@ pub(crate) fn normalize_type(type_: &Type, arrow_type: &DataType) -> Option<Type
             | DataType::FixedSizeBinary(_)),
         ) => normalize_type(inner, t).map(Box::new).map(Type::LowCardinality),
         (Type::Tuple(inner), DataType::Struct(inner_fields)) => {
-            let mut deferred_vec: Option<Vec<Type>> = None;
+            let mut deferred_vec: Option<Vec<(Option<String>, Type)>> = None;
 
-            for (i, (inner_type, field)) in inner.iter().zip(inner_fields.iter()).enumerate() {
+            for (i, ((name, inner_type), field)) in
+                inner.iter().zip(inner_fields.iter()).enumerate()
+            {
                 if let Some(normalized_type) = normalize_type(inner_type, field.data_type()) {
                     // First time we need to normalize, create the vector and copy previous elements
                     if deferred_vec.is_none() {
@@ -233,10 +231,10 @@ pub(crate) fn normalize_type(type_: &Type, arrow_type: &DataType) -> Option<Type
                     }
 
                     // Add the normalized type
-                    deferred_vec.as_mut().unwrap().push(normalized_type);
+                    deferred_vec.as_mut().unwrap().push((name.clone(), normalized_type));
                 } else if let Some(vec) = &mut deferred_vec {
                     // We've already started normalizing, so keep copying
-                    vec.push(inner_type.clone());
+                    vec.push((name.clone(), inner_type.clone()));
                 }
             }
 
@@ -297,11 +295,7 @@ pub(crate) fn arrow_to_ch_type(
         #[cfg(not(feature = "extended-types"))]
         DataType::Time32(TimeUnit::Second)
         | DataType::Time64(TimeUnit::Second)
-        | DataType::Duration(TimeUnit::Second) => {
-            return Err(Error::TypeConversion(
-                "Arrow time types require feature `extended-types`".to_string(),
-            ));
-        }
+        | DataType::Duration(TimeUnit::Second) => Type::DateTime(chrono_tz::Tz::UTC),
         DataType::Date64 => Type::DateTime64(3, chrono_tz::Tz::UTC),
         #[cfg(feature = "extended-types")]
         DataType::Time32(TimeUnit::Millisecond)
@@ -321,18 +315,26 @@ pub(crate) fn arrow_to_ch_type(
             Type::Time64(9)
         }
         #[cfg(not(feature = "extended-types"))]
-        DataType::Time32(TimeUnit::Millisecond)
-        | DataType::Time64(TimeUnit::Millisecond)
-        | DataType::Duration(TimeUnit::Millisecond)
-        | DataType::Time32(TimeUnit::Microsecond)
-        | DataType::Time64(TimeUnit::Microsecond)
-        | DataType::Duration(TimeUnit::Microsecond)
-        | DataType::Time32(TimeUnit::Nanosecond)
-        | DataType::Time64(TimeUnit::Nanosecond)
-        | DataType::Duration(TimeUnit::Nanosecond) => {
-            return Err(Error::TypeConversion(
-                "Arrow time types require feature `extended-types`".to_string(),
-            ));
+        DataType::Time32(
+            TimeUnit::Millisecond | TimeUnit::Microsecond |
+            TimeUnit::Nanosecond) |
+            DataType::Time64(TimeUnit::Millisecond | TimeUnit::Microsecond |
+            TimeUnit::Nanosecond) |
+            DataType::Duration(TimeUnit::Millisecond | TimeUnit::Microsecond |
+            TimeUnit::Nanosecond) => {
+            let precision = match data_type {
+                DataType::Time32(TimeUnit::Millisecond)
+                | DataType::Time64(TimeUnit::Millisecond)
+                | DataType::Duration(TimeUnit::Millisecond) => 3,
+                DataType::Time32(TimeUnit::Microsecond)
+                | DataType::Time64(TimeUnit::Microsecond)
+                | DataType::Duration(TimeUnit::Microsecond) => 6,
+                DataType::Time32(TimeUnit::Nanosecond)
+                | DataType::Time64(TimeUnit::Nanosecond)
+                | DataType::Duration(TimeUnit::Nanosecond) => 9,
+                _ => unreachable!("matched non-fallback time unit branch"),
+            };
+            Type::DateTime64(precision, chrono_tz::Tz::UTC)
         }
         DataType::Timestamp(TimeUnit::Second, tz) => Type::DateTime(tz_map(Some(tz.as_deref().unwrap_or("UTC")))),
         DataType::Timestamp(TimeUnit::Millisecond, tz) => {
@@ -381,7 +383,10 @@ pub(crate) fn arrow_to_ch_type(
         DataType::Struct(fields) => {
             let ch_types = fields
                 .iter()
-                .map(|f| arrow_to_ch_type(f.data_type(), f.is_nullable(), options))
+                .map(|f| {
+                    arrow_to_ch_type(f.data_type(), f.is_nullable(), options)
+                        .map(|type_| (Some(f.name().clone()), type_))
+                })
                 .collect::<Result<_>>()?;
             Type::Tuple(ch_types)
         }
@@ -413,6 +418,7 @@ pub(crate) fn arrow_to_ch_type(
 
             Type::Map(Box::new(key_type), Box::new(value_type))
         }
+        // TODO: Introduce feature flag to control if Union converts to Dynamic or Variant
         #[cfg(feature = "extended-types")]
         DataType::Union(_, _) => Type::Dynamic { max_types: 32 },
         #[cfg(not(feature = "extended-types"))]
@@ -458,6 +464,7 @@ pub(crate) fn arrow_to_ch_type(
 #[expect(clippy::too_many_lines)]
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_possible_wrap)]
+#[cfg_attr(not(feature = "extended-types"), expect(clippy::only_used_in_recursion))]
 pub fn ch_to_arrow_type(
     ch_type: &Type,
     options: Option<ArrowOptions>,
@@ -528,9 +535,11 @@ pub fn ch_to_arrow_type(
             let fields: Vec<Field> = types
                 .iter()
                 .enumerate()
-                .map(|(i, t)| {
+                .map(|(i, (name, t))| {
                     ch_to_arrow_type(t, options, schema_hints).map(|(arrow_type, is_null)| {
-                        Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}{i}"), arrow_type, is_null)
+                        let field_name =
+                            name.clone().unwrap_or_else(|| format!("{TUPLE_FIELD_NAME_PREFIX}{i}"));
+                        Field::new(field_name, arrow_type, is_null)
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -643,21 +652,14 @@ pub fn ch_to_arrow_type(
                 ));
             }
 
-            let mut fields = Vec::with_capacity(variants.len() + 1);
-            for variant in variants {
-                let logical = variant.strip_null();
-                if matches!(
-                    logical,
-                    Type::Variant(_) | Type::Dynamic { .. } | Type::AggregateFunction { .. }
-                ) {
-                    return Err(Error::TypeConversion(format!(
-                        "unsupported Variant nested type: {variant}"
-                    )));
-                }
-                let (data_type, nullable) = ch_to_arrow_type(variant, options, schema_hints)?;
-                fields.push(Field::new(variant.to_string(), data_type, nullable));
-            }
-            fields.push(Field::new("Nothing", DataType::Null, false));
+            let fields = variants
+                .iter()
+                .map(|variant| {
+                    let (data_type, nullable) = ch_to_arrow_type(variant, options, schema_hints)?;
+                    Ok(Field::new(variant.to_string(), data_type, nullable))
+                })
+                .chain(std::iter::once(Ok(Field::new("Nothing", DataType::Null, false))))
+                .collect::<Result<Vec<_>>>()?;
 
             let type_ids = (0..fields.len()).map(|i| i as i8).collect::<Vec<_>>();
             DataType::Union(UnionFields::new(type_ids, fields), UnionMode::Dense)
@@ -803,8 +805,14 @@ mod tests {
             arrow_to_ch_type(&DataType::Time64(TimeUnit::Second), false, None).unwrap(),
             arrow_to_ch_type(&DataType::Duration(TimeUnit::Second), false, None).unwrap(),
         ];
+
+        #[cfg(feature = "extended-types")]
         for time in times {
             assert_eq!(time, Type::Time);
+        }
+        #[cfg(not(feature = "extended-types"))]
+        for time in times {
+            assert_eq!(time, Type::DateTime(Tz::UTC));
         }
 
         assert_eq!(
@@ -819,8 +827,13 @@ mod tests {
             arrow_to_ch_type(&DataType::Time64(TimeUnit::Millisecond), false, None).unwrap(),
         ];
         assert_eq!(times[0], Type::DateTime64(3, Tz::UTC));
+        #[cfg(feature = "extended-types")]
         for time in &times[1..] {
             assert_eq!(time, &Type::Time64(3));
+        }
+        #[cfg(not(feature = "extended-types"))]
+        for time in &times[1..] {
+            assert_eq!(time, &Type::DateTime64(3, Tz::UTC));
         }
 
         let times = [
@@ -828,8 +841,13 @@ mod tests {
             arrow_to_ch_type(&DataType::Time32(TimeUnit::Microsecond), false, None).unwrap(),
             arrow_to_ch_type(&DataType::Time64(TimeUnit::Microsecond), false, None).unwrap(),
         ];
+        #[cfg(feature = "extended-types")]
         for time in times {
             assert_eq!(time, Type::Time64(6));
+        }
+        #[cfg(not(feature = "extended-types"))]
+        for time in times {
+            assert_eq!(time, Type::DateTime64(6, Tz::UTC));
         }
 
         let times = [
@@ -837,8 +855,13 @@ mod tests {
             arrow_to_ch_type(&DataType::Time32(TimeUnit::Nanosecond), false, None).unwrap(),
             arrow_to_ch_type(&DataType::Time64(TimeUnit::Nanosecond), false, None).unwrap(),
         ];
+        #[cfg(feature = "extended-types")]
         for time in times {
             assert_eq!(time, Type::Time64(9));
+        }
+        #[cfg(not(feature = "extended-types"))]
+        for time in times {
+            assert_eq!(time, Type::DateTime64(9, Tz::UTC));
         }
         assert_eq!(
             arrow_to_ch_type(
@@ -936,6 +959,28 @@ mod tests {
     }
 
     #[test]
+    fn test_schema_conversion_time_units_respect_feature_mode() {
+        let options = Some(ArrowOptions::default().with_strict_schema(false));
+
+        let second_field = Field::new("time_s", DataType::Time32(TimeUnit::Second), false);
+        let millis_field = Field::new("time_ms", DataType::Time32(TimeUnit::Millisecond), false);
+
+        let second = schema_conversion(&second_field, None, options).unwrap();
+        let millis = schema_conversion(&millis_field, None, options).unwrap();
+
+        #[cfg(feature = "extended-types")]
+        {
+            assert_eq!(second, Type::Time);
+            assert_eq!(millis, Type::Time64(3));
+        }
+        #[cfg(not(feature = "extended-types"))]
+        {
+            assert_eq!(second, Type::DateTime(Tz::UTC));
+            assert_eq!(millis, Type::DateTime64(3, Tz::UTC));
+        }
+    }
+
+    #[test]
     fn test_ch_to_arrow_type() {
         let options = Some(ArrowOptions::default().with_strings_as_strings(true));
 
@@ -1011,7 +1056,7 @@ mod tests {
         );
 
         // Tuple
-        let tuple_type = Type::Tuple(vec![Type::Int32, Type::String]);
+        let tuple_type = Type::tuple_anon(vec![Type::Int32, Type::String]);
         let expected_struct = DataType::Struct(
             vec![
                 Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Int32, false),
@@ -1087,7 +1132,24 @@ mod tests {
                 false,
             )
         );
-        assert!(ch_to_arrow_type(&Type::Dynamic { max_types: 8 }, None, None).is_err());
+        assert_eq!(
+            ch_to_arrow_type(&Type::Dynamic { max_types: 8 }, None, None).unwrap(),
+            (DataType::Union(UnionFields::empty(), UnionMode::Dense), false)
+        );
+        let hinted = ArrowSchemaHint { dynamic_types: vec![Type::String, Type::UInt64] };
+        assert_eq!(
+            ch_to_arrow_type(&Type::Dynamic { max_types: 8 }, None, Some(&hinted)).unwrap(),
+            (
+                DataType::Union(
+                    UnionFields::new([0_i8, 1_i8], [
+                        Field::new("String", DataType::Binary, false),
+                        Field::new("UInt64", DataType::UInt64, false),
+                    ],),
+                    UnionMode::Dense,
+                ),
+                false,
+            )
+        );
 
         let nested = Type::Nested(vec![
             ("name".to_string(), Type::String),
@@ -1117,25 +1179,6 @@ mod tests {
             .into(),
         );
         assert_eq!(ch_to_arrow_type(&nested, None, None).unwrap(), (expected, false));
-    }
-
-    #[cfg(not(feature = "extended-types"))]
-    #[test]
-    fn test_ch_to_arrow_type_new_types_requires_feature() {
-        assert!(ch_to_arrow_type(&Type::BFloat16, None).is_err());
-        assert!(ch_to_arrow_type(&Type::Time64(3), None).is_err());
-        assert!(
-            ch_to_arrow_type(
-                &Type::QBit { element_type: Box::new(Type::Float32), dimension: 4 },
-                None,
-            )
-            .is_err()
-        );
-        assert!(ch_to_arrow_type(&Type::Dynamic { max_types: 8 }, None).is_err());
-        assert!(
-            ch_to_arrow_type(&Type::Nested(vec![("name".to_string(), Type::String)]), None,)
-                .is_err()
-        );
     }
 
     /// Tests `arrow_to_ch_type` for `Map(String, Nullable(Int32))` with outer nullability.
@@ -1193,7 +1236,7 @@ mod tests {
     fn test_roundtrip_struct() {
         // Use strings_as_strings to enable round trip
         let options = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let ch_type = Type::Tuple(vec![Type::Nullable(Box::new(Type::Int32)), Type::String]);
+        let ch_type = Type::tuple_anon(vec![Type::Nullable(Box::new(Type::Int32)), Type::String]);
         let struct_type = DataType::Struct(Fields::from(vec![
             Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Int32, true),
             Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"), DataType::Utf8, false),
@@ -1212,7 +1255,7 @@ mod tests {
     #[test]
     fn test_roundtrip_tuple() {
         let options = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let ch_type = Type::Tuple(vec![Type::Int32, Type::String]);
+        let ch_type = Type::tuple_anon(vec![Type::Int32, Type::String]);
 
         let expected_arrow_type = DataType::Struct(Fields::from(vec![
             Field::new("field_0", DataType::Int32, false),

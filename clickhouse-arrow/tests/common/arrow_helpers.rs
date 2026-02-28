@@ -31,6 +31,7 @@ pub mod assertions {
             ($dt1:expr, $dt2:expr) => {
                 $( dict($k1:pat, $v1:pat, $k2:pat, $v2:pat) => { $dictst:expr }; )?
                 $( list($field1:pat, $field2:pat) => { $listst:expr }; )?
+                $( struct_fields($fields1:pat, $fields2:pat) => { $structst:expr }; )?
                 $( utc_default() => { $utcst:expr }; )?
             };
             _ => $dflt:expr
@@ -50,6 +51,10 @@ pub mod assertions {
                     | DataType::ListView($field2),
                 ) => {
                     $listst
+                })?
+                // Struct fields where child names may differ (e.g., Nested flattening behavior)
+                $((DataType::Struct($fields1), DataType::Struct($fields2)) => {
+                    $structst
                 })?
                 // Dates
                 $((
@@ -132,6 +137,17 @@ pub mod assertions {
                             || is_list_like(field1.data_type(), field2.data_type())
                             || field1.data_type() == field2.data_type()
                         );
+                    }};
+                    struct_fields(fields1, fields2) => {{
+                        assert_eq!(fields1.len(), fields2.len(), "Struct field length mismatch");
+                        for (field1, field2) in fields1.iter().zip(fields2.iter()) {
+                            assert!(
+                                field1.is_nullable() == field2.is_nullable()
+                                && (is_string_like(field1.data_type(), field2.data_type())
+                                    || is_list_like(field1.data_type(), field2.data_type())
+                                    || field1.data_type() == field2.data_type())
+                            );
+                        }
                     }};
                     utc_default() => {{
                         // The match is enough
@@ -218,6 +234,29 @@ pub mod assertions {
         }
     }
 
+    /// # Panics
+    pub fn assert_structs(i: usize, col: &ArrayRef, ins: &ArrayRef) {
+        let left = col.as_any().downcast_ref::<StructArray>().unwrap();
+        let right = ins.as_any().downcast_ref::<StructArray>().unwrap();
+
+        assert_eq!(left.len(), right.len(), "Struct row count mismatch: col={i}");
+        assert_eq!(left.nulls(), right.nulls(), "Struct null bitmap mismatch: col={i}");
+        assert_eq!(
+            left.columns().len(),
+            right.columns().len(),
+            "Struct child count mismatch: col={i}"
+        );
+
+        for (child_idx, (left_child, right_child)) in
+            left.columns().iter().zip(right.columns().iter()).enumerate()
+        {
+            assert_eq!(
+                left_child, right_child,
+                "Struct child mismatch: col={i}, child={child_idx}"
+            );
+        }
+    }
+
     // ClickHouse defaults to UTC, but a timestamp may have no tz specified.
     /// # Panics
     pub fn assert_datetimes_utf_default(col: &ArrayRef, ins: &ArrayRef) {
@@ -250,7 +289,6 @@ pub fn test_schema() -> Arc<Schema> {
         Field::new("uint256_col", DataType::FixedSizeBinary(32), true),
         Field::new("float32_col", DataType::Float32, true),
         Field::new("float64_col", DataType::Float64, true),
-        Field::new("nothing_col", DataType::Null, false),
         // String
         Field::new("string_col", DataType::Utf8, true),
         Field::new("fixed_string_col", DataType::Utf8, true),
@@ -535,7 +573,6 @@ pub fn test_record_batch() -> RecordBatch {
         Some(f64::INFINITY),
         Some(f64::MAX),
     ]));
-    let nothing_col = Arc::new(NullArray::new(5));
     // String
     let string_col = Arc::new(StringArray::from(vec![
         Some("hello"),
@@ -948,7 +985,6 @@ pub fn test_record_batch() -> RecordBatch {
         uint256_col,
         float32_col,
         float64_col,
-        nothing_col,
         // String
         string_col,
         fixed_string_col,

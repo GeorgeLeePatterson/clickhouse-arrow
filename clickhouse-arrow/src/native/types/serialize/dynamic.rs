@@ -87,9 +87,7 @@ impl Serializer for DynamicSerializer {
         _writer: &mut W,
         _state: &mut SerializerState,
     ) -> Result<()> {
-        Err(Error::SerializeError(
-            "Dynamic native value serialization is not implemented".to_string(),
-        ))
+        Err(Error::serialize("Dynamic native value serialization is not implemented"))
     }
 
     fn write_sync(
@@ -98,8 +96,6 @@ impl Serializer for DynamicSerializer {
         _writer: &mut impl ClickHouseBytesWrite,
         _state: &mut SerializerState,
     ) -> Result<()> {
-        Err(Error::SerializeError(
-            "Dynamic native value serialization is not implemented".to_string(),
-        ))
+        Err(Error::serialize("Dynamic native value serialization is not implemented"))
     }
 }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use arrow::array::{Array, ArrayRef, BooleanArray, UnionArray};
 use arrow::compute::filter;
 use arrow::datatypes::DataType;
@@ -107,6 +109,7 @@ fn dynamic_index_width(total_types: usize) -> usize {
 }
 
 #[inline]
+#[expect(clippy::cast_possible_truncation)]
 async fn write_dynamic_index_async<W: ClickHouseWrite>(
     writer: &mut W,
     width: usize,
@@ -127,6 +130,7 @@ async fn write_dynamic_index_async<W: ClickHouseWrite>(
 }
 
 #[inline]
+#[expect(clippy::cast_possible_truncation)]
 fn write_dynamic_index_sync<W: ClickHouseBytesWrite>(
     writer: &mut W,
     width: usize,
@@ -211,7 +215,7 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
 
     for (source_idx, field) in fields.iter().enumerate() {
         let source_rows = source_counts[source_idx];
-        let mut values = union.child(field.type_id).clone();
+        let mut values = Arc::clone(union.child(field.type_id));
         if source_rows < values.len() {
             values = values.slice(0, source_rows);
         } else if source_rows > values.len() {
@@ -235,7 +239,8 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
             values = filter(values.as_ref(), &keep)?;
         }
 
-        field.logical_type.serialize_async(writer, &values, values.data_type(), state).await?;
+        Box::pin(field.logical_type.serialize_async(writer, &values, values.data_type(), state))
+            .await?;
     }
 
     Ok(())
@@ -306,7 +311,7 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
 
     for (source_idx, field) in fields.iter().enumerate() {
         let source_rows = source_counts[source_idx];
-        let mut values = union.child(field.type_id).clone();
+        let mut values = Arc::clone(union.child(field.type_id));
         if source_rows < values.len() {
             values = values.slice(0, source_rows);
         } else if source_rows > values.len() {
@@ -334,4 +339,115 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{Field, UnionFields, UnionMode};
+
+    use super::*;
+    use crate::formats::SerializerState;
+
+    fn dynamic_type() -> Type { Type::Dynamic { max_types: 8 } }
+
+    fn dynamic_data_type() -> DataType {
+        DataType::Union(
+            UnionFields::new([0_i8, 1_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, true),
+            ]),
+            UnionMode::Dense,
+        )
+    }
+
+    fn dynamic_column() -> ArrayRef {
+        let DataType::Union(fields, _) = dynamic_data_type() else { unreachable!() };
+
+        Arc::new(
+            UnionArray::try_new(
+                fields,
+                vec![0_i8, 1_i8, 0_i8].into(),
+                Some(vec![0_i32, 0_i32, 1_i32].into()),
+                vec![
+                    Arc::new(Int32Array::from(vec![10_i32, 20])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![Option::<&str>::None])) as ArrayRef,
+                ],
+            )
+            .unwrap(),
+        ) as ArrayRef
+    }
+
+    fn dynamic_prefix_state() -> DynamicPrefixState {
+        DynamicPrefixState {
+            serialization_version: 3,
+            flattened_types:       vec![Type::Int32, Type::String],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_serialize_dynamic_requires_prefix_metadata() {
+        let mut writer = Cursor::new(Vec::new());
+        let error = serialize_async(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut SerializerState::default(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("requires prefix metadata"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_dynamic_with_null_rows_async() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        serialize_async(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(writer.into_inner(), vec![
+            0_u8, // row 0 => Int32
+            2_u8, // row 1 => Dynamic null discriminator
+            0_u8, // row 2 => Int32
+            10, 0, 0, 0, 20, 0, 0, 0,
+        ]);
+    }
+
+    #[test]
+    fn test_serialize_dynamic_with_null_rows_sync() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        serialize(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(writer, vec![
+            0_u8, // row 0 => Int32
+            2_u8, // row 1 => Dynamic null discriminator
+            0_u8, // row 2 => Int32
+            10, 0, 0, 0, 20, 0, 0, 0,
+        ]);
+    }
 }

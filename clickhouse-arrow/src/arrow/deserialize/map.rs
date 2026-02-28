@@ -62,7 +62,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
         )));
     };
 
-    let offset_bytes = super::list::bulk_offsets!(tokio; reader, ctx.row_buffer, rows);
+    let offset_bytes = super::list::bulk_offsets!(reader, ctx.row_buffer, rows);
     let offsets: &[u64] = bytemuck::cast_slice::<u8, u64>(&ctx.row_buffer[..offset_bytes]);
     let offset_buffer =
         OffsetBuffer::new(offsets.iter().map(|&o| o as i32).collect::<ScalarBuffer<_>>());
@@ -110,11 +110,21 @@ mod tests {
     use crate::arrow::ch_to_arrow_type;
     use crate::native::types::Type;
 
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> {
+        ArrowFieldCtx {
+            row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix: None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix: None,
+        }
+    }
+
     fn create_map_type(key: &Type, value: &Type, nullable: bool) -> DataType {
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let (key_type, nil) = ch_to_arrow_type(key, opts).unwrap();
+        let (key_type, nil) = ch_to_arrow_type(key, opts, None).unwrap();
         let key_field = Field::new(STRUCT_KEY_FIELD_NAME, key_type, nil);
-        let (value_type, nil) = ch_to_arrow_type(value, opts).unwrap();
+        let (value_type, nil) = ch_to_arrow_type(value, opts, None).unwrap();
         let value_field = Field::new(STRUCT_VALUE_FIELD_NAME, value_type, nil);
         let inner = DataType::Struct(Fields::from(vec![key_field, value_field]));
         let field = Arc::new(Field::new(MAP_FIELD_NAME, inner, nullable));
@@ -153,6 +163,8 @@ mod tests {
             &data_type,
         )
         .unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
@@ -160,7 +172,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Map(Int32, String)");
@@ -208,6 +220,8 @@ mod tests {
             &data_type,
         )
         .unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
@@ -215,7 +229,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Nullable(Map(Int32, String))");
@@ -268,6 +282,8 @@ mod tests {
             &data_type,
         )
         .unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
@@ -275,7 +291,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Map(Int32, Nullable(Int32))");
@@ -320,6 +336,8 @@ mod tests {
             &data_type,
         )
         .unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
@@ -327,7 +345,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Map(String, DateTime)");
@@ -361,6 +379,8 @@ mod tests {
             &data_type,
         )
         .unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
@@ -368,7 +388,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Map(Int32, String) with zero rows");
@@ -404,6 +424,8 @@ mod tests {
             &data_type,
         )
         .unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         let result = deserialize(
             (&key_type, &value_type),
             &mut builder,
@@ -411,313 +433,9 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
-        .expect("Failed to deserialize Map(Int32, String) with empty inner maps");
-        let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        let keys = struct_array.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let values = struct_array.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-
-        assert_eq!(map_array.len(), 2);
-        assert_eq!(keys, &Int32Array::from(Vec::<i32>::new()));
-        assert_eq!(values, &StringArray::from(Vec::<String>::new()));
-        assert_eq!(map_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 0, 0]);
-        assert_eq!(map_array.nulls(), None);
-    }
-}
-
-#[cfg(test)]
-mod tests_sync {
-    use std::io::Cursor;
-
-    use arrow::array::{
-        Array, Int32Array, MapArray, StringArray, StructArray, TimestampSecondArray,
-    };
-    use chrono_tz::Tz;
-
-    use super::*;
-    use crate::ArrowOptions;
-    use crate::arrow::block::{STRUCT_KEY_FIELD_NAME, STRUCT_VALUE_FIELD_NAME};
-    use crate::arrow::ch_to_arrow_type;
-    use crate::native::types::Type;
-
-    fn create_map_type(
-        key: &Type,
-        value: &Type,
-        nullable: bool,
-    ) -> Result<(DataType, TypedBuilder, TypedBuilder)> {
-        let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let (key_type, nil) = ch_to_arrow_type(key, opts).unwrap();
-        let key_builder = TypedBuilder::try_new(key, &key_type)?;
-        let key_field = Field::new(STRUCT_KEY_FIELD_NAME, key_type, nil);
-        let (value_type, nil) = ch_to_arrow_type(value, opts).unwrap();
-        let value_builder = TypedBuilder::try_new(value, &value_type)?;
-        let value_field = Field::new(STRUCT_VALUE_FIELD_NAME, value_type, nil);
-        let inner = DataType::Struct(Fields::from(vec![key_field, value_field]));
-        let field = Arc::new(Field::new(MAP_FIELD_NAME, inner, nullable));
-        let dt = DataType::Map(field, false);
-        Ok((dt, key_builder, value_builder))
-    }
-
-    /// Tests deserialization of `Map(Int32, String)` with non-nullable values.
-    #[test]
-    fn test_deserialize_map_int32_string() {
-        let key_type = Type::Int32;
-        let value_type = Type::String;
-        let rows = 3;
-        let nulls = vec![];
-        let input = vec![
-            // Offsets: [2, 3, 5] (skipping first 0)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            3, 0, 0, 0, 0, 0, 0, 0, // 3
-            5, 0, 0, 0, 0, 0, 0, 0, // 5
-            // Keys (Int32): [1, 2, 3, 4, 5]
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-            4, 0, 0, 0, // 4
-            5, 0, 0, 0, // 5
-            // Values (String): ["a", "b", "c", "d", "e"]
-            1, b'a', // "a"
-            1, b'b', // "b"
-            1, b'c', // "c"
-            1, b'd', // "d"
-            1, b'e', // "e"
-        ];
-        let mut reader = Cursor::new(input);
-        let (dt, mut kb, mut vb) = create_map_type(&key_type, &value_type, false).unwrap();
-        let result = deserialize(
-            (&mut kb, &mut vb),
-            &mut reader,
-            (&key_type, &value_type),
-            &dt,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Map(Int32, String)");
-        let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        let keys = struct_array.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let values = struct_array.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-
-        assert_eq!(map_array.len(), 3);
-        assert_eq!(keys, &Int32Array::from(vec![1, 2, 3, 4, 5]));
-        assert_eq!(values, &StringArray::from(vec!["a", "b", "c", "d", "e"]));
-        assert_eq!(map_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3, 5]);
-        assert_eq!(map_array.nulls(), None);
-    }
-
-    /// Tests deserialization of `Nullable(Map(Int32, String))` with null maps.
-    #[test]
-    fn test_deserialize_nullable_map_int32_string() {
-        let key_type = Type::Int32;
-        let value_type = Type::String;
-        let rows = 3;
-        let nulls = vec![0, 1, 0]; // [not null, null, not null]
-        let input = vec![
-            // Offsets: [2, 3, 5] (skipping first 0)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            3, 0, 0, 0, 0, 0, 0, 0, // 3
-            5, 0, 0, 0, 0, 0, 0, 0, // 5
-            // Keys (Int32): [1, 2, 3, 4, 5]
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-            4, 0, 0, 0, // 4
-            5, 0, 0, 0, // 5
-            // Values (String): ["a", "b", "c", "d", "e"]
-            1, b'a', // "a"
-            1, b'b', // "b"
-            1, b'c', // "c"
-            1, b'd', // "d"
-            1, b'e', // "e"
-        ];
-        let mut reader = Cursor::new(input);
-        let (dt, mut kb, mut vb) = create_map_type(&key_type, &value_type, true).unwrap();
-        let result = deserialize(
-            (&mut kb, &mut vb),
-            &mut reader,
-            (&key_type, &value_type),
-            &dt,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Nullable(Map(Int32, String))");
-        let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        let keys = struct_array.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let values = struct_array.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-
-        assert_eq!(map_array.len(), 3);
-        assert_eq!(keys, &Int32Array::from(vec![1, 2, 3, 4, 5]));
-        assert_eq!(values, &StringArray::from(vec!["a", "b", "c", "d", "e"]));
-        assert_eq!(map_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3, 5]);
-        assert_eq!(
-            map_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
-            vec![true, false, true] // 0=not null, 1=null
-        );
-    }
-
-    /// Tests deserialization of `Map(Int32, Nullable(Int32))` with nullable values.
-    #[test]
-    fn test_deserialize_map_int32_nullable_int32() {
-        let key_type = Type::Int32;
-        let value_type = Type::Nullable(Box::new(Type::Int32));
-        let rows = 3;
-        let nulls = vec![];
-        let input = vec![
-            // Offsets: [2, 3, 5] (skipping first 0)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            3, 0, 0, 0, 0, 0, 0, 0, // 3
-            5, 0, 0, 0, 0, 0, 0, 0, // 5
-            // Keys (Int32): [1, 2, 3, 4, 5]
-            1, 0, 0, 0, // 1
-            2, 0, 0, 0, // 2
-            3, 0, 0, 0, // 3
-            4, 0, 0, 0, // 4
-            5, 0, 0, 0, // 5
-            // Values (Nullable(Int32)): [10, null, 30, null, 50]
-            // Null mask: [0, 1, 0, 1, 0] (0=non-null, 1=null)
-            0, 1, 0, 1, 0, // Values: [10, 0, 30, 0, 50]
-            10, 0, 0, 0, // 10
-            0, 0, 0, 0, // null
-            30, 0, 0, 0, // 30
-            0, 0, 0, 0, // null
-            50, 0, 0, 0, // 50
-        ];
-        let mut reader = Cursor::new(input);
-        let (dt, mut kb, mut vb) = create_map_type(&key_type, &value_type, false).unwrap();
-        let result = deserialize(
-            (&mut kb, &mut vb),
-            &mut reader,
-            (&key_type, &value_type),
-            &dt,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Map(Int32, Nullable(Int32))");
-        let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        let keys = struct_array.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let values = struct_array.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
-
-        assert_eq!(map_array.len(), 3);
-        assert_eq!(keys, &Int32Array::from(vec![1, 2, 3, 4, 5]));
-        assert_eq!(values, &Int32Array::from(vec![Some(10), None, Some(30), None, Some(50)]));
-        assert_eq!(map_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 3, 5]);
-        assert_eq!(map_array.nulls(), None);
-    }
-
-    /// Tests deserialization of `Map(String, DateTime)` with non-nullable values.
-    #[test]
-    fn test_deserialize_map_string_datetime() {
-        let key_type = Type::String;
-        let value_type = Type::DateTime(Tz::UTC);
-        let rows = 2;
-        let nulls = vec![];
-        let input = vec![
-            // Offsets: [2, 4] (skipping first 0)
-            2, 0, 0, 0, 0, 0, 0, 0, // 2
-            4, 0, 0, 0, 0, 0, 0, 0, // 4
-            // Keys (String): ["a", "b", "c", "d"]
-            1, b'a', // "a"
-            1, b'b', // "b"
-            1, b'c', // "c"
-            1, b'd', // "d"
-            // Values (DateTime): [1000, 2000, 3000, 4000]
-            232, 3, 0, 0, // 1000
-            208, 7, 0, 0, // 2000
-            184, 11, 0, 0, // 3000
-            160, 15, 0, 0, // 4000
-        ];
-        let mut reader = Cursor::new(input);
-        let (dt, mut kb, mut vb) = create_map_type(&key_type, &value_type, false).unwrap();
-        let result = deserialize(
-            (&mut kb, &mut vb),
-            &mut reader,
-            (&key_type, &value_type),
-            &dt,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Map(String, DateTime)");
-        let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        let keys = struct_array.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-        let values =
-            struct_array.column(1).as_any().downcast_ref::<TimestampSecondArray>().unwrap();
-
-        let tz =
-            TimestampSecondArray::from(vec![1000, 2000, 3000, 4000]).with_timezone_opt(Some("UTC"));
-        assert_eq!(map_array.len(), 2);
-        assert_eq!(keys, &StringArray::from(vec!["a", "b", "c", "d"]));
-        assert_eq!(values, &tz);
-        assert_eq!(map_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0, 2, 4]);
-        assert_eq!(map_array.nulls(), None);
-    }
-
-    /// Tests deserialization of `Map(Int32, String)` with zero rows.
-    #[test]
-    fn test_deserialize_map_zero_rows() {
-        let key_type = Type::Int32;
-        let value_type = Type::String;
-        let rows = 0;
-        let nulls = vec![];
-        let input = vec![]; // No data for zero rows
-        let mut reader = Cursor::new(input);
-        let (dt, mut kb, mut vb) = create_map_type(&key_type, &value_type, false).unwrap();
-        let result = deserialize(
-            (&mut kb, &mut vb),
-            &mut reader,
-            (&key_type, &value_type),
-            &dt,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Map(Int32, String) with zero rows");
-        let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        let keys = struct_array.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let values = struct_array.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-
-        assert_eq!(map_array.len(), 0);
-        assert_eq!(keys, &Int32Array::from(Vec::<i32>::new()));
-        assert_eq!(values, &StringArray::from(Vec::<String>::new()));
-        assert_eq!(map_array.offsets().iter().copied().collect::<Vec<i32>>(), vec![0]);
-        assert_eq!(map_array.nulls(), None);
-    }
-
-    /// Tests deserialization of `Map(Int32, String)` with empty maps.
-    #[test]
-    fn test_deserialize_map_empty_inner() {
-        let key_type = Type::Int32;
-        let value_type = Type::String;
-        let rows = 2;
-        let nulls = vec![];
-        let input = vec![
-            // Offsets: [0, 0] (skipping first 0)
-            0, 0, 0, 0, 0, 0, 0, 0, // 0
-            0, 0, 0, 0, 0, 0, 0, 0, /* 0
-                * No keys or values */
-        ];
-        let mut reader = Cursor::new(input);
-        let (dt, mut kb, mut vb) = create_map_type(&key_type, &value_type, false).unwrap();
-        let result = deserialize(
-            (&mut kb, &mut vb),
-            &mut reader,
-            (&key_type, &value_type),
-            &dt,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
         .expect("Failed to deserialize Map(Int32, String) with empty inner maps");
         let map_array = result.as_any().downcast_ref::<MapArray>().unwrap();
         let struct_array = map_array.entries().as_any().downcast_ref::<StructArray>().unwrap();

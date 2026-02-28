@@ -195,11 +195,13 @@ pub(crate) enum ServerPacket<T = Block> {
     Ignore(ServerPacketId), // Allows ignoring certain packets
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Protocol fields kept for wire compatibility across packets")
+)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerHello {
-    #[expect(unused)]
     pub(crate) server_name:      String,
-    #[expect(unused)]
     pub(crate) version:          (u64, u64, u64),
     pub(crate) revision_version: u64,
     #[expect(unused)]
@@ -232,6 +234,10 @@ pub(crate) struct ServerData<T> {
     pub(crate) block: T,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Protocol field retained for nested exception compatibility")
+)]
 #[derive(Debug, Clone)]
 pub(crate) struct ServerException {
     pub(crate) code:        i32,
@@ -258,12 +264,20 @@ pub(crate) struct ProfileInfo {
     pub(crate) rows_before_aggregation:      u64,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Protocol fields retained for response shape completeness")
+)]
 #[derive(Debug, Clone)]
 pub(crate) struct TableColumns {
     pub(crate) name:        String,
     pub(crate) description: String,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Protocol fields retained for response shape completeness")
+)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TableStatus {
     pub(crate) is_replicated:  bool,
@@ -506,6 +520,7 @@ impl AsRef<str> for CompressionMethod {
 mod tests {
     use super::*;
     use crate::native::block::Block;
+    use crate::native::block_info::BlockInfo;
     use crate::native::values::Value;
 
     #[test]
@@ -522,9 +537,11 @@ mod tests {
 
     #[test]
     fn server_hello_chunked_support_helpers() {
-        let mut hello = ServerHello::default();
-        hello.chunked_send = ChunkedProtocolMode::Chunked;
-        hello.chunked_recv = ChunkedProtocolMode::ChunkedOptional;
+        let mut hello = ServerHello {
+            chunked_send: ChunkedProtocolMode::Chunked,
+            chunked_recv: ChunkedProtocolMode::ChunkedOptional,
+            ..Default::default()
+        };
         assert!(hello.supports_chunked_send());
         assert!(hello.supports_chunked_recv());
 
@@ -624,7 +641,7 @@ mod tests {
     #[test]
     fn log_data_from_block_maps_columns_by_name() {
         let block = Block {
-            info:         Default::default(),
+            info:         BlockInfo::default(),
             rows:         2,
             column_types: vec![
                 ("time".to_string(), Type::String),
@@ -672,7 +689,7 @@ mod tests {
     #[test]
     fn profile_event_from_block_maps_columns_by_name() {
         let block = Block {
-            info:         Default::default(),
+            info:         BlockInfo::default(),
             rows:         2,
             column_types: vec![
                 ("host_name".to_string(), Type::String),

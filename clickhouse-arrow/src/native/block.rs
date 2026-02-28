@@ -286,6 +286,8 @@ impl ProtocolData<Self, ()> for Block {
                 .await
                 .inspect_err(|e| error!("reading column type (name {name}): {e}"))?;
 
+            drop(state.take_custom_serialization());
+
             let has_custom_serialization =
                 if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
                     reader.read_u8().await? != 0
@@ -298,7 +300,7 @@ impl ProtocolData<Self, ()> for Block {
             })?;
 
             if has_custom_serialization {
-                type_.deserialize_custom_serialization_prefix(reader).await?;
+                type_.deserialize_custom_serialization_prefix(reader, state).await?;
             }
 
             let mut row_data = if rows > 0 {
@@ -510,9 +512,7 @@ mod tests {
 
         let err = Block::from_rows(vec![WrongTypeRow], vec![("id".to_string(), Type::Int32)])
             .unwrap_err();
-        assert!(
-            matches!(err, Error::TypeParseError(msg) if msg.contains("could not assign value"))
-        );
+        assert!(matches!(err, Error::TypeParse(msg) if msg.contains("could not assign value")));
     }
 
     // TODO: Remove

@@ -51,7 +51,7 @@ impl Serializer for SizedSerializer {
                 Value::Ipv4(x) => writer.write_u32_le(x.0.into()).await?,
                 Value::Ipv6(x) => writer.write_all(&x.octets()[..]).await?,
                 _ => {
-                    return Err(Error::SerializeError(format!(
+                    return Err(Error::Serialize(format!(
                         "SizedSerializer unimplemented: {type_:?} for value = {value:?}",
                     )));
                 }
@@ -101,7 +101,7 @@ impl Serializer for SizedSerializer {
                 Value::Ipv4(x) => writer.put_u32_le(x.0.into()),
                 Value::Ipv6(x) => writer.put_slice(&x.octets()[..]),
                 _ => {
-                    return Err(Error::SerializeError(format!(
+                    return Err(Error::Serialize(format!(
                         "SizedSerializer unimplemented: {type_:?} for value = {value:?}",
                     )));
                 }

@@ -12,7 +12,9 @@ impl<T: ToSql> ToSql for VecTuple<T> {
             self.0
                 .into_iter()
                 .enumerate()
-                .map(|(i, x)| x.to_sql(type_hint.and_then(|x| x.untuple()?.get(i))))
+                .map(|(i, x)| {
+                    x.to_sql(type_hint.and_then(|x| x.untuple()?.get(i).map(|field| &field.1)))
+                })
                 .collect::<Result<Vec<_>>>()?,
         ))
     }
@@ -26,7 +28,7 @@ impl<T: FromSql> FromSql for VecTuple<T> {
         };
         let Value::Tuple(values) = value else { return Err(unexpected_type(type_)) };
         if values.len() != subtype.len() {
-            return Err(Error::DeserializeError(format!(
+            return Err(Error::Deserialize(format!(
                 "unexpected type: mismatch tuple length expected {}, got {}",
                 subtype.len(),
                 values.len()
@@ -34,7 +36,7 @@ impl<T: FromSql> FromSql for VecTuple<T> {
         }
         let mut out = Vec::with_capacity(values.len());
         for (type_, value) in subtype.iter().zip(values.into_iter()) {
-            out.push(T::from_sql(type_, value)?);
+            out.push(T::from_sql(&type_.1, value)?);
         }
         Ok(VecTuple(out))
     }
@@ -73,7 +75,7 @@ mod tests {
     #[test]
     fn test_vec_tuple_to_sql() {
         let vec_tuple = VecTuple(vec![1i32, 2i32, 3i32]);
-        let tuple_type = Type::Tuple(vec![Type::Int32, Type::Int32, Type::Int32]);
+        let tuple_type = Type::tuple_anon(vec![Type::Int32, Type::Int32, Type::Int32]);
 
         let result = vec_tuple.to_sql(Some(&tuple_type)).unwrap();
 
@@ -106,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_vec_tuple_from_sql_success() {
-        let tuple_type = Type::Tuple(vec![Type::Int32, Type::Int32, Type::Int32]);
+        let tuple_type = Type::tuple_anon(vec![Type::Int32, Type::Int32, Type::Int32]);
         let tuple_value = Value::Tuple(vec![Value::Int32(10), Value::Int32(20), Value::Int32(30)]);
 
         let result: VecTuple<i32> = VecTuple::from_sql(&tuple_type, tuple_value).unwrap();
@@ -120,22 +122,22 @@ mod tests {
 
         let result: Result<VecTuple<i32>> = VecTuple::from_sql(&int_type, tuple_value);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::DeserializeError(_)));
+        assert!(matches!(result.unwrap_err(), Error::Deserialize(_)));
     }
 
     #[test]
     fn test_vec_tuple_from_sql_wrong_value_type() {
-        let tuple_type = Type::Tuple(vec![Type::Int32]);
+        let tuple_type = Type::tuple_anon(vec![Type::Int32]);
         let int_value = Value::Int32(42);
 
         let result: Result<VecTuple<i32>> = VecTuple::from_sql(&tuple_type, int_value);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::DeserializeError(_)));
+        assert!(matches!(result.unwrap_err(), Error::Deserialize(_)));
     }
 
     #[test]
     fn test_vec_tuple_length_mismatch() {
-        let tuple_type = Type::Tuple(vec![Type::Int32, Type::Int32]); // Expects 2 elements
+        let tuple_type = Type::tuple_anon(vec![Type::Int32, Type::Int32]); // Expects 2 elements
         let tuple_value = Value::Tuple(vec![Value::Int32(1)]); // Has 1 element
 
         let result: Result<VecTuple<i32>> = VecTuple::from_sql(&tuple_type, tuple_value);
@@ -143,7 +145,7 @@ mod tests {
 
         // Check the error message
         match result {
-            Err(Error::DeserializeError(msg)) => {
+            Err(Error::Deserialize(msg)) => {
                 assert!(msg.contains("mismatch tuple length"));
                 assert!(msg.contains("expected 2"));
                 assert!(msg.contains("got 1"));
@@ -155,7 +157,7 @@ mod tests {
     #[test]
     fn test_vec_tuple_empty() {
         let vec_tuple: VecTuple<i32> = VecTuple(vec![]);
-        let tuple_type = Type::Tuple(vec![]);
+        let tuple_type = Type::tuple_anon(vec![]);
 
         let result = vec_tuple.to_sql(Some(&tuple_type)).unwrap();
         match result {
@@ -168,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_vec_tuple_empty_from_sql() {
-        let tuple_type = Type::Tuple(vec![]);
+        let tuple_type = Type::tuple_anon(vec![]);
         let tuple_value = Value::Tuple(vec![]);
 
         let result: VecTuple<i32> = VecTuple::from_sql(&tuple_type, tuple_value).unwrap();
@@ -179,7 +181,7 @@ mod tests {
     fn test_vec_tuple_mixed_types() {
         // Test with different types in tuple - using String type for testing
         let vec_tuple = VecTuple(vec!["hello".to_string(), "world".to_string()]);
-        let tuple_type = Type::Tuple(vec![Type::String, Type::String]);
+        let tuple_type = Type::tuple_anon(vec![Type::String, Type::String]);
 
         let result = vec_tuple.to_sql(Some(&tuple_type)).unwrap();
 
@@ -195,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_vec_tuple_string_from_sql() {
-        let tuple_type = Type::Tuple(vec![Type::String, Type::String]);
+        let tuple_type = Type::tuple_anon(vec![Type::String, Type::String]);
         let tuple_value = Value::Tuple(vec![
             Value::String("test1".to_string().into_bytes()),
             Value::String("test2".to_string().into_bytes()),

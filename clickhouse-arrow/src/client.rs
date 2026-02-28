@@ -445,6 +445,7 @@ impl<T: ClientFormat> Client<T> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let (header_tx, header_rx) = oneshot::channel();
         let connection = self.conn().await?;
 
         // Send query
@@ -456,7 +457,7 @@ impl<T: ClientFormat> Client<T> {
                     settings: self.settings.clone(),
                     params: None,
                     response: tx,
-                    header: None,
+                    header: Some(header_tx),
                 },
                 qid,
                 false,
@@ -468,6 +469,11 @@ impl<T: ClientFormat> Client<T> {
             .await
             .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
             .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
+        drop(
+            header_rx.await.map_err(|_| {
+                Error::Protocol(format!("Failed to receive header for query {qid}"))
+            })?,
+        );
 
         // Send data
         let (tx, rx) = oneshot::channel();
@@ -551,6 +557,7 @@ impl<T: ClientFormat> Client<T> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let (header_tx, header_rx) = oneshot::channel();
         let connection = self.conn().await?;
 
         #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
@@ -561,7 +568,7 @@ impl<T: ClientFormat> Client<T> {
                     settings: self.settings.clone(),
                     params: None,
                     response: tx,
-                    header: None,
+                    header: Some(header_tx),
                 },
                 qid,
                 false,
@@ -573,6 +580,11 @@ impl<T: ClientFormat> Client<T> {
             .await
             .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
             .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
+        drop(
+            header_rx.await.map_err(|_| {
+                Error::Protocol(format!("Failed to receive header for query {qid}"))
+            })?,
+        );
 
         // Send data
         let (tx, rx) = oneshot::channel();
@@ -1544,6 +1556,9 @@ impl Client<ArrowFormat> {
     }
 
     /// Executes a query with result limits.
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
     #[instrument(
         skip_all,
         fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
@@ -1558,6 +1573,9 @@ impl Client<ArrowFormat> {
     }
 
     /// Executes a parameterized query with result limits.
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
     #[instrument(
         skip_all,
         fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
@@ -1574,6 +1592,9 @@ impl Client<ArrowFormat> {
     }
 
     /// Executes a query with unified options (`EXPLAIN`, limits).
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
     #[instrument(
         skip_all,
         fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
@@ -1588,6 +1609,9 @@ impl Client<ArrowFormat> {
     }
 
     /// Executes a parameterized query with unified options (`EXPLAIN`, limits).
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
     #[instrument(
         skip_all,
         fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)

@@ -13,5 +13,5 @@ use super::Type;
 /// # Returns
 /// An `Array(Tuple(key, value))` type representing the normalized map structure
 pub fn normalize_map_type(key: &Type, value: &Type) -> Type {
-    Type::Array(Box::new(Type::Tuple(vec![key.clone(), value.clone()])))
+    Type::Array(Box::new(Type::tuple_anon(vec![key.clone(), value.clone()])))
 }

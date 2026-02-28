@@ -8,7 +8,7 @@ impl FromSql for Decimal {
     #[expect(clippy::cast_possible_truncation)]
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
         fn out_of_range(name: &str) -> Error {
-            Error::DeserializeError(format!("{name} out of bounds for rust_decimal"))
+            Error::deserialize(format!("{name} out of bounds for rust_decimal"))
         }
         fn decimal_out_of_range<T: std::fmt::Display>(
             name: &str,
@@ -16,7 +16,7 @@ impl FromSql for Decimal {
             scale: usize,
             value: T,
         ) -> Error {
-            Error::DeserializeError(format!(
+            Error::deserialize(format!(
                 "{name} out of bounds for rust_decimal: type={type_:?} scale={scale} value={value}"
             ))
         }
@@ -67,10 +67,9 @@ impl FromSql for Decimal {
 }
 
 impl ToSql for Decimal {
-    #[expect(clippy::cast_possible_truncation)]
     fn to_sql(self, type_hint: Option<&Type>) -> Result<Value> {
         fn out_of_range(name: &str) -> Error {
-            Error::SerializeError(format!("{name} out of bounds for rust_decimal"))
+            Error::serialize(format!("{name} out of bounds for rust_decimal"))
         }
 
         let scale = self.scale();
@@ -82,7 +81,7 @@ impl ToSql for Decimal {
                 if count_digits_i128(mantissa) > 9 {
                     return Err(out_of_range("Decimal32"));
                 }
-                if scale > *s as u32 {
+                if scale > u32::from(*s) {
                     return Err(out_of_range("Decimal32 scale"));
                 }
                 Ok(Value::Decimal32(
@@ -94,7 +93,7 @@ impl ToSql for Decimal {
                 if count_digits_i128(mantissa) > 18 {
                     return Err(out_of_range("Decimal64"));
                 }
-                if scale > *s as u32 {
+                if scale > u32::from(*s) {
                     return Err(out_of_range("Decimal64 scale"));
                 }
                 Ok(Value::Decimal64(
@@ -106,14 +105,12 @@ impl ToSql for Decimal {
                 if count_digits_i128(mantissa) > 38 {
                     return Err(out_of_range("Decimal128"));
                 }
-                if scale > *s as u32 {
+                if scale > u32::from(*s) {
                     return Err(out_of_range("Decimal128 scale"));
                 }
                 Ok(Value::Decimal128(scale as usize, mantissa))
             }
-            Some(x) => {
-                Err(Error::SerializeError(format!("unexpected type for scale {scale}: {x}")))
-            }
+            Some(x) => Err(Error::serialize(format!("unexpected type for scale {scale}: {x}"))),
         }
     }
 }

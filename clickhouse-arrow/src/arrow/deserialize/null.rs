@@ -75,7 +75,7 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
         let mut mask = vec![0u8; rows];
         let _ = reader.read_exact(&mut mask).await?;
         if mask.len() != rows {
-            return Err(Error::DeserializeError(format!("Nulls={}, rows={rows}", mask.len())));
+            return Err(Error::deserialize(format!("Nulls={}, rows={rows}", mask.len())));
         }
         mask
     } else {
@@ -95,6 +95,16 @@ mod tests {
     use crate::arrow::ch_to_arrow_type;
     use crate::native::types::Type;
 
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> {
+        ArrowFieldCtx {
+            row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix: None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix: None,
+        }
+    }
+
     /// Tests deserialization of `Nullable(Int32)` with null values.
     #[tokio::test]
     async fn test_deserialize_nullable_int32() {
@@ -109,12 +119,13 @@ mod tests {
             3, 0, 0, 0, // 3
         ];
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(Int32)");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(Int32)");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array, &Int32Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -135,12 +146,13 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let data_type = ch_to_arrow_type(inner_type, opts).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, opts, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(String)");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(String)");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(array, &StringArray::from(vec![Some("a"), None, Some("c")]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -166,12 +178,13 @@ mod tests {
             5, 0, 0, 0, // 5
         ];
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(Array(Int32))");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(Array(Int32))");
         let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
         let values = list_array.values().as_any().downcast_ref::<Int32Array>().unwrap();
 
@@ -192,12 +205,13 @@ mod tests {
         let rows = 0;
         let input = vec![]; // No data for zero rows
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(Int32) with zero rows");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(Int32) with zero rows");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array.len(), 0);
         assert_eq!(array, &Int32Array::from(Vec::<i32>::new()));
@@ -208,8 +222,10 @@ mod tests {
     async fn test_null_mask_length() {
         let type_ = Type::Nullable(Box::new(Type::String));
         let inner_type = type_.strip_null();
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         assert!(
             deserialize(
                 inner_type,
@@ -217,7 +233,7 @@ mod tests {
                 &data_type,
                 &mut Cursor::new(vec![0_u8; 50]),
                 100,
-                &mut vec![]
+                &mut ctx
             )
             .await
             .is_err()

@@ -5,7 +5,7 @@ use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
 #[inline]
-fn f32_to_bfloat16_bits(value: f32) -> u16 {
+pub(super) fn f32_to_bfloat16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let lsb = (bits >> 16) & 1;
     let rounded = bits.wrapping_add(0x7FFF + lsb);
@@ -318,4 +318,50 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
 
     writer.put_slice(&encoded);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use arrow::array::{FixedSizeListArray, Float32Array};
+    use arrow::datatypes::{DataType, Field};
+
+    use super::*;
+
+    fn qbit_array() -> ArrayRef {
+        let values =
+            Arc::new(Float32Array::from(vec![0.1_f32, 0.2, 0.3, 1.0, 2.0, 3.0])) as ArrayRef;
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new("item", DataType::Float32, false)),
+            3,
+            values,
+            None,
+        )) as ArrayRef
+    }
+
+    #[tokio::test]
+    async fn test_serialize_qbit_async_matches_sync() {
+        let type_hint = Type::QBit { element_type: Box::new(Type::Float32), dimension: 3 };
+        let column = qbit_array();
+
+        let mut async_writer = Cursor::new(Vec::new());
+        serialize_async(&type_hint, &mut async_writer, &column).await.unwrap();
+
+        let mut sync_writer = Vec::new();
+        serialize(&type_hint, &mut sync_writer, &column).unwrap();
+
+        assert_eq!(async_writer.into_inner(), sync_writer);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_qbit_dimension_mismatch() {
+        let type_hint = Type::QBit { element_type: Box::new(Type::Float32), dimension: 4 };
+        let column = qbit_array();
+        let mut writer = Cursor::new(Vec::new());
+
+        let error = serialize_async(&type_hint, &mut writer, &column).await.unwrap_err();
+        assert!(error.to_string().contains("QBit dimension mismatch"));
+    }
 }

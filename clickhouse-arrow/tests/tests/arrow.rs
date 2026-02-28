@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::*;
+#[cfg(feature = "extended-types")]
+use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::*;
 use clickhouse_arrow::prelude::*;
 use clickhouse_arrow::test_utils::ClickHouseContainer;
@@ -47,6 +49,445 @@ pub async fn test_round_trip_zstd_large_data(ch: Arc<ClickHouseContainer>) {
     test_round_trip_large_data(ch, Some(CompressionMethod::ZSTD)).await;
 }
 
+#[cfg(feature = "extended-types")]
+/// # Panics
+pub async fn test_round_trip_extended_dynamic_only(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap_with_options(
+        ch.as_ref(),
+        None,
+        Some(|builder: ClientBuilder| {
+            builder.with_setting(
+                "output_format_native_use_flattened_dynamic_and_json_serialization",
+                true,
+            )
+        }),
+    )
+    .await;
+
+    let dynamic_field = Field::new(
+        "dynamic_col",
+        DataType::Union(
+            UnionFields::new([0_i8, 1_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+            ]),
+            UnionMode::Dense,
+        ),
+        false,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        dynamic_field.clone(),
+    ]));
+
+    let dynamic_col = Arc::new(
+        UnionArray::try_new(
+            match dynamic_field.data_type() {
+                DataType::Union(fields, _) => fields.clone(),
+                _ => unreachable!(),
+            },
+            vec![0_i8, 1_i8, 0_i8, 1_i8, 0_i8].into(),
+            Some(vec![0_i32, 0, 1, 1, 2].into()),
+            vec![
+                Arc::new(Int32Array::from(vec![10_i32, 20, 30])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            ],
+        )
+        .unwrap(),
+    ) as ArrayRef;
+
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(vec![1_i32, 2, 3, 4, 5])) as ArrayRef,
+        dynamic_col,
+    ])
+    .unwrap();
+
+    let mut schema_conversions = HashMap::new();
+    drop(schema_conversions.insert("dynamic_col".to_string(), Type::Dynamic { max_types: 8 }));
+    let options = CreateOptions::new("MergeTree")
+        .with_order_by(&["id".to_string()])
+        .with_schema_conversions(schema_conversions);
+    let (db, table) = create_schema(&client, schema, &options).await.expect("Schema creation");
+
+    round_trip(&format!("{db}.{table}"), &client, batch).await.expect("Round trip");
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+    client.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "extended-types")]
+/// # Panics
+pub async fn test_round_trip_extended_dynamic_variant(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap_with_options(
+        ch.as_ref(),
+        None,
+        Some(|builder: ClientBuilder| {
+            builder.with_setting(
+                "output_format_native_use_flattened_dynamic_and_json_serialization",
+                true,
+            )
+        }),
+    )
+    .await;
+
+    let dynamic_field = Field::new(
+        "dynamic_col",
+        DataType::Union(
+            UnionFields::new([0_i8, 1_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+            ]),
+            UnionMode::Dense,
+        ),
+        false,
+    );
+    let variant_field = Field::new(
+        "variant_col",
+        DataType::Union(
+            UnionFields::new([0_i8, 1_i8, 2_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+                Field::new("Nothing", DataType::Null, false),
+            ]),
+            UnionMode::Dense,
+        ),
+        false,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        dynamic_field.clone(),
+        variant_field.clone(),
+    ]));
+
+    let dynamic_col = Arc::new(
+        UnionArray::try_new(
+            match dynamic_field.data_type() {
+                DataType::Union(fields, _) => fields.clone(),
+                _ => unreachable!(),
+            },
+            vec![0_i8, 1_i8, 0_i8, 1_i8, 0_i8].into(),
+            Some(vec![0_i32, 0, 1, 1, 2].into()),
+            vec![
+                Arc::new(Int32Array::from(vec![10_i32, 20, 30])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            ],
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    let variant_col = Arc::new(
+        UnionArray::try_new(
+            match variant_field.data_type() {
+                DataType::Union(fields, _) => fields.clone(),
+                _ => unreachable!(),
+            },
+            vec![0_i8, 1_i8, 2_i8, 0_i8, 1_i8].into(),
+            Some(vec![0_i32, 0, 0, 1, 1].into()),
+            vec![
+                Arc::new(Int32Array::from(vec![100_i32, 200])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["x", "y"])) as ArrayRef,
+                Arc::new(NullArray::new(1)) as ArrayRef,
+            ],
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        dynamic_col,
+        variant_col,
+    ])
+    .unwrap();
+
+    let mut schema_conversions = HashMap::new();
+    drop(schema_conversions.insert("dynamic_col".to_string(), Type::Dynamic { max_types: 8 }));
+    drop(
+        schema_conversions
+            .insert("variant_col".to_string(), Type::Variant(vec![Type::Int32, Type::String])),
+    );
+    let options = CreateOptions::new("MergeTree")
+        .with_order_by(&["id".to_string()])
+        .with_schema_conversions(schema_conversions);
+
+    let (db, table) = create_schema(&client, schema, &options).await.expect("Schema creation");
+    round_trip(&format!("{db}.{table}"), &client, batch).await.expect("Round trip");
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+    client.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "extended-types")]
+/// # Panics
+pub async fn test_round_trip_extended_time_types(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap_with_options(
+        ch.as_ref(),
+        None,
+        Some(|builder: ClientBuilder| builder.with_setting("enable_time_time64_type", true)),
+    )
+    .await;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("time_s_col", DataType::Time32(TimeUnit::Second), false),
+        Field::new("time64_ms_col", DataType::Time32(TimeUnit::Millisecond), false),
+        Field::new("time64_us_col", DataType::Time64(TimeUnit::Microsecond), false),
+        Field::new("time64_ns_col", DataType::Time64(TimeUnit::Nanosecond), false),
+    ]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(vec![1, 2, 3, 4])) as ArrayRef,
+        Arc::new(Time32SecondArray::from(vec![0_i32, 1, 60, 86_399])) as ArrayRef,
+        Arc::new(Time32MillisecondArray::from(vec![0_i32, 1_000, 60_000, 86_399_000])) as ArrayRef,
+        Arc::new(Time64MicrosecondArray::from(vec![0_i64, 1_000_000, 60_000_000, 86_399_000_000]))
+            as ArrayRef,
+        Arc::new(Time64NanosecondArray::from(vec![
+            0_i64,
+            1_000_000_000,
+            60_000_000_000,
+            86_399_000_000_000,
+        ])) as ArrayRef,
+    ])
+    .unwrap();
+
+    let mut schema_conversions = HashMap::new();
+    drop(schema_conversions.insert("time_s_col".to_string(), Type::Time));
+    drop(schema_conversions.insert("time64_ms_col".to_string(), Type::Time64(3)));
+    drop(schema_conversions.insert("time64_us_col".to_string(), Type::Time64(6)));
+    drop(schema_conversions.insert("time64_ns_col".to_string(), Type::Time64(9)));
+    let options = CreateOptions::new("MergeTree")
+        .with_order_by(&["id".to_string()])
+        .with_schema_conversions(schema_conversions);
+
+    let (db, table) = create_schema(&client, schema, &options).await.expect("Schema creation");
+    round_trip(&format!("{db}.{table}"), &client, batch).await.expect("Round trip");
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+    client.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "extended-types")]
+/// # Panics
+pub async fn test_round_trip_extended_nested_unflattened(ch: Arc<ClickHouseContainer>) {
+    let (client, _) = bootstrap_with_options(
+        ch.as_ref(),
+        None,
+        Some(|builder: ClientBuilder| builder.with_setting("flatten_nested", false)),
+    )
+    .await;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new(
+            "nested_col",
+            DataType::Struct(
+                vec![
+                    Field::new(
+                        "name",
+                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                        false,
+                    ),
+                    Field::new(
+                        "score",
+                        DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                        false,
+                    ),
+                ]
+                .into(),
+            ),
+            false,
+        ),
+    ]));
+
+    let nested_offsets = OffsetBuffer::new(vec![0, 2, 2, 3, 4, 6].into());
+    let nested_name_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Utf8, false)),
+            nested_offsets.clone(),
+            Arc::new(StringArray::from(vec!["alice", "bob", "charlie", "diana", "eve", "frank"])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    let nested_score_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            nested_offsets,
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50, 60])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    let nested_col = Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new(
+                "name",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            )),
+            nested_name_col,
+        ),
+        (
+            Arc::new(Field::new(
+                "score",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            )),
+            nested_score_col,
+        ),
+    ])) as ArrayRef;
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+        nested_col,
+    ])
+    .unwrap();
+
+    let mut schema_conversions = HashMap::new();
+    drop(schema_conversions.insert(
+        "nested_col".to_string(),
+        Type::Nested(vec![("name".to_string(), Type::String), ("score".to_string(), Type::Int32)]),
+    ));
+    let options = CreateOptions::new("MergeTree")
+        .with_order_by(&["id".to_string()])
+        .with_schema_conversions(schema_conversions);
+
+    let (db, table) =
+        create_schema(&client, schema, &options).await.expect("Schema creation failed");
+    round_trip(&format!("{db}.{table}"), &client, batch).await.expect("Round trip failed");
+
+    drop_schema(&db, &table, &client).await.expect("Drop table");
+    client.shutdown().await.unwrap();
+}
+
+#[cfg(feature = "extended-types")]
+/// # Panics
+#[expect(clippy::too_many_lines)]
+pub async fn test_round_trip_extended_struct_schema_conversions(ch: Arc<ClickHouseContainer>) {
+    // Nested Struct insertion requires flatten_nested=0. With flatten_nested=1, ClickHouse expects
+    // flattened Array subcolumns on insert.
+    let (client, _) = bootstrap_with_options(
+        ch.as_ref(),
+        None,
+        Some(|builder: ClientBuilder| builder.with_setting("flatten_nested", false)),
+    )
+    .await;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new(
+            "tuple_struct_col",
+            DataType::Struct(
+                vec![
+                    Field::new("first", DataType::Int32, false),
+                    Field::new("second", DataType::Utf8, false),
+                ]
+                .into(),
+            ),
+            false,
+        ),
+        Field::new(
+            "nested_col",
+            DataType::Struct(
+                vec![
+                    Field::new(
+                        "name",
+                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                        false,
+                    ),
+                    Field::new(
+                        "score",
+                        DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                        false,
+                    ),
+                ]
+                .into(),
+            ),
+            false,
+        ),
+    ]));
+
+    let tuple_struct_col = Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new("first", DataType::Int32, false)),
+            Arc::new(Int32Array::from(vec![10, 20, 30])) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("second", DataType::Utf8, false)),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+        ),
+    ])) as ArrayRef;
+
+    let nested_offsets = OffsetBuffer::new(vec![0, 2, 2, 3].into());
+    let nested_name_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Utf8, false)),
+            nested_offsets.clone(),
+            Arc::new(StringArray::from(vec!["alice", "bob", "charlie"])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    let nested_score_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            nested_offsets,
+            Arc::new(Int32Array::from(vec![10, 20, 30])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    let nested_col = Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new(
+                "name",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            )),
+            nested_name_col,
+        ),
+        (
+            Arc::new(Field::new(
+                "score",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            )),
+            nested_score_col,
+        ),
+    ])) as ArrayRef;
+
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![
+        Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        tuple_struct_col,
+        nested_col,
+    ])
+    .unwrap();
+
+    let mut schema_conversions = HashMap::new();
+    drop(schema_conversions.insert(
+        "tuple_struct_col".to_string(),
+        Type::Tuple(vec![
+            (Some("first".to_string()), Type::Int32),
+            (Some("second".to_string()), Type::String),
+        ]),
+    ));
+    drop(schema_conversions.insert(
+        "nested_col".to_string(),
+        Type::Nested(vec![("name".to_string(), Type::String), ("score".to_string(), Type::Int32)]),
+    ));
+    let options = CreateOptions::new("MergeTree")
+        .with_order_by(&["id".to_string()])
+        .with_schema_conversions(schema_conversions);
+
+    let (db, table) = create_schema(&client, Arc::clone(&schema), &options).await.unwrap();
+
+    let fetched = client.fetch_schema(Some(&db), &[&table], Some(Qid::new()), None).await.unwrap();
+    let fetched_schema = fetched.get(&table).unwrap();
+    let tuple_field = fetched_schema.field_with_name("tuple_struct_col").unwrap();
+    let DataType::Struct(tuple_fields) = tuple_field.data_type() else {
+        panic!("Expected tuple_struct_col to deserialize as Struct");
+    };
+    assert_eq!(tuple_fields[0].name(), "first");
+    assert_eq!(tuple_fields[1].name(), "second");
+
+    round_trip(&format!("{db}.{table}"), &client, batch).await.unwrap();
+
+    drop_schema(&db, &table, &client).await.unwrap();
+    client.shutdown().await.unwrap();
+}
+
 /// Test arrow e2e using `ClientBuilder`.
 ///
 /// NOTES:
@@ -59,22 +500,10 @@ pub async fn test_round_trip(ch: Arc<ClickHouseContainer>, compression: Option<C
     let (client, options) = bootstrap(ch.as_ref(), compression).await;
 
     // Create table with schema and enum mappings
-    let mut excluded_fields = vec![];
-    if !supports_column_type(&client, "Nothing").await {
-        excluded_fields.push("nothing_col");
-    }
-    #[cfg(feature = "extended-types")]
-    if !supports_column_type(&client, "QBit(Float32, 3)").await {
-        excluded_fields.push("qbit_float32_col");
-    }
-    let schema = filter_schema_fields(test_schema(), &excluded_fields);
-    eprintln!(
-        "roundtrip exclusions={excluded_fields:?}, fields={:?}",
-        schema.fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>()
-    );
+    let schema = test_schema();
 
     // Create test RecordBatch
-    let batch = filter_batch_fields(test_record_batch(), &excluded_fields);
+    let batch = test_record_batch();
 
     // Create schema
     let (db, table) =
@@ -142,15 +571,7 @@ pub async fn test_schema_utils(ch: Arc<ClickHouseContainer>) {
     let (client, options) = bootstrap(ch.as_ref(), None).await;
 
     // Create table with schema and enum mappings
-    let mut excluded_fields = vec![];
-    if !supports_column_type(&client, "Nothing").await {
-        excluded_fields.push("nothing_col");
-    }
-    #[cfg(feature = "extended-types")]
-    if !supports_column_type(&client, "QBit(Float32, 3)").await {
-        excluded_fields.push("qbit_float32_col");
-    }
-    let schema = filter_schema_fields(test_schema(), &excluded_fields);
+    let schema = test_schema();
 
     // Create schema
     let (db, table) = create_schema(&client, Arc::clone(&schema), &options)
@@ -388,12 +809,6 @@ pub(super) async fn bootstrap_with_options(
         element_type: Box::new(Type::Float32),
         dimension:    3,
     }));
-    #[cfg(feature = "extended-types")]
-    drop(schema_conversions.insert(
-        "nested_col".to_string(),
-        Type::Nested(vec![("name".to_string(), Type::String), ("score".to_string(), Type::Int32)]),
-    ));
-
     let options = CreateOptions::new("MergeTree")
         .with_order_by(&["id".to_string()])
         .with_schema_conversions(schema_conversions);
@@ -469,6 +884,7 @@ pub async fn drop_schema(
 
 /// # Errors
 /// # Panics
+#[expect(clippy::too_many_lines)]
 pub async fn round_trip(
     table_ref: &str,
     client: &ArrowClient,
@@ -514,12 +930,71 @@ pub async fn round_trip(
     // Verify queried data matches inserted data
     header(query_id, "Verifying queried data");
     let inserted_batch = batch;
+    let inserted_schema = inserted_batch.schema();
+    let inserted_by_name = inserted_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| (field.name().as_str(), idx))
+        .collect::<HashMap<_, _>>();
 
     assert_eq!(queried_batches.len(), 1, "Expected one batch");
     assert_eq!(queried_batches[0].num_rows(), inserted_batch.num_rows(), "Row count mismatch");
 
-    for (i, col) in queried_batches[0].columns().iter().enumerate() {
-        let inserted_column = inserted_batch.column(i);
+    for (i, (queried_field, col)) in queried_batches[0]
+        .schema()
+        .fields()
+        .iter()
+        .zip(queried_batches[0].columns().iter())
+        .enumerate()
+    {
+        let queried_name = queried_field.name();
+        let inserted_column = if let Some(idx) = inserted_by_name.get(queried_name.as_str()) {
+            inserted_batch.column(*idx)
+        } else {
+            let Some((parent_name, child_name)) = queried_name.split_once('.') else {
+                panic!(
+                    "Queried column '{queried_name}' not found in inserted schema and is not a \
+                     flattened nested field"
+                );
+            };
+
+            let Some(parent_idx) = inserted_by_name.get(parent_name) else {
+                panic!(
+                    "Flattened parent column '{parent_name}' for queried column '{queried_name}' \
+                     is missing from inserted schema"
+                );
+            };
+
+            let parent_field = &inserted_schema.fields()[*parent_idx];
+            let DataType::Struct(children) = parent_field.data_type() else {
+                panic!(
+                    "Flattened queried column '{queried_name}' references parent '{parent_name}', \
+                     but inserted parent type is '{:?}'",
+                    parent_field.data_type()
+                );
+            };
+
+            let Some(child_idx) = children.iter().position(|child| child.name() == child_name)
+            else {
+                panic!(
+                    "Flattened queried column '{queried_name}' child '{child_name}' not found in \
+                     inserted parent '{parent_name}'"
+                );
+            };
+
+            let Some(parent_struct) =
+                inserted_batch.column(*parent_idx).as_any().downcast_ref::<StructArray>()
+            else {
+                panic!(
+                    "Inserted parent '{parent_name}' is not a StructArray for flattened queried \
+                     column '{queried_name}'"
+                );
+            };
+
+            parent_struct.column(child_idx)
+        };
+
         crate::roundtrip_exceptions!(
             (col.data_type(), inserted_column.data_type()) => {
                 dict(k1, v1, _k2, _v2) => {{
@@ -527,6 +1002,9 @@ pub async fn round_trip(
                 }};
                 list(field1, field2) => {{
                     assert_lists(i, col, inserted_column, field1, field2);
+                }};
+                struct_fields(_fields1, _fields2) => {{
+                    assert_structs(i, col, inserted_column);
                 }};
                 utc_default() => {{
                     assert_datetimes_utf_default(col, inserted_column);
@@ -575,64 +1053,6 @@ pub async fn round_trip(
     assert!(empty_result.is_none(), "query_one should return None for no results");
 
     Ok(())
-}
-
-fn filter_schema_fields(schema: SchemaRef, excluded_fields: &[&str]) -> SchemaRef {
-    if excluded_fields.is_empty() {
-        return schema;
-    }
-
-    let fields = schema
-        .fields()
-        .iter()
-        .filter(|f| !excluded_fields.contains(&f.name().as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    Arc::new(Schema::new(fields))
-}
-
-fn filter_batch_fields(batch: RecordBatch, excluded_fields: &[&str]) -> RecordBatch {
-    if excluded_fields.is_empty() {
-        return batch;
-    }
-
-    let keep_indices = batch
-        .schema()
-        .fields()
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, field)| {
-            (!excluded_fields.contains(&field.name().as_str())).then_some(idx)
-        })
-        .collect::<Vec<_>>();
-
-    batch.project(&keep_indices).expect("Failed to project RecordBatch fields")
-}
-
-async fn supports_column_type(client: &ArrowClient, column_type: &str) -> bool {
-    let table = format!("type_probe_{}", Qid::new());
-    let create = format!("CREATE TABLE {table} (value {column_type}) ENGINE = Memory");
-    let drop_query = format!("DROP TABLE IF EXISTS {table}");
-    let exists_query = format!(
-        "SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = '{table}'"
-    );
-
-    drop(client.execute_now(&create, None).await);
-    let supported = client
-        .query_column(&exists_query, None)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|column| {
-            column
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .map(|counts| !counts.is_empty() && counts.value(0) > 0)
-        })
-        .unwrap_or(false);
-    drop(client.execute_now(&drop_query, None).await);
-    supported
 }
 
 /// Test `ClickHouse`'s actual support for various nullable array combinations

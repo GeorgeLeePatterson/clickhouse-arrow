@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, LargeListArray, ListArray, StructArray};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::DataType;
 use tokio::io::AsyncWriteExt;
 
 use super::ClickHouseArrowSerializer;
@@ -9,6 +9,9 @@ use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
+#[expect(clippy::too_many_lines)]
+#[expect(clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation)]
 pub(super) async fn serialize_async<W: ClickHouseWrite>(
     type_hint: &Type,
     writer: &mut W,
@@ -47,11 +50,9 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
 
     let rows = struct_array.len();
     let mut shared_offsets: Option<Vec<u64>> = None;
-    let mut tuple_types = Vec::with_capacity(fields.len());
-    let mut tuple_fields = Vec::with_capacity(fields.len());
-    let mut tuple_arrays = Vec::with_capacity(fields.len());
+    let mut nested_values = Vec::with_capacity(fields.len());
 
-    for (i, ((nested_name, inner_type), arrow_field)) in
+    for (i, ((nested_name, _inner_type), arrow_field)) in
         fields.iter().zip(arrow_fields.iter()).enumerate()
     {
         if arrow_field.name() != nested_name {
@@ -62,8 +63,8 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
         }
 
         let nested_column = struct_array.column(i);
-        let (offsets, values, item_type) = match arrow_field.data_type() {
-            DataType::List(item) => {
+        let (offsets, values) = match arrow_field.data_type() {
+            DataType::List(_item) => {
                 let list = nested_column.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
                     Error::ArrowSerialize(format!(
                         "Nested field '{nested_name}' expected ListArray, found {:?}",
@@ -84,11 +85,10 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                 }
                 (
                     list.value_offsets().iter().map(|offset| *offset as u64).collect::<Vec<_>>(),
-                    list.values().clone(),
-                    item.data_type().clone(),
+                    Arc::clone(list.values()),
                 )
             }
-            DataType::LargeList(item) => {
+            DataType::LargeList(_item) => {
                 let list =
                     nested_column.as_any().downcast_ref::<LargeListArray>().ok_or_else(|| {
                         Error::ArrowSerialize(format!(
@@ -118,7 +118,7 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                     })?;
                     offsets.push(offset);
                 }
-                (offsets, list.values().clone(), item.data_type().clone())
+                (offsets, Arc::clone(list.values()))
             }
             other => {
                 return Err(Error::ArrowSerialize(format!(
@@ -145,14 +145,12 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
             shared_offsets = Some(offsets);
         }
 
-        tuple_types.push(inner_type.clone());
-        tuple_fields.push(Field::new(nested_name, item_type, inner_type.is_nullable()));
-        tuple_arrays.push(values);
+        nested_values.push(values);
     }
 
     let shared_offsets = shared_offsets.expect("Nested fields are checked as non-empty");
     let total_values = shared_offsets.last().copied().unwrap_or_default() as usize;
-    for (i, value_array) in tuple_arrays.iter().enumerate() {
+    for (i, value_array) in nested_values.iter().enumerate() {
         if value_array.len() != total_values {
             return Err(Error::ArrowSerialize(format!(
                 "Nested child '{}' values length mismatch: {} != {total_values}",
@@ -166,13 +164,26 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
         writer.write_u64_le(*offset).await?;
     }
 
-    let tuple_type = Type::Tuple(tuple_types);
-    let tuple_array: ArrayRef = Arc::new(StructArray::new(tuple_fields.into(), tuple_arrays, None));
-    tuple_type.serialize_async(writer, &tuple_array, tuple_array.data_type(), state).await?;
+    for (((nested_name, inner_type), arrow_field), values) in
+        fields.iter().zip(arrow_fields.iter()).zip(nested_values.into_iter())
+    {
+        let item_type = match arrow_field.data_type() {
+            DataType::List(item) | DataType::LargeList(item) => item.data_type(),
+            other => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Nested field '{nested_name}' expected List/LargeList type, got {other:?}"
+                )));
+            }
+        };
+        inner_type.serialize_async(writer, &values, item_type, state).await?;
+    }
 
     Ok(())
 }
 
+#[expect(clippy::too_many_lines)]
+#[expect(clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation)]
 pub(super) fn serialize<W: ClickHouseBytesWrite>(
     type_hint: &Type,
     writer: &mut W,
@@ -211,11 +222,9 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
 
     let rows = struct_array.len();
     let mut shared_offsets: Option<Vec<u64>> = None;
-    let mut tuple_types = Vec::with_capacity(fields.len());
-    let mut tuple_fields = Vec::with_capacity(fields.len());
-    let mut tuple_arrays = Vec::with_capacity(fields.len());
+    let mut nested_values = Vec::with_capacity(fields.len());
 
-    for (i, ((nested_name, inner_type), arrow_field)) in
+    for (i, ((nested_name, _inner_type), arrow_field)) in
         fields.iter().zip(arrow_fields.iter()).enumerate()
     {
         if arrow_field.name() != nested_name {
@@ -226,8 +235,8 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         }
 
         let nested_column = struct_array.column(i);
-        let (offsets, values, item_type) = match arrow_field.data_type() {
-            DataType::List(item) => {
+        let (offsets, values) = match arrow_field.data_type() {
+            DataType::List(_item) => {
                 let list = nested_column.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
                     Error::ArrowSerialize(format!(
                         "Nested field '{nested_name}' expected ListArray, found {:?}",
@@ -248,11 +257,10 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
                 }
                 (
                     list.value_offsets().iter().map(|offset| *offset as u64).collect::<Vec<_>>(),
-                    list.values().clone(),
-                    item.data_type().clone(),
+                    Arc::clone(list.values()),
                 )
             }
-            DataType::LargeList(item) => {
+            DataType::LargeList(_item) => {
                 let list =
                     nested_column.as_any().downcast_ref::<LargeListArray>().ok_or_else(|| {
                         Error::ArrowSerialize(format!(
@@ -282,7 +290,7 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
                     })?;
                     offsets.push(offset);
                 }
-                (offsets, list.values().clone(), item.data_type().clone())
+                (offsets, Arc::clone(list.values()))
             }
             other => {
                 return Err(Error::ArrowSerialize(format!(
@@ -309,14 +317,12 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
             shared_offsets = Some(offsets);
         }
 
-        tuple_types.push(inner_type.clone());
-        tuple_fields.push(Field::new(nested_name, item_type, inner_type.is_nullable()));
-        tuple_arrays.push(values);
+        nested_values.push(values);
     }
 
     let shared_offsets = shared_offsets.expect("Nested fields are checked as non-empty");
     let total_values = shared_offsets.last().copied().unwrap_or_default() as usize;
-    for (i, value_array) in tuple_arrays.iter().enumerate() {
+    for (i, value_array) in nested_values.iter().enumerate() {
         if value_array.len() != total_values {
             return Err(Error::ArrowSerialize(format!(
                 "Nested child '{}' values length mismatch: {} != {total_values}",
@@ -330,9 +336,102 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         writer.put_u64_le(*offset);
     }
 
-    let tuple_type = Type::Tuple(tuple_types);
-    let tuple_array: ArrayRef = Arc::new(StructArray::new(tuple_fields.into(), tuple_arrays, None));
-    tuple_type.serialize(writer, &tuple_array, tuple_array.data_type(), state)?;
+    for (((nested_name, inner_type), arrow_field), values) in
+        fields.iter().zip(arrow_fields.iter()).zip(nested_values.into_iter())
+    {
+        let item_type = match arrow_field.data_type() {
+            DataType::List(item) | DataType::LargeList(item) => item.data_type(),
+            other => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Nested field '{nested_name}' expected List/LargeList type, got {other:?}"
+                )));
+            }
+        };
+        inner_type.serialize(writer, &values, item_type, state)?;
+    }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use arrow::array::{Int32Array, ListArray, StringArray};
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{Field, Fields};
+
+    use super::*;
+    use crate::formats::SerializerState;
+
+    fn nested_type() -> Type {
+        Type::Nested(vec![("name".to_string(), Type::String), ("score".to_string(), Type::Int32)])
+    }
+
+    fn nested_data_type() -> DataType {
+        DataType::Struct(Fields::from(vec![
+            Field::new(
+                "name",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            ),
+            Field::new(
+                "score",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            ),
+        ]))
+    }
+
+    fn nested_column() -> ArrayRef {
+        let offsets = OffsetBuffer::new(vec![0, 2, 2, 3].into());
+        let names = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Utf8, false)),
+            offsets.clone(),
+            Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef,
+            None,
+        )) as ArrayRef;
+        let scores = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            offsets,
+            Arc::new(Int32Array::from(vec![10, 20, 30])) as ArrayRef,
+            None,
+        )) as ArrayRef;
+        let DataType::Struct(fields) = nested_data_type() else {
+            unreachable!();
+        };
+
+        Arc::new(StructArray::new(fields, vec![names, scores], None)) as ArrayRef
+    }
+
+    #[tokio::test]
+    async fn test_serialize_nested_async_matches_sync() {
+        let type_hint = nested_type();
+        let data_type = nested_data_type();
+        let column = nested_column();
+
+        let mut async_writer = Cursor::new(Vec::new());
+        serialize_async(
+            &type_hint,
+            &mut async_writer,
+            &column,
+            &data_type,
+            &mut SerializerState::default(),
+        )
+        .await
+        .unwrap();
+
+        let mut sync_writer = Vec::new();
+        serialize(
+            &type_hint,
+            &mut sync_writer,
+            &column,
+            &data_type,
+            &mut SerializerState::default(),
+        )
+        .unwrap();
+
+        assert_eq!(async_writer.into_inner(), sync_writer);
+    }
 }

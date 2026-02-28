@@ -1,4 +1,4 @@
-use super::{ClickHouseNativeSerializer, Serializer, SerializerState, Type};
+use super::{Serializer, SerializerState, Type};
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Value};
 
@@ -7,23 +7,21 @@ pub(crate) struct QBitSerializer;
 impl Serializer for QBitSerializer {
     async fn write_prefix<W: ClickHouseWrite>(
         type_: &Type,
-        writer: &mut W,
-        state: &mut SerializerState,
+        _writer: &mut W,
+        _state: &mut SerializerState,
     ) -> Result<()> {
-        if let Type::QBit { element_type, .. } = type_ {
-            element_type.serialize_prefix_async(writer, state).await?;
+        if !matches!(type_, Type::QBit { .. }) {
+            return Err(Error::serialize("QBitSerializer called with non-qbit type"));
         }
         Ok(())
     }
 
     fn write_prefix_sync(
         type_: &Type,
-        writer: &mut impl ClickHouseBytesWrite,
-        state: &mut SerializerState,
+        _writer: &mut impl ClickHouseBytesWrite,
+        _state: &mut SerializerState,
     ) {
-        if let Type::QBit { element_type, .. } = type_ {
-            element_type.serialize_prefix(writer, state);
-        }
+        assert!(matches!(type_, Type::QBit { .. }), "QBitSerializer called with non-qbit type");
     }
 
     async fn write<W: ClickHouseWrite>(

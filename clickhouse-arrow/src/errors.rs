@@ -27,21 +27,21 @@ pub enum Error {
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("Internal channel closed")]
-    InternalChannelError,
+    InternalChannel,
     #[error("connection timeout: {0}")]
     ConnectionTimeout(String),
     #[error("connection gone: reason = {0}")]
     ConnectionGone(&'static str),
     #[error("type parse error: {0}")]
-    TypeParseError(String),
+    TypeParse(String),
     #[error("deserialize error: {0}")]
-    DeserializeError(String),
+    Deserialize(String),
     #[error("serialize error: {0}")]
-    SerializeError(String),
+    Serialize(String),
     #[error("deserialize error for column {0}: {1}")]
-    DeserializeErrorWithColumn(&'static str, String),
+    DeserializeWithColumn(&'static str, String),
     #[error("connection startup error")]
-    StartupError,
+    Startup,
     #[error("Exception({0:?})")]
     ServerException(ServerError),
     #[error("unexpected type: {0}")]
@@ -108,17 +108,15 @@ impl Error {
     #[must_use]
     pub fn with_column_name(self, name: &'static str) -> Self {
         match self {
-            Error::DeserializeError(e) => Error::DeserializeErrorWithColumn(name, e),
+            Error::Deserialize(e) => Error::DeserializeWithColumn(name, e),
             Error::UnexpectedType(e) => Error::UnexpectedTypeWithColumn(Cow::Borrowed(name), e),
             x => x,
         }
     }
 
-    pub fn serialize(message: impl Into<String>) -> Self { Error::SerializeError(message.into()) }
+    pub fn serialize(message: impl Into<String>) -> Self { Error::Serialize(message.into()) }
 
-    pub fn deserialize(message: impl Into<String>) -> Self {
-        Error::DeserializeError(message.into())
-    }
+    pub fn deserialize(message: impl Into<String>) -> Self { Error::Deserialize(message.into()) }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

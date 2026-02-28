@@ -469,7 +469,7 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
     ) -> Result<Option<ServerData<Block>>> {
         drop(reader.read_string().await?);
         let mut state = DeserializerState::default();
-        let Some(block) = NativeFormat::read(reader, revision, metadata.clone(), &mut state)
+        let Some(block) = NativeFormat::read(reader, revision, metadata, &mut state)
             .await
             .inspect_err(|error| {
                 error!(?error, { ATT_CID } = metadata.client_id, "Block read fail");
@@ -489,7 +489,7 @@ impl<R: ClickHouseRead + 'static> Reader<R> {
     ) -> Result<Option<ServerData<T::Data>>> {
         drop(reader.read_string().await?);
         let Some(block) =
-            T::read(reader, revision, metadata.clone(), state).await.inspect_err(|error| {
+            T::read(reader, revision, metadata, state).await.inspect_err(|error| {
                 error!(?error, { ATT_CID } = metadata.client_id, "Data read fail");
             })?
         else {

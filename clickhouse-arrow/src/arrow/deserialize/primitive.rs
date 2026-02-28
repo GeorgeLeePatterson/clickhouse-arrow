@@ -22,18 +22,8 @@ use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
-#[expect(unused_macro_rules)] // Sync path no longer used
 macro_rules! primitive_bulk {
     ($reader:expr, $rows:expr, $buf:expr, $type:ty) => {{
-        let byte_count = $rows * std::mem::size_of::<$type>();
-        if $buf.capacity() < byte_count {
-            $buf.reserve(byte_count - $buf.capacity());
-        }
-        $buf.resize(byte_count, 0);
-        $reader.try_copy_to_slice(&mut $buf[..byte_count])?;
-        byte_count
-    }};
-    (tokio; $reader:expr, $rows:expr, $buf:expr, $type:ty) => {{
         let byte_count = $rows * std::mem::size_of::<$type>();
         if $buf.capacity() < byte_count {
             $buf.reserve(byte_count - $buf.capacity());
@@ -45,77 +35,32 @@ macro_rules! primitive_bulk {
 }
 pub(crate) use primitive_bulk;
 
-// NOTE: Some of these are unused and tbe bulk variation above is used. But useful to keep around
-#[expect(unused)]
+// NOTE: Some of these are unused but useful to keep around
 macro_rules! primitive {
-    (Int8 => $reader:expr) => {{ $reader.try_get_i8()? }};
-    (Int16 => $reader:expr) => {{ $reader.try_get_i16_le()? }};
-    (Int32 => $reader:expr) => {{ $reader.try_get_i32_le()? }};
-    (Int64 => $reader:expr) => {{ $reader.try_get_i64_le()? }};
-    (UInt8 => $reader:expr) => {{ $reader.try_get_u8()? }};
-    (UInt16 => $reader:expr) => {{ $reader.try_get_u16_le()? }};
-    (UInt32 => $reader:expr) => {{ $reader.try_get_u32_le()? }};
-    (UInt64 => $reader:expr) => {{ $reader.try_get_u64_le()? }};
-    (Float32 => $reader:expr) => {{ $reader.try_get_f32_le()? }};
-    (Float64 => $reader:expr) => {{ $reader.try_get_f64_le()? }};
-    (Date => $reader:expr) => {{ $reader.try_get_u16_le().map(i32::from)? }};
-    (Date32 => $reader:expr) => {{
-        {
-            let days = $reader.try_get_i32_le()?;
-            days - $crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
-        }
-    }};
-    (DateTime => $reader:expr) => {{ $reader.try_get_u32_le().map(i64::from)? }};
-    (DateTime64(0) => $reader:expr) => {{ $reader.try_get_i64_le()? }};
-    (DateTime64(3) => $reader:expr) => {{ $reader.try_get_i64_le()? }};
-    (DateTime64(6) => $reader:expr) => {{ $reader.try_get_i64_le()? }};
-    (DateTime64(9) => $reader:expr) => {{ $reader.try_get_i64_le()? }};
-    (Decimal32 => $reader:expr) => {{ $reader.try_get_i32_le().map(i128::from)? }};
-    (Decimal64 => $reader:expr) => {{ $reader.try_get_i64_le().map(i128::from)? }};
-    (Decimal128 => $reader:expr) => {{
-        {
-            let mut buf = [0u8; 16];
-            $reader.try_copy_to_slice(&mut buf)?;
-            i128::from_le_bytes(buf)
-        }
-    }};
-    (Decimal256 => $reader:expr) => {{
-        {
-            let mut buf = [0u8; 32];
-            $reader.try_copy_to_slice(&mut buf)?;
-            buf.reverse();
-            i256::from_le_bytes(buf)
-        }
-    }};
-}
-
-// NOTE: Some of these are unused and tbe bulk variation above is used. But useful to keep around
-#[expect(unused)]
-macro_rules! primitive_async {
     (Int8 => $reader:expr) => {{ $reader.read_i8().await? }};
     (Int16 => $reader:expr) => {{ $reader.read_i16_le().await? }};
-    (Int32 => $reader:expr) => {{ $reader.read_i32_le().await? }};
-    (Int64 => $reader:expr) => {{ $reader.read_i64_le().await? }};
-    (UInt8 => $reader:expr) => {{ $reader.read_u8().await? }};
-    (UInt16 => $reader:expr) => {{ $reader.read_u16_le().await? }};
-    (UInt32 => $reader:expr) => {{ $reader.read_u32_le().await? }};
-    (UInt64 => $reader:expr) => {{ $reader.read_u64_le().await? }};
-    (Float32 => $reader:expr) => {{ $reader.read_f32_le().await? }};
-    (Float64 => $reader:expr) => {{ $reader.read_f64_le().await? }};
-    (Date => $reader:expr) => {{ $reader.read_u16_le().await?.map(i32::from)? }};
+    // (Int32 => $reader:expr) => {{ $reader.read_i32_le().await? }};
+    // (Int64 => $reader:expr) => {{ $reader.read_i64_le().await? }};
+    // (UInt8 => $reader:expr) => {{ $reader.read_u8().await? }};
+    // (UInt16 => $reader:expr) => {{ $reader.read_u16_le().await? }};
+    // (UInt32 => $reader:expr) => {{ $reader.read_u32_le().await? }};
+    // (UInt64 => $reader:expr) => {{ $reader.read_u64_le().await? }};
+    // (Float32 => $reader:expr) => {{ $reader.read_f32_le().await? }};
+    // (Float64 => $reader:expr) => {{ $reader.read_f64_le().await? }};
+    // (Date => $reader:expr) => {{ $reader.read_u16_le().await?.map(i32::from)? }};
     (Date32 => $reader:expr) => {{
         {
             let days = $reader.read_i32_le().await?;
             days - $crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
         }
     }};
-    (DateTime => $reader:expr) => {{ $reader.read_u32_le().await?.map(i64::from)? }};
-    (DateTime64(0) => $reader:expr) => {{ $reader.read_i64_le().await? }};
-    (DateTime64(3) => $reader:expr) => {{ $reader.read_i64_le().await? }};
-    (DateTime64(6) => $reader:expr) => {{ $reader.read_i64_le().await? }};
-    (DateTime64(9) => $reader:expr) => {{ $reader.read_i64_le().await? }};
-    (Decimal32 => $reader:expr) => {{ $reader.read_i32_le().await?.map(i128::from)? }};
-    (Decimal64 => $reader:expr) => {{ $reader.read_i64_le().await?.map(i128::from)? }};
+    // (DateTime => $reader:expr) => {{ $reader.read_u32_le().await?.map(i64::from)? }};
+    // (DateTime64(0) => $reader:expr) => {{ $reader.read_i64_le().await? }};
+    // (DateTime64(3) => $reader:expr) => {{ $reader.read_i64_le().await? }};
+    // (DateTime64(6) => $reader:expr) => {{ $reader.read_i64_le().await? }};
+    // (DateTime64(9) => $reader:expr) => {{ $reader.read_i64_le().await? }};
+    // (Decimal32 => $reader:expr) => {{ $reader.read_i32_le().await?.map(i128::from)? }};
+    // (Decimal64 => $reader:expr) => {{ $reader.read_i64_le().await?.map(i128::from)? }};
     (Decimal128 => $reader:expr) => {{
         {
             let mut buf = [0u8; 16];
@@ -132,7 +77,7 @@ macro_rules! primitive_async {
         }
     }};
 }
-pub(super) use primitive_async;
+pub(super) use primitive;
 
 /// Deserializes a `ClickHouse` primitive type into an Arrow array.
 ///
@@ -187,7 +132,7 @@ pub(super) use primitive_async;
 /// ```
 #[expect(clippy::too_many_lines)]
 pub(crate) async fn deserialize<R: ClickHouseRead>(
-    type_hint: &Type,
+    #[cfg_attr(not(feature = "extended-types"), expect(unused_variables))] type_hint: &Type,
     builder: &mut TypedBuilder,
     reader: &mut R,
     rows: usize,
@@ -206,7 +151,7 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
             ));
         };
 
-        let byte_count = primitive_bulk!(tokio; reader, rows, rbuffer, u16);
+        let byte_count = primitive_bulk!(reader, rows, rbuffer, u16);
         let values: &[u16] = bytemuck::cast_slice(&rbuffer[..byte_count]);
         for (i, bits) in values.iter().enumerate() {
             if null_mask.is_empty() || null_mask[i] == 0 {
@@ -221,62 +166,78 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
 
     // Bulk primitive cases using the provided builder
     super::deser!(() => builder => {
-        B::Int8(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i8) },
-        B::Int16(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i16) },
-        B::Int32(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i32) },
-        B::Int64(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
-        B::UInt8(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u8) },
-        B::UInt16(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u16) },
-        B::UInt32(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u32) },
-        B::UInt64(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, u64) },
-        B::Float32(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, f32) },
-        B::Float64(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, f64) },
+        B::Int8(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i8) },
+        B::Int16(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i16) },
+        B::Int32(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i32) },
+        B::Int64(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::UInt8(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, u8) },
+        B::UInt16(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, u16) },
+        B::UInt32(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, u32) },
+        B::UInt64(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, u64) },
+        B::Float32(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, f32) },
+        B::Float64(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, f64) },
 
         // Decimals
         B::Decimal32(b) => {
-            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, i32 => i128)
+            super::deser_bulk!(cast; b, reader, rows, null_mask, rbuffer, i32 => i128)
         },
         B::Decimal64(b) => {
-            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, i64 => i128)
+            super::deser_bulk!(cast; b, reader, rows, null_mask, rbuffer, i64 => i128)
         },
 
         // Dates and DateTimes
         B::Date(b) => {
-            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, u16 => i32)
+            super::deser_bulk!(cast; b, reader, rows, null_mask, rbuffer, u16 => i32)
         },
         B::DateTime(b) => {
-            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, u32 => i64)
+            super::deser_bulk!(cast; b, reader, rows, null_mask, rbuffer, u32 => i64)
         },
-        B::DateTimeS(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
-        B::DateTimeMs(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
-        B::DateTimeMu(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::DateTimeS(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::DateTimeMs(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::DateTimeMu(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64) },
         B::DateTimeNano(b) => {
-            super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64)
-        },
-        B::Time32(b) => {
-            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, u32 => i32)
-        },
-        B::Time64Ms(b) => {
-            super::deser_bulk_async!(raw; b, reader, rows, null_mask, rbuffer, i64 => i32)
-        },
-        B::Time64Mu(b) => { super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64) },
-        B::Time64Nano(b) => {
-            super::deser_bulk_async!(b, reader, rows, null_mask, rbuffer, i64)
+            super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64)
         }}
         _ => {()});
 
+    #[cfg(feature = "extended-types")]
+    {
+        // Bulk primitive cases using the provided builder extended types
+        super::deser!(() => builder => {
+        B::Time32(b) => {
+            super::deser_bulk!(cast; b, reader, rows, null_mask, rbuffer, u32 => i32)
+        },
+        B::Time64Ms(b) => {
+            super::deser_bulk!(cast; b, reader, rows, null_mask, rbuffer, i64 => i32)
+        },
+        B::Time64Mu(b) => { super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64) },
+        B::Time64Nano(b) => {
+            super::deser_bulk!(b, reader, rows, null_mask, rbuffer, i64)
+        }}
+        _ => {()});
+    }
+
     // Variable length or special handling
     super::deser!(builder, rows => {
-    B::Date32(b) => i => {
-        super::opt_value!(b, i, null_mask, primitive_async!(Date32 => reader))
-    },
+    B::Date32(b) => i => { super::append_opt!(b, i, null_mask, primitive!(Date32 => reader)) },
     B::Decimal128(b) => i => {
-        super::opt_value!(b, i, null_mask, primitive_async!(Decimal128 => reader))
+        super::append_opt!(b, i, null_mask, primitive!(Decimal128 => reader))
     },
     B::Decimal256(b) => i => {
-        super::opt_value!(b, i, null_mask, primitive_async!(Decimal256 => reader))
+        super::append_opt!(b, i, null_mask, primitive!(Decimal256 => reader))
     }}
     _ => {()});
+
+    // Extended types
+    #[cfg(feature = "extended-types")]
+    {
+        super::deser!(() => builder => {
+        B::Time32(b) => { return Ok(Arc::new(b.finish()) as ArrayRef) },
+        B::Time64Ms(b) => { return Ok(Arc::new(b.finish()) as ArrayRef) },
+        B::Time64Mu(b) => { return Ok(Arc::new(b.finish()) as ArrayRef) },
+        B::Time64Nano(b) => { return Ok(Arc::new(b.finish()) as ArrayRef) }}
+        _ => {()});
+    }
 
     // Finish the builder and return an ArrayRef
     Ok(super::deser!(() => builder => {
@@ -303,14 +264,8 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
     B::DateTimeS(b) => { Arc::new(b.finish()) as ArrayRef },
     B::DateTimeMs(b) => { Arc::new(b.finish()) as ArrayRef },
     B::DateTimeMu(b) => { Arc::new(b.finish()) as ArrayRef },
-    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef },
-    B::Time32(b) => { Arc::new(b.finish()) as ArrayRef },
-    B::Time64Ms(b) => { Arc::new(b.finish()) as ArrayRef },
-    B::Time64Mu(b) => { Arc::new(b.finish()) as ArrayRef },
-    B::Time64Nano(b) => { Arc::new(b.finish()) as ArrayRef }}
-    _ => { return Err(Error::ArrowDeserialize(
-        "Unexpected builder type for primitive".into()))
-    }))
+    B::DateTimeNano(b) => { Arc::new(b.finish()) as ArrayRef }}
+    _ => { return Err(Error::ArrowDeserialize("Unexpected builder type for primitive".into())) }))
 }
 
 #[cfg(test)]

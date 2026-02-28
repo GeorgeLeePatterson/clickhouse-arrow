@@ -16,7 +16,7 @@ impl Deserializer for NullableDeserializer {
         let inner_type = match type_ {
             Type::Nullable(inner) => &**inner,
             _ => {
-                return Err(Error::DeserializeError("Expected Nullable type".to_string()));
+                return Err(Error::Deserialize("Expected Nullable type".to_string()));
             }
         };
         // Delegate to inner type

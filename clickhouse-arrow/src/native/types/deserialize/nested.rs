@@ -18,9 +18,7 @@ impl Deserializer for NestedDeserializer {
                 }
                 Ok(())
             }
-            _ => Err(Error::DeserializeError(
-                "NestedDeserializer called with non-nested type".to_string(),
-            )),
+            _ => Err(Error::deserialize("NestedDeserializer called with non-nested type")),
         }
     }
 
@@ -30,9 +28,7 @@ impl Deserializer for NestedDeserializer {
         _rows: usize,
         _state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError(
-            "NestedDeserializer native value read is not implemented".to_string(),
-        ))
+        Err(Error::deserialize("NestedDeserializer native value read is not implemented"))
     }
 
     // TODO: Remove

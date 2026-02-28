@@ -18,11 +18,12 @@ impl Deserializer for VariantDeserializer {
             Type::Variant(variants) => {
                 let mode = reader.read_u64_le().await?;
                 if mode > 1 {
-                    return Err(Error::DeserializeError(format!(
+                    return Err(Error::deserialize(format!(
                         "unsupported Variant discriminator mode {mode}; only basic mode 0 and \
                          compact mode 1 are supported"
                     )));
                 }
+                #[expect(clippy::cast_possible_truncation)]
                 let _ = state
                     .replace_variant_prefix(VariantPrefixState { discriminator_mode: mode as u8 });
 
@@ -32,9 +33,7 @@ impl Deserializer for VariantDeserializer {
 
                 Ok(())
             }
-            _ => Err(Error::DeserializeError(
-                "VariantDeserializer called with non-variant type".to_string(),
-            )),
+            _ => Err(Error::deserialize("VariantDeserializer called with non-variant type")),
         }
     }
 
@@ -44,9 +43,7 @@ impl Deserializer for VariantDeserializer {
         _rows: usize,
         _state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError(
-            "VariantDeserializer native value read is not implemented".to_string(),
-        ))
+        Err(Error::deserialize("VariantDeserializer native value read is not implemented"))
     }
 
     // TODO: Remove

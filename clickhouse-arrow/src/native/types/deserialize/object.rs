@@ -19,7 +19,7 @@ impl Deserializer for ObjectDeserializer {
                 let _ = reader.read_i8().await?;
             }
             _ => {
-                return Err(Error::DeserializeError(
+                return Err(Error::Deserialize(
                     "ObjectDeserializer called with non-json type".to_string(),
                 ));
             }
@@ -46,9 +46,9 @@ impl Deserializer for ObjectDeserializer {
                 }
                 Ok(out)
             }
-            _ => Err(Error::DeserializeError(
-                "ObjectDeserializer called with non-json type".to_string(),
-            )),
+            _ => {
+                Err(Error::Deserialize("ObjectDeserializer called with non-json type".to_string()))
+            }
         }
     }
 

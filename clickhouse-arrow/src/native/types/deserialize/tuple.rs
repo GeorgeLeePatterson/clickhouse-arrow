@@ -13,12 +13,12 @@ impl Deserializer for TupleDeserializer {
     ) -> Result<()> {
         match type_ {
             Type::Tuple(inner) => {
-                for item in inner {
+                for (_, item) in inner {
                     item.deserialize_prefix(reader, state).await?;
                 }
             }
             _ => {
-                return Err(Error::DeserializeError(
+                return Err(Error::Deserialize(
                     "TupleDeserializer called with non-tuple type".to_string(),
                 ));
             }
@@ -34,7 +34,7 @@ impl Deserializer for TupleDeserializer {
     ) -> Result<Vec<Value>> {
         let inner_types = type_.unwrap_tuple()?;
         let mut tuples = vec![Value::Tuple(Vec::with_capacity(inner_types.len())); rows];
-        for type_ in inner_types {
+        for (_, type_) in inner_types {
             for (i, value) in
                 type_.deserialize_column(reader, rows, state).await?.into_iter().enumerate()
             {
@@ -43,7 +43,7 @@ impl Deserializer for TupleDeserializer {
                         values.push(value);
                     }
                     _ => {
-                        return Err(Error::DeserializeError("Expected tuple".to_string()));
+                        return Err(Error::Deserialize("Expected tuple".to_string()));
                     }
                 }
             }

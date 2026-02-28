@@ -67,7 +67,7 @@ impl ClientMetadata {
     }
 
     /// Helper function to provide settings for compression
-    pub(crate) fn compression_settings(&self) -> Settings {
+    pub(crate) fn compression_settings(self) -> Settings {
         match self.compression {
             CompressionMethod::None | CompressionMethod::LZ4 => Settings::default(),
             CompressionMethod::ZSTD => vec![
@@ -136,7 +136,7 @@ impl<T: ClientFormat> Connection<T> {
         let metadata = ClientMetadata {
             client_id,
             compression: options.compression,
-            arrow_options: options.ext.arrow.clone().unwrap_or_default(),
+            arrow_options: options.ext.arrow.unwrap_or_default(),
         };
 
         // Install rustls provider if using tls
@@ -146,14 +146,8 @@ impl<T: ClientFormat> Connection<T> {
 
         // Establish tcp connection, perform handshake, and spawn io task
         let state = Arc::new(
-            Self::connect_inner(
-                &addrs,
-                &mut io_task,
-                Arc::clone(&events),
-                &options,
-                metadata.clone(),
-            )
-            .await?,
+            Self::connect_inner(&addrs, &mut io_task, Arc::clone(&events), &options, metadata)
+                .await?,
         );
 
         #[cfg(feature = "inner_pool")]
@@ -171,8 +165,7 @@ impl<T: ClientFormat> Connection<T> {
         for _ in 0..inner_pool_size.saturating_sub(1) {
             let events = Arc::clone(&events);
             state.push(ArcSwap::from(Arc::new(
-                Self::connect_inner(&addrs, &mut io_task, events, &options, metadata.clone())
-                    .await?,
+                Self::connect_inner(&addrs, &mut io_task, events, &options, metadata).await?,
             )));
         }
 
@@ -451,7 +444,7 @@ impl<T: ClientFormat> Connection<T> {
 }
 
 impl<T: ClientFormat> Connection<T> {
-    pub(crate) fn metadata(&self) -> ClientMetadata { self.metadata.clone() }
+    pub(crate) fn metadata(&self) -> ClientMetadata { self.metadata }
 
     pub(crate) fn database(&self) -> &str { &self.options.default_database }
 

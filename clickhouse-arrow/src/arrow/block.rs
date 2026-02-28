@@ -242,6 +242,8 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             let type_name = reader.read_utf8_string().await?;
             let internal_type = Type::from_str(&type_name)?;
 
+            drop(state.take_custom_serialization());
+
             let has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
                 reader.read_u8().await? != 0
             } else {
@@ -249,7 +251,7 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             };
 
             if has_custom {
-                internal_type.deserialize_custom_serialization_prefix(reader).await?;
+                internal_type.deserialize_custom_serialization_prefix(reader, state).await?;
             }
 
             internal_type.deserialize_prefix(reader, state).await?;
@@ -345,20 +347,6 @@ mod tests {
             Arc::new(StringArray::from(vec![Some("alice"), None, Some("bob")])),
         ])
         .unwrap()
-    }
-
-    #[test]
-    fn dynamic_mode_guards_require_strict_mode() {
-        let dynamic_type = Type::Dynamic { max_types: 8 };
-        let strict = ArrowOptions::default();
-        assert!(ensure_dynamic_mode_for_write(&strict, &dynamic_type).is_ok());
-
-        let permissive =
-            ArrowOptions { disabled_strict_dynamic_mode: true, ..ArrowOptions::default() };
-        assert!(matches!(
-            ensure_dynamic_mode_for_write(&permissive, &dynamic_type),
-            Err(Error::ArrowSerialize(msg)) if msg.contains("strict mode only")
-        ));
     }
 
     #[tokio::test]
@@ -464,7 +452,7 @@ mod tests {
         .await;
         assert!(matches!(
             result,
-            Err(Error::TypeParseError(m))
+            Err(Error::TypeParse(m))
             if &m == "invalid type name: 'InvalidType'"
         ));
     }
@@ -1440,1008 +1428,227 @@ mod tests {
             .as_ref()
         );
     }
-}
 
-#[cfg(test)]
-mod tests_sync {
-    use std::io::Cursor;
-    use std::sync::Arc;
-
-    use arrow::array::*;
-    use arrow::buffer::OffsetBuffer;
-    use arrow::compute::cast;
-    use arrow::datatypes::*;
-    use bytes::BufMut;
-
-    use super::*;
-    use crate::arrow::types::LIST_ITEM_FIELD_NAME;
-    use crate::native::protocol::DBMS_TCP_PROTOCOL_VERSION;
-
-    // Helper to create a simple `RecordBatch` for testing
-    fn create_test_batch() -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-        ]));
-        RecordBatch::try_new(schema, vec![
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec![Some("alice"), None, Some("bob")])),
-        ])
-        .unwrap()
-    }
-
-    #[test]
-    fn test_serialize_record_batch() {
-        let batch = create_test_batch();
-
-        let arrow_options = ArrowOptions::default();
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-        assert!(!buffer.is_empty());
-    }
-
-    #[test]
-    fn test_deserialize_record_batch() {
-        // Create a batch and serialize it
-        let batch = create_test_batch();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        // Deserialize back
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        // Verify schema and data
-        assert_eq!(deserialized.schema(), batch.schema());
-        assert_eq!(deserialized.num_rows(), batch.num_rows());
-        assert_eq!(deserialized.num_columns(), batch.num_columns());
-        for i in 0..batch.num_columns() {
-            assert_eq!(deserialized.column(i).as_ref(), batch.column(i).as_ref());
-        }
-    }
-
-    #[test]
-    fn test_serialize_empty_batch() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from_iter(Vec::<i32>::new()))])
-                .unwrap();
-        let mut buffer = Vec::new();
-        batch
-            .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, ArrowOptions::default())
-            .unwrap();
-        assert!(!buffer.is_empty());
-    }
-
-    #[test]
-    fn test_deserialize_empty_block() {
-        let mut buffer = Vec::new();
-        buffer.put_u8(0); // Revision
-        buffer.put_u8(0); // No custom serialization
-        buffer.put_var_uint(0).unwrap(); // Columns
-        buffer.put_var_uint(0).unwrap(); // Rows
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let result = RecordBatch::read(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            ArrowOptions::default(),
-            &mut state,
-        )
-        .unwrap();
-        let schema = result.schema();
-        assert!(schema.fields.is_empty());
-        assert_eq!(result.num_rows(), 0);
-        assert_eq!(result.num_columns(), 0);
-    }
-
-    #[test]
-    fn test_deserialize_invalid_type() {
-        let mut buffer = Vec::new();
-        BlockInfo::default().write(&mut buffer).unwrap();
-        buffer.put_var_uint(1).unwrap(); // Columns
-        buffer.put_var_uint(3).unwrap(); // Rows
-        buffer.put_string("id").unwrap();
-        buffer.put_string("InvalidType").unwrap(); // Invalid type name
-        buffer.put_u8(0);
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let result = RecordBatch::read(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            ArrowOptions::default(),
-            &mut state,
-        );
-        assert!(matches!(
-            result,
-            Err(Error::TypeParseError(m))
-            if &m == "invalid type name: 'InvalidType'"
-        ));
-    }
-
-    #[test]
-    fn test_deserialize_malformed_input() {
-        let mut buffer = Vec::new();
-        BlockInfo::default().write(&mut buffer).unwrap();
-        buffer.put_var_uint(1).unwrap(); // Columns
-        // Incomplete: missing row count and metadata
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let result = RecordBatch::read(
-            &mut reader,
-            DBMS_TCP_PROTOCOL_VERSION,
-            ArrowOptions::default(),
-            &mut state,
-        );
-
-        assert!(matches!(result, Err(Error::Protocol(_))));
-    }
-
-    /// Tests round-trip serialization and deserialization of a single-column `Int32` `RecordBatch`
-    #[test]
-    fn test_round_trip_single_column_int32() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![
-                1, 2, 3,
-            ]))])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default();
-        let mut buffer = Vec::new();
-        batch.write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(Int32Array::from(vec![1, 2, 3])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a multi-column `RecordBatch` with
-    /// mixed types.
-    #[test]
-    fn test_round_trip_multi_column_mixed_types() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-            Field::new(
-                "values",
-                DataType::List(Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false))),
-                false,
+    #[tokio::test]
+    #[cfg(feature = "extended-types")]
+    async fn test_round_trip_variant_with_header() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Union(
+                UnionFields::new([0_i8, 1_i8, 2_i8], vec![
+                    Field::new("Int32", DataType::Int32, false),
+                    Field::new("String", DataType::Utf8, false),
+                    Field::new("Nothing", DataType::Null, false),
+                ]),
+                UnionMode::Dense,
             ),
-        ]));
-        let id = Arc::new(Int32Array::from(vec![1, 2, 3]));
-        let name = Arc::new(StringArray::from(vec![Some("a"), None, Some("c")]));
-        let values = Arc::new(ListArray::new(
-            Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false)),
-            OffsetBuffer::new(vec![0, 2, 3, 5].into()),
-            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])),
-            None,
-        ));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![id, name, values]).unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(Int32Array::from(vec![1, 2, 3])).as_ref()
-        );
-        assert_eq!(
-            deserialized.column(1).as_ref(),
-            Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])).as_ref()
-        );
-        let deserialized_values =
-            deserialized.column(2).as_any().downcast_ref::<ListArray>().unwrap();
-        assert_eq!(
-            deserialized_values.values().as_ref(),
-            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])).as_ref()
-        );
-        assert_eq!(deserialized_values.offsets().iter().copied().collect::<Vec<i32>>(), vec![
-            0, 2, 3, 5
-        ]);
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Map column.
-    #[test]
-    fn test_round_trip_map_column() {
-        let key_field = Field::new(STRUCT_KEY_FIELD_NAME, DataType::Utf8, false);
-        let value_field = Field::new(STRUCT_VALUE_FIELD_NAME, DataType::Int32, false);
-        let struct_field = Arc::new(Field::new(
-            MAP_FIELD_NAME,
-            DataType::Struct(Fields::from(vec![key_field.clone(), value_field.clone()])),
-            false,
-        ));
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "map",
-            DataType::Map(Arc::clone(&struct_field), false),
             false,
         )]));
-        let keys = Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"]));
-        let values = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
-        let struct_array = StructArray::from(vec![
-            (Arc::new(key_field), keys as ArrayRef),
-            (Arc::new(value_field), values as ArrayRef),
-        ]);
-        let offsets = OffsetBuffer::new(vec![0, 2, 3, 5].into());
-        let map_array = Arc::new(MapArray::new(struct_field, offsets, struct_array, None, false));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![map_array]).unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_map = deserialized.column(0).as_any().downcast_ref::<MapArray>().unwrap();
-        let struct_array =
-            deserialized_map.entries().as_any().downcast_ref::<StructArray>().unwrap();
-        assert_eq!(
-            struct_array.column(0).as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(vec!["a", "b", "c", "d", "e"])
-        );
-        assert_eq!(
-            struct_array.column(1).as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![1, 2, 3, 4, 5])
-        );
-        assert_eq!(deserialized_map.offsets().iter().copied().collect::<Vec<i32>>(), vec![
-            0, 2, 3, 5
-        ]);
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with zero rows.
-    #[test]
-    fn test_round_trip_zero_rows() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(
-            Vec::<i32>::new(),
-        ))])
-        .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .inspect_err(|error| eprintln!("Error deserializing RecordBatch: {error:?}"))
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 0);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(Int32Array::from(Vec::<i32>::new())).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of an empty `RecordBatch` (zero columns,
-    /// zero rows).
-    #[test]
-    fn test_round_trip_empty_block() {
-        let schema = Arc::new(Schema::empty());
-        let batch = RecordBatch::new_empty(schema);
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        let schema = deserialized.schema();
-        assert!(schema.fields().is_empty());
-        assert_eq!(deserialized.num_rows(), 0);
-        assert_eq!(deserialized.num_columns(), 0);
-    }
-
-    /// Tests round-trip serialization and deserialization with header for type disambiguation.
-    #[test]
-    fn test_round_trip_with_header() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![
-                1, 2, 3,
-            ]))])
-            .unwrap();
-
-        let header = vec![("id".to_string(), Type::Int32)];
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch
-            .clone()
-            .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
-            .unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(Int32Array::from(vec![1, 2, 3])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization with `strings_as_strings=false` (String
-    /// as Binary).
-    #[test]
-    fn test_round_trip_strings_as_binary() {
-        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Binary, true)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(BinaryArray::from(vec![
-                Some(b"a" as &[u8]),
-                None,
-                Some(b"c" as &[u8]),
-            ]))])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(false);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(BinaryArray::from(vec![Some(b"a" as &[u8]), None, Some(b"c" as &[u8])]))
-                .as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Float64 column.
-    #[test]
-    fn test_round_trip_float64() {
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, false)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Float64Array::from(vec![
-                1.5, -2.0, 3.1,
-            ]))])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(Float64Array::from(vec![1.5, -2.0, 3.1])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// Nullable(DateTime) column.
-    #[test]
-    fn test_round_trip_nullable_datetime() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "time",
-            DataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(
-            TimestampSecondArray::from(vec![Some(1000), None, Some(3000)])
-                .with_timezone_opt(Some("UTC")),
-        )])
-        .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(
-                TimestampSecondArray::from(vec![Some(1000), None, Some(3000)])
-                    .with_timezone_opt(Some("UTC"))
-            )
-            .as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Decimal128
-    /// column.
-    #[test]
-    fn test_round_trip_decimal128() {
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("price", DataType::Decimal128(18, 4), false)]));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(
-            Decimal128Array::from(vec![10000, 20000, 30000])
-                .with_precision_and_scale(18, 4)
-                .unwrap(),
-        )])
-        .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(
-                Decimal128Array::from(vec![10000, 20000, 30000])
-                    .with_precision_and_scale(18, 4)
-                    .unwrap()
-            )
-            .as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// LowCardinality(String) column.
-    #[test]
-    fn test_round_trip_low_cardinality_string() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "category",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(
-                DictionaryArray::<Int32Type>::from_iter(vec!["cat", "dog", "cat"]),
-            )])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec!["cat", "dog"])).as_ref()
-        );
-    }
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// Dictionary(Int8, Utf8) column, expecting LowCardinality(String) mapping to
-    /// Dictionary(Int32, Utf8) when header is None.
-    #[test]
-    fn test_round_trip_dictionary_int8_no_header() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(
-            DictionaryArray::<Int8Type>::from_iter(vec!["active", "inactive", "active"]),
-        )])
-        .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        let expected_schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        assert_eq!(deserialized.schema(), expected_schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec!["active", "inactive"])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// Dictionary(Int8, Utf8) column, using header to specify Enum8.
-    #[test]
-    fn test_round_trip_dictionary_int8_with_enum8_header() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "enum8_col",
-            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8)),
-            true,
-        )]));
-        let expected = vec![Some("active"), None, Some("inactive"), Some("active"), None];
-        let dictionary_values = StringArray::from(vec!["active", "inactive"]);
-        let dictionary_array = Arc::new(
-            DictionaryArray::<Int8Type>::try_new(
-                Int8Array::from(vec![Some(0), None, Some(1), Some(0), None]),
-                Arc::new(dictionary_values.clone()),
+        let column = Arc::new(
+            UnionArray::try_new(
+                match schema.field(0).data_type() {
+                    DataType::Union(fields, _) => fields.clone(),
+                    _ => unreachable!(),
+                },
+                vec![0_i8, 1_i8, 2_i8, 0_i8].into(),
+                Some(vec![0_i32, 0, 0, 1].into()),
+                vec![
+                    Arc::new(Int32Array::from(vec![10_i32, 20])) as ArrayRef,
+                    Arc::new(StringArray::from(vec!["a"])) as ArrayRef,
+                    Arc::new(NullArray::new(1)) as ArrayRef,
+                ],
             )
             .unwrap(),
         ) as ArrayRef;
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&dictionary_array)]).unwrap();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![column]).unwrap();
+        let header = vec![("value".to_string(), Type::Variant(vec![Type::Int32, Type::String]))];
 
-        let header = vec![(
-            "enum8_col".to_string(),
-            Type::Enum8(vec![("active".into(), 0), ("inactive".into(), 1)]).into_nullable(),
-        )];
         let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
+        let mut writer = Cursor::new(Vec::new());
         batch
             .clone()
-            .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
+            .write_async(&mut writer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
+            .await
             .unwrap();
 
         let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        // Assert basics
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 5);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int8Type>>().unwrap();
-        assert_eq!(deserialized_array.values().as_ref(), Arc::new(dictionary_values).as_ref());
-
-        // Assert equality
-        let deser_values_array = cast(&deserialized_array, &DataType::Utf8).unwrap();
-        let deser_values_array = deser_values_array.as_string::<i32>();
-        let deser_values = deser_values_array.iter().collect::<Vec<_>>();
-
-        assert_eq!(deser_values, expected);
-
-        let expected_values = dictionary_array
-            .as_any()
-            .downcast_ref::<DictionaryArray<Int8Type>>()
-            .unwrap()
-            .downcast_dict::<StringArray>()
-            .unwrap()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let deser_values = deserialized_array
-            .downcast_dict::<StringArray>()
-            .unwrap()
-            .into_iter()
-            .collect::<Vec<_>>();
-        assert_eq!(deser_values, expected_values);
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// Dictionary(Int8, Utf8) column, using header to specify LowCardinality(String).
-    #[test]
-    fn test_round_trip_dictionary_int8_with_low_cardinality_header() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(
-            DictionaryArray::<Int8Type>::from_iter(vec!["active", "inactive", "active"]),
-        )])
-        .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let header = vec![("status".to_string(), Type::LowCardinality(Box::new(Type::String)))];
-        let mut buffer = Vec::new();
-        batch
-            .clone()
-            .write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
-            .unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        let expected_schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        assert_eq!(deserialized.schema(), expected_schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec!["active", "inactive"])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// Dictionary(Int16, Utf8) column, expecting LowCardinality(String) mapping to
-    /// Dictionary(Int32, Utf8) when header is None.
-    #[test]
-    fn test_round_trip_dictionary_int16_no_header() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int16), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(
-            DictionaryArray::<Int16Type>::from_iter(vec!["active", "inactive", "active"]),
-        )])
-        .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        let expected_schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        assert_eq!(deserialized.schema(), expected_schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec!["active", "inactive"])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a
-    /// Dictionary(Int32, Utf8) column, expecting LowCardinality(String) mapping to
-    /// Dictionary(Int32, Utf8) when header is None.
-    #[test]
-    fn test_round_trip_dictionary_int32_no_header() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            false,
-        )]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(
-                DictionaryArray::<Int32Type>::from_iter(vec!["active", "inactive", "active"]),
-            )])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec!["active", "inactive"])).as_ref()
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a Tuple(Int32,
-    /// String) column.
-    #[test]
-    fn test_round_trip_tuple() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "pair",
-            DataType::Struct(Fields::from(vec![
-                Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Int32, false),
-                Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"), DataType::Utf8, false),
-            ])),
-            false,
-        )]));
-        let tuple_array = StructArray::from(vec![
-            (
-                Arc::new(Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Int32, false)),
-                Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"), DataType::Utf8, false)),
-                Arc::new(StringArray::from(vec!["x", "y", "z"])) as ArrayRef,
-            ),
-        ]);
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(tuple_array)]).unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
-        let deserialized_struct =
-            deserialized.column(0).as_any().downcast_ref::<StructArray>().unwrap();
-        assert_eq!(
-            deserialized_struct.column(0).as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![1, 2, 3])
-        );
-        assert_eq!(
-            deserialized_struct.column(1).as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(vec!["x", "y", "z"])
-        );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with a large number of
-    /// rows.
-    #[test]
-    fn test_round_trip_large_batch() {
-        let rows = 1000_i32;
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let array = Arc::new((0..rows).collect::<Int32Array>()) as ArrayRef;
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&array)]).unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-
-        #[expect(clippy::cast_sign_loss)]
-        let num_rows = rows as usize;
-        assert_eq!(deserialized.num_rows(), num_rows);
-        assert_eq!(deserialized.column(0).as_ref(), array.as_ref());
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with non-UTF-8 Binary
-    /// data.
-    #[tokio::test]
-    async fn test_round_trip_non_utf8_binary() {
-        let schema = Arc::new(Schema::new(vec![Field::new("data", DataType::Binary, false)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(BinaryArray::from_vec(vec![
-                b"\xFF\xFE" as &[u8], // Non-UTF-8
-                b"\x00\x01" as &[u8],
-            ]))])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(false);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
+        let mut reader = Cursor::new(writer.into_inner());
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
                 .await
                 .unwrap();
 
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 2);
+        let union = deserialized.column(0).as_any().downcast_ref::<UnionArray>().unwrap();
+        assert_eq!((0..4).map(|i| union.type_id(i)).collect::<Vec<_>>(), vec![0, 1, 2, 0]);
+        assert_eq!((0..4).map(|i| union.value_offset(i)).collect::<Vec<_>>(), vec![0, 0, 0, 1]);
         assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(BinaryArray::from_vec(vec![b"\xFF\xFE" as &[u8], b"\x00\x01" as &[u8]]))
-                .as_ref()
+            union.child(0).as_any().downcast_ref::<Int32Array>().unwrap(),
+            &Int32Array::from(vec![10, 20])
         );
-    }
-
-    /// Tests round-trip serialization and deserialization of a `RecordBatch` with max/min Int32
-    /// values.
-    #[tokio::test]
-    async fn test_round_trip_max_min_int32() {
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![
-                i32::MIN,
-                0,
-                i32::MAX,
-            ]))])
-            .unwrap();
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        batch.clone().write(&mut buffer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-
-        let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(buffer);
-        let deserialized =
-            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
-                .await
-                .unwrap();
-
-        assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 3);
         assert_eq!(
-            deserialized.column(0).as_ref(),
-            Arc::new(Int32Array::from(vec![i32::MIN, 0, i32::MAX])).as_ref()
+            union.child(1).as_any().downcast_ref::<StringArray>().unwrap(),
+            &StringArray::from(vec!["a"])
         );
     }
 
-    /// Tests error handling for type mismatch between header and schema.
-    #[test]
-    fn test_header_type_mismatch() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch =
-            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![
-                1, 2, 3,
-            ]))])
-            .unwrap();
-        let header = vec![("id".to_string(), Type::String)]; // Mismatch: Int32 vs String
-
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
-        let mut buffer = Vec::new();
-        let result = batch.clone().write(
-            &mut buffer,
-            DBMS_TCP_PROTOCOL_VERSION,
-            Some(&header),
-            arrow_options,
-        );
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(e))
-            if e.contains("Expected one of")
-        ));
-    }
-
-    /// Test low cardinality nullable string round trip
     #[tokio::test]
-    async fn test_low_cardinality_nullable() {
-        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
+    #[cfg(feature = "extended-types")]
+    async fn test_round_trip_dynamic_with_header() {
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "low_cardinality_nullable_string_col",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            true,
+            "value",
+            DataType::Union(
+                UnionFields::new([0_i8, 1_i8], vec![
+                    Field::new("Int32", DataType::Int32, false),
+                    Field::new("String", DataType::Utf8, false),
+                ]),
+                UnionMode::Dense,
+            ),
+            false,
         )]));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(
-            DictionaryArray::<Int32Type>::try_new(
-                Int32Array::from(vec![Some(0), Some(3), Some(1), None, Some(2)]),
-                Arc::new(StringArray::from(vec!["active", "inactive", "pending", "absent"]))
-                    as ArrayRef,
+        let column = Arc::new(
+            UnionArray::try_new(
+                match schema.field(0).data_type() {
+                    DataType::Union(fields, _) => fields.clone(),
+                    _ => unreachable!(),
+                },
+                vec![0_i8, 1_i8, 0_i8].into(),
+                Some(vec![0_i32, 0, 1].into()),
+                vec![
+                    Arc::new(Int32Array::from(vec![10_i32, 20])) as ArrayRef,
+                    Arc::new(StringArray::from(vec!["a"])) as ArrayRef,
+                ],
             )
             .unwrap(),
-        )])
-        .expect("Failed to create RecordBatch");
+        ) as ArrayRef;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![column]).unwrap();
+        let header = vec![("value".to_string(), Type::Dynamic { max_types: 8 })];
 
-        let mut writer = Vec::new();
-        batch.write(&mut writer, DBMS_TCP_PROTOCOL_VERSION, None, arrow_options).unwrap();
-        let output = writer.clone();
-        let expected = vec![
-            1, 2, 2, 255, 255, 255, 255, 0,  // BlockInfo
-            1,  // Column len
-            5,  // Row len
-            35, // Varuint length
-            108, 111, 119, 95, 99, 97, 114, 100, 105, 110, 97, 108, 105, 116, 121, 95, 110, 117,
-            108, 108, 97, 98, 108, 101, 95, 115, 116, 114, 105, 110, 103, 95, 99, 111,
-            108, // <--- Column name
-            32,  // Varuint length
-            76, 111, 119, 67, 97, 114, 100, 105, 110, 97, 108, 105, 116, 121, 40, 78, 117, 108,
-            108, 97, 98, 108, 101, 40, 83, 116, 114, 105, 110, 103, 41, 41,
-            0, //  <--- Column type LowCardinality(Nullable(String))
-            1, 0, 0, 0, 0, 0, 0, 0, // Prefix
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags
-            5, 0, 0, 0, 0, 0, 0, 0, // Dict length
-            0, // Null value
-            6, 97, 99, 116, 105, 118, 101, 8, 105, 110, 97, 99, 116, 105, 118, 101, 7, 112, 101,
-            110, 100, 105, 110, 103, 6, 97, 98, 115, 101, 110, 116, // Other dict values
-            5, 0, 0, 0, 0, 0, 0, 0, // Key length (# of rows)
-            1, 4, 2, 0, 3, // Key indices
-        ];
-        assert_eq!(output, expected);
+        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
+        let mut writer = Cursor::new(Vec::new());
+        batch
+            .clone()
+            .write_async(&mut writer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
+            .await
+            .unwrap();
 
         let mut state = DeserializerState::default();
-        let mut reader = Cursor::new(writer);
+        let mut reader = Cursor::new(writer.into_inner());
         let deserialized =
             RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
                 .await
                 .unwrap();
 
+        let union = deserialized.column(0).as_any().downcast_ref::<UnionArray>().unwrap();
+        assert_eq!((0..3).map(|i| union.type_id(i)).collect::<Vec<_>>(), vec![0, 1, 0]);
+        assert_eq!((0..3).map(|i| union.value_offset(i)).collect::<Vec<_>>(), vec![0, 0, 1]);
+        assert_eq!(
+            union.child(0).as_any().downcast_ref::<Int32Array>().unwrap(),
+            &Int32Array::from(vec![10, 20])
+        );
+        assert_eq!(
+            union.child(1).as_any().downcast_ref::<StringArray>().unwrap(),
+            &StringArray::from(vec!["a"])
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "extended-types")]
+    async fn test_round_trip_qbit_and_nested_with_header() {
+        let qbit_field = Field::new(
+            "qbit_col",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 3),
+            false,
+        );
+        let nested_field = Field::new(
+            "nested_col",
+            DataType::Struct(Fields::from(vec![
+                Field::new(
+                    "name",
+                    DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                    false,
+                ),
+                Field::new(
+                    "score",
+                    DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                    false,
+                ),
+            ])),
+            false,
+        );
+        let schema = Arc::new(Schema::new(vec![qbit_field.clone(), nested_field.clone()]));
+
+        let qbit_values =
+            Arc::new(Float32Array::from(vec![0.1_f32, 0.2, 0.3, 1.0, 2.0, 3.0])) as ArrayRef;
+        let qbit_col = Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new("item", DataType::Float32, false)),
+            3,
+            qbit_values,
+            None,
+        )) as ArrayRef;
+
+        let nested_offsets = OffsetBuffer::new(vec![0, 2, 2].into());
+        let nested_name_col = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Utf8, false)),
+            nested_offsets.clone(),
+            Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef,
+            None,
+        )) as ArrayRef;
+        let nested_score_col = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            nested_offsets,
+            Arc::new(Int32Array::from(vec![10, 20])) as ArrayRef,
+            None,
+        )) as ArrayRef;
+        let nested_col = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "name",
+                    DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                    false,
+                )),
+                nested_name_col,
+            ),
+            (
+                Arc::new(Field::new(
+                    "score",
+                    DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                    false,
+                )),
+                nested_score_col,
+            ),
+        ])) as ArrayRef;
+
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![qbit_col, nested_col]).unwrap();
+        let header = vec![
+            ("qbit_col".to_string(), Type::QBit {
+                element_type: Box::new(Type::Float32),
+                dimension:    3,
+            }),
+            (
+                "nested_col".to_string(),
+                Type::Nested(vec![
+                    ("name".to_string(), Type::String),
+                    ("score".to_string(), Type::Int32),
+                ]),
+            ),
+        ];
+
+        let arrow_options = ArrowOptions::default().with_strings_as_strings(true);
+        let mut writer = Cursor::new(Vec::new());
+        batch
+            .clone()
+            .write_async(&mut writer, DBMS_TCP_PROTOCOL_VERSION, Some(&header), arrow_options)
+            .await
+            .unwrap();
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(writer.into_inner());
+        let deserialized =
+            RecordBatch::read(&mut reader, DBMS_TCP_PROTOCOL_VERSION, arrow_options, &mut state)
+                .await
+                .unwrap();
+
+        assert_eq!(deserialized.num_rows(), 2);
         assert_eq!(deserialized.schema(), schema);
-        assert_eq!(deserialized.num_rows(), 5);
-        let deserialized_array =
-            deserialized.column(0).as_any().downcast_ref::<DictionaryArray<Int32Type>>().unwrap();
-
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec![
-                None,
-                Some("active"),
-                Some("inactive"),
-                Some("pending"),
-                Some("absent")
-            ]))
-            .as_ref()
-        );
-
-        // Since clickhouse includes a default value for nulls, we should "expect" that and not the
-        // original array
-        assert_eq!(
-            deserialized_array.values().as_ref(),
-            Arc::new(StringArray::from(vec![
-                None,
-                Some("active"),
-                Some("inactive"),
-                Some("pending"),
-                Some("absent")
-            ]))
-            .as_ref()
-        );
     }
 }

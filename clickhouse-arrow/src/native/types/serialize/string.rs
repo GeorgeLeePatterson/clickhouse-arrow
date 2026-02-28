@@ -68,7 +68,7 @@ impl Serializer for StringSerializer {
                                 #[expect(clippy::cast_sign_loss)]
                                 Value::Int8(x) => Ok(x as u8),
                                 // TODO: This is wrong, it will never deserialize w/ missing pieces
-                                _ => Err(Error::SerializeError(format!(
+                                _ => Err(Error::Serialize(format!(
                                     "StringSerializer called with non-string type: {type_:?}"
                                 ))),
                             }
@@ -78,7 +78,7 @@ impl Serializer for StringSerializer {
                     emit_bytes(type_, &bytes, writer).await?;
                 }
                 _ => {
-                    return Err(Error::SerializeError(format!(
+                    return Err(Error::Serialize(format!(
                         "StringSerializer unimplemented: {type_:?} for value = {value:?}",
                     )));
                 }
@@ -110,7 +110,7 @@ impl Serializer for StringSerializer {
                                 #[expect(clippy::cast_sign_loss)]
                                 Value::Int8(x) => Ok(x as u8),
                                 // TODO: This is wrong, it will never deserialize w/ missing pieces
-                                _ => Err(Error::SerializeError(format!(
+                                _ => Err(Error::Serialize(format!(
                                     "StringSerializer called with non-string type: {type_:?}"
                                 ))),
                             }
@@ -120,7 +120,7 @@ impl Serializer for StringSerializer {
                     emit_bytes_sync(type_, &bytes, writer)?;
                 }
                 _ => {
-                    return Err(Error::SerializeError(format!(
+                    return Err(Error::Serialize(format!(
                         "StringSerializer unimplemented: {type_:?} for value = {value:?}",
                     )));
                 }

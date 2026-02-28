@@ -157,7 +157,7 @@ impl<T: ClientFormat> InternalConn<T> {
                     let cid = self.cid;
                     let revision = self.server_hello.revision_version;
                     let result =
-                        Self::receive_ping(&mut reader, revision, self.metadata.clone(), cid).await;
+                        Self::receive_ping(&mut reader, revision, self.metadata, cid).await;
                     let _ = response.send(result).ok();
                 }
                 OperationTask::Chunk(_) => {}
@@ -186,7 +186,7 @@ impl<T: ClientFormat> InternalConn<T> {
                     let cid = self.cid;
                     let revision = self.server_hello.revision_version;
                     let result =
-                        Self::receive_ping(&mut reader, revision, self.metadata.clone(), cid).await;
+                        Self::receive_ping(&mut reader, revision, self.metadata, cid).await;
                     let _ = response.send(result).ok();
                 }
                 // Logical chunk boundary, flush
@@ -338,10 +338,9 @@ impl<T: ClientFormat> InternalConn<T> {
 
         // Wait for packet from server
         let packet = if matches!(exec.state, QueryState::Header) {
-            Reader::receive_header::<T>(reader, revision, self.metadata.clone()).await?
+            Reader::receive_header::<T>(reader, revision, self.metadata).await?
         } else {
-            Reader::receive_packet::<T>(reader, revision, self.metadata.clone(), &mut self.state)
-                .await?
+            Reader::receive_packet::<T>(reader, revision, self.metadata, &mut self.state).await?
         };
 
         let _ = Span::current().record(ATT_PID, packet.as_ref());
@@ -484,22 +483,14 @@ impl<T: ClientFormat> InternalConn<T> {
         trace!({ ATT_CID } = self.cid, { ATT_QID } = %qid, insert = insert.as_ref(), "Inserting");
         match insert {
             InsertState::Data(data) => {
-                Writer::send_data::<T>(writer, data, qid, header, revision, self.metadata.clone())
-                    .await?;
+                Writer::send_data::<T>(writer, data, qid, header, revision, self.metadata).await?;
                 self.send_delimiter(writer, qid).await?;
             }
             InsertState::Batch(data) => {
                 if !data.is_empty() {
                     for block in data {
-                        Writer::send_data::<T>(
-                            writer,
-                            block,
-                            qid,
-                            header,
-                            revision,
-                            self.metadata.clone(),
-                        )
-                        .await?;
+                        Writer::send_data::<T>(writer, block, qid, header, revision, self.metadata)
+                            .await?;
                     }
                 }
                 self.send_delimiter(writer, qid).await?;
@@ -516,7 +507,7 @@ impl<T: ClientFormat> InternalConn<T> {
             qid,
             None,
             self.server_hello.revision_version,
-            self.metadata.clone(),
+            self.metadata,
         )
         .await
     }

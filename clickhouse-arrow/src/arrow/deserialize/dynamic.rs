@@ -13,7 +13,7 @@ use crate::{Error, Result, Type};
 #[expect(clippy::too_many_lines)]
 #[expect(clippy::cast_possible_wrap)]
 #[expect(clippy::cast_possible_truncation)]
-pub(super) async fn deserialize_async<R: ClickHouseRead>(
+pub(super) async fn deserialize<R: ClickHouseRead>(
     type_hint: &Type,
     builder: &mut TypedBuilder,
     reader: &mut R,
@@ -194,8 +194,7 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
                 if let Some(keep_mask) = keep_mask {
                     if keep_mask.len() != source_rows {
                         return Err(Error::ArrowDeserialize(format!(
-                            "Dynamic keep-mask mismatch for '{}': {} != {source_rows}",
-                            logical_type,
+                            "Dynamic keep-mask mismatch for '{logical_type}': {} != {source_rows}",
                             keep_mask.len()
                         )));
                     }
@@ -252,6 +251,7 @@ mod tests {
         fields: impl IntoIterator<Item = (&'static str, DataType)>,
     ) -> DataType {
         let fields = fields.into_iter().collect::<Vec<_>>();
+        #[expect(clippy::cast_possible_truncation)]
         DataType::Union(
             UnionFields::new(
                 (0..fields.len()).map(|i| i as i8),
@@ -271,7 +271,7 @@ mod tests {
         let mut builder = TypedBuilder::try_new(&Type::Int32, &DataType::Int32).unwrap();
         let mut reader = Cursor::new(vec![]);
 
-        let err = deserialize_async(
+        let err = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -309,7 +309,7 @@ mod tests {
         let mut reader = Cursor::new(input);
 
         let mut row_buffer = Vec::new();
-        let result = deserialize_async(
+        let result = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -358,7 +358,7 @@ mod tests {
         let mut reader = Cursor::new(input);
 
         let mut row_buffer = Vec::new();
-        let result = deserialize_async(
+        let result = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -403,7 +403,7 @@ mod tests {
         let mut reader = Cursor::new(input);
 
         let mut row_buffer = Vec::new();
-        let result = deserialize_async(
+        let result = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -441,7 +441,7 @@ mod tests {
         let mut reader = Cursor::new(vec![0_u8]);
         let mut row_buffer = Vec::new();
 
-        let err = deserialize_async(
+        let err = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -471,7 +471,7 @@ mod tests {
         let mut reader = Cursor::new(vec![0_u8]);
         let mut row_buffer = Vec::new();
 
-        let err = deserialize_async(
+        let err = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -498,7 +498,7 @@ mod tests {
         let mut reader = Cursor::new(vec![0_u8]);
         let mut row_buffer = Vec::new();
 
-        let err = deserialize_async(
+        let err = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -529,7 +529,7 @@ mod tests {
         let mut reader = Cursor::new(vec![2_u8]);
         let mut row_buffer = Vec::new();
 
-        let err = deserialize_async(
+        let err = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,
@@ -560,7 +560,7 @@ mod tests {
         let mut reader = Cursor::new(vec![]);
         let mut row_buffer = Vec::new();
 
-        let err = deserialize_async(
+        let err = deserialize(
             &type_hint,
             &mut builder,
             &mut reader,

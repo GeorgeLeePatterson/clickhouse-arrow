@@ -1,6 +1,7 @@
 pub(crate) mod dictionary;
 pub(crate) mod list;
 pub(crate) mod map;
+#[cfg(feature = "extended-types")]
 pub(crate) mod union;
 
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use strum::AsRefStr;
 
 use self::dictionary::LowCardinalityBuilder;
 use self::list::TypedListBuilder;
+#[cfg(feature = "extended-types")]
 use self::union::TypedUnionBuilder;
 use crate::constants::CLICKHOUSE_DEFAULT_CHUNK_ROWS;
 use crate::prelude::*;
@@ -103,9 +105,13 @@ pub(crate) enum TypedBuilder {
     DateTimeMs(TimestampMillisecondBuilder),
     DateTimeMu(TimestampMicrosecondBuilder),
     DateTimeNano(TimestampNanosecondBuilder),
+    #[cfg(feature = "extended-types")]
     Time32(Time32SecondBuilder),
+    #[cfg(feature = "extended-types")]
     Time64Ms(Time32MillisecondBuilder),
+    #[cfg(feature = "extended-types")]
     Time64Mu(Time64MicrosecondBuilder),
+    #[cfg(feature = "extended-types")]
     Time64Nano(Time64NanosecondBuilder),
 
     // String and Binary types
@@ -128,6 +134,7 @@ pub(crate) enum TypedBuilder {
     // Complex types
     Map((Box<TypedBuilder>, Box<TypedBuilder>)),
     Tuple(Vec<TypedBuilder>),
+    #[cfg(feature = "extended-types")]
     Union(TypedUnionBuilder),
 }
 
@@ -167,7 +174,7 @@ impl TypedBuilder {
                 inner
                     .iter()
                     .zip(fields.iter())
-                    .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()))
+                    .map(|((_, t), f)| TypedBuilder::try_new(t, f.data_type()))
                     .collect::<Result<Vec<_>, _>>()?,
             ));
         }
@@ -185,8 +192,7 @@ impl TypedBuilder {
                 )));
             }
 
-            let mut tuple_types = Vec::with_capacity(fields.len());
-            let mut tuple_fields = Vec::with_capacity(fields.len());
+            let mut tuple_builders = Vec::with_capacity(fields.len());
             for ((nested_name, inner_type), arrow_field) in fields.iter().zip(arrow_fields.iter()) {
                 if arrow_field.name() != nested_name {
                     return Err(Error::ArrowDeserialize(format!(
@@ -196,7 +202,7 @@ impl TypedBuilder {
                 }
 
                 let item_type = match arrow_field.data_type() {
-                    DataType::List(item) | DataType::LargeList(item) => item.data_type().clone(),
+                    DataType::List(item) | DataType::LargeList(item) => item.data_type(),
                     other => {
                         return Err(Error::ArrowDeserialize(format!(
                             "Nested field '{nested_name}' expected List/LargeList datatype, got \
@@ -205,12 +211,10 @@ impl TypedBuilder {
                     }
                 };
 
-                tuple_types.push(inner_type.clone());
-                tuple_fields.push(Field::new(nested_name, item_type, inner_type.is_nullable()));
+                tuple_builders.push(TypedBuilder::try_new(inner_type, item_type)?);
             }
 
-            let tuple_data_type = DataType::Struct(tuple_fields.into());
-            return TypedBuilder::try_new(&Type::Tuple(tuple_types), &tuple_data_type);
+            return Ok(Self::Tuple(tuple_builders));
         }
 
         #[cfg(feature = "extended-types")]
@@ -237,11 +241,6 @@ impl TypedBuilder {
             return Err(Error::ArrowDeserialize(
                 "SimpleAggregateFunction has no inner types".to_string(),
             ));
-        }
-
-        #[cfg(feature = "extended-types")]
-        if let Type::AggregateFunction { .. } = type_ {
-            return TypedBuilder::try_new(&Type::Binary, data_type);
         }
 
         #[cfg(feature = "extended-types")]
@@ -413,6 +412,7 @@ impl std::fmt::Debug for TypedBuilder {
             Self::LowCardinality(l) => write!(f, "TypedBuilder::LowCardinality({l:?})"),
             Self::Map((k, v)) => write!(f, "TypedBuilder::Map({k:?}, {v:?})"),
             Self::Tuple(t) => write!(f, "TypedBuilder::Tuple({t:?})"),
+            #[cfg(feature = "extended-types")]
             Self::Union(u) => write!(f, "TypedBuilder::Union({u:?})"),
             Self::String(_) => write!(f, "TypedBuilder::String"),
             b => write!(f, "TypedBuilder::{}", b.as_ref()),
@@ -626,7 +626,7 @@ mod tests {
             Arc::new(Field::new("1", DataType::Utf8, false)),
         ];
         let data_type = DataType::Struct(fields.into());
-        let type_ = Type::Tuple(vec![Type::Int32, Type::String]);
+        let type_ = Type::tuple_anon(vec![Type::Int32, Type::String]);
 
         let builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
         match builder {
@@ -680,7 +680,7 @@ mod tests {
     fn test_typed_builder_tuple_length_mismatch() {
         let fields = vec![Arc::new(Field::new("0", DataType::Int32, false))];
         let data_type = DataType::Struct(fields.into());
-        let type_ = Type::Tuple(vec![Type::Int32, Type::String]); // Length mismatch
+        let type_ = Type::tuple_anon(vec![Type::Int32, Type::String]); // Length mismatch
 
         let result = TypedBuilder::try_new(&type_, &data_type);
         assert!(result.is_err());
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn test_typed_builder_tuple_invalid_data_type() {
         let data_type = DataType::Int32; // Not a struct
-        let type_ = Type::Tuple(vec![Type::Int32]);
+        let type_ = Type::tuple_anon(vec![Type::Int32]);
 
         let result = TypedBuilder::try_new(&type_, &data_type);
         assert!(result.is_err());

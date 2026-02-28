@@ -51,7 +51,7 @@ pub(crate) async fn compress_data<W: ClickHouseWrite>(
     let mut out = match compression {
         // ZSTD with default compression level (1)
         CompressionMethod::ZSTD => zstd::bulk::compress(&raw, 1)
-            .map_err(|e| Error::SerializeError(format!("ZSTD compress error: {e}")))?,
+            .map_err(|e| Error::Serialize(format!("ZSTD compress error: {e}")))?,
         // LZ4
         CompressionMethod::LZ4 => lz4_flex::compress(&raw),
         // None
@@ -82,7 +82,7 @@ pub(crate) async fn compress_data_sync<W: ClickHouseWrite>(
     let mut out = match compression {
         // ZSTD with default compression level (1)
         CompressionMethod::ZSTD => zstd::bulk::compress(&raw, 1)
-            .map_err(|e| Error::SerializeError(format!("ZSTD compress error: {e}")))?,
+            .map_err(|e| Error::Serialize(format!("ZSTD compress error: {e}")))?,
         // LZ4
         CompressionMethod::LZ4 => lz4_flex::compress(&raw),
         // None
@@ -188,14 +188,14 @@ pub(crate) async fn decompress_data_async(
     match compression {
         CompressionMethod::LZ4 => {
             lz4_flex::decompress(&compressed[9..], decompressed_size as usize)
-                .map_err(|e| Error::DeserializeError(format!("LZ4 decompress error: {e}")))
+                .map_err(|e| Error::Deserialize(format!("LZ4 decompress error: {e}")))
         }
         CompressionMethod::ZSTD => {
             zstd::bulk::decompress(&compressed[9..], decompressed_size as usize)
-                .map_err(|e| Error::DeserializeError(format!("ZSTD decompress error: {e}")))
+                .map_err(|e| Error::Deserialize(format!("ZSTD decompress error: {e}")))
         }
         CompressionMethod::None => {
-            Err(Error::DeserializeError("Attempted to decompress uncompressed data".into()))
+            Err(Error::Deserialize("Attempted to decompress uncompressed data".into()))
         }
     }
 }

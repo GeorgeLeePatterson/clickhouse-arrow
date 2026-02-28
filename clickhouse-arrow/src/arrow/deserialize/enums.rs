@@ -91,7 +91,7 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
                 return Err(Error::UnexpectedType(type_hint.clone()));
             };
             for i in 0..rows {
-                let idx = super::primitive::primitive_async!(Int8 => reader);
+                let idx = super::primitive::primitive!(Int8 => reader);
                 if nulls.is_empty() || nulls[i] == 0 {
                     // Find index in pairs
                     b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
@@ -110,7 +110,7 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
                 return Err(Error::UnexpectedType(type_hint.clone()));
             };
             for i in 0..rows {
-                let idx = super::primitive::primitive_async!(Int16 => reader);
+                let idx = super::primitive::primitive!(Int16 => reader);
                 if nulls.is_empty() || nulls[i] == 0 {
                     // Find index in pairs
                     b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(

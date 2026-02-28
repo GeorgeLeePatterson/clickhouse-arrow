@@ -33,7 +33,7 @@ use crate::{Error, Result, Type};
 /// - Returns `ArrowDeserialize` if an inner type is unsupported or the data is malformed.
 /// - Returns `Io` if reading from the reader fails.
 pub(super) async fn deserialize<R: ClickHouseRead>(
-    inner_types: &[Type],
+    inner_types: &[(Option<String>, Type)],
     builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
@@ -61,7 +61,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
 
     let mut arrays = Vec::with_capacity(inner_types.len());
     let field_types = inner_types.iter().zip(fields.iter());
-    for (b, (inner_type, field)) in builders.iter_mut().zip(field_types) {
+    for (b, ((_, inner_type), field)) in builders.iter_mut().zip(field_types) {
         let data_type = field.data_type();
         arrays.push(inner_type.deserialize_arrow(b, reader, data_type, rows, &[], ctx).await?);
     }
@@ -85,11 +85,11 @@ mod tests {
     use crate::native::types::Type;
     use crate::{ArrowOptions, Error};
 
-    fn create_inner_fields(inner: &[Type]) -> Fields {
+    fn create_inner_fields(inner: &[(Option<String>, Type)]) -> Fields {
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
         inner
             .iter()
-            .map(|i| ch_to_arrow_type(i, opts).unwrap())
+            .map(|(_, i)| ch_to_arrow_type(i, opts, None).unwrap())
             .enumerate()
             .map(|(i, (d, nil))| Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}{i}"), d, nil))
             .collect::<Fields>()
@@ -97,7 +97,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialize_tuple_int32_string() {
-        let inner_types = vec![Type::Int32, Type::String];
+        let inner_types = vec![(None, Type::Int32), (None, Type::String)];
         let rows = 3;
         let nulls = vec![];
         let input = vec![
@@ -112,6 +112,15 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -119,10 +128,11 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Tuple(Int32, String)");
+
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
         let arrays = struct_array.columns();
@@ -141,7 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialize_tuple_nullable_int32_string() {
-        let inner_types = vec![Type::Nullable(Box::new(Type::Int32)), Type::String];
+        let inner_types = vec![(None, Type::Nullable(Box::new(Type::Int32))), (None, Type::String)];
         let rows = 3;
         let nulls = vec![];
         let input = vec![
@@ -159,6 +169,15 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -166,13 +185,9 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
-        .inspect_err(|error| {
-            eprintln!("Error reading data: {error:?}");
-            eprintln!("Currently read: {reader:?}");
-        })
         .expect("Failed to deserialize Tuple(Nullable(Int32), String)");
         let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
         let fields = struct_array.fields();
@@ -192,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialize_nullable_tuple_int32_string() {
-        let inner_types = vec![Type::Int32, Type::String];
+        let inner_types = vec![(None, Type::Int32), (None, Type::String)];
         let rows = 3;
         let nulls = vec![0, 1, 0]; // [not null, null, not null]
         let input = vec![
@@ -207,6 +222,15 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -214,7 +238,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize nullable Tuple(Int32, String)");
@@ -244,7 +268,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialize_tuple_nested() {
-        let inner_types = vec![Type::Int32, Type::Tuple(vec![Type::String, Type::Int32])];
+        let inner_types =
+            vec![(None, Type::Int32), (None, Type::tuple_anon(vec![Type::String, Type::Int32]))];
         let rows = 2;
         let nulls = vec![];
         let input = vec![
@@ -262,6 +287,15 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -269,7 +303,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Tuple(Int32, Tuple(String, Int32))");
@@ -296,7 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialize_tuple_zero_rows() {
-        let inner_types = vec![Type::Int32, Type::String];
+        let inner_types = vec![(None, Type::Int32), (None, Type::String)];
         let rows = 0;
         let nulls = vec![];
         let input = vec![]; // No data for zero rows
@@ -307,6 +341,14 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -314,7 +356,7 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await
         .expect("Failed to deserialize Tuple(Int32, String) with zero rows");
@@ -343,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialize_tuple_invalid_inner_type() {
-        let inner_types = vec![Type::Enum16(vec![]), Type::String]; // Enum16 may be unsupported
+        let inner_types = vec![(None, Type::Enum16(vec![])), (None, Type::String)];
         let rows = 3;
         let nulls = vec![];
         let input = vec![
@@ -358,6 +400,15 @@ mod tests {
 
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx {
+            row_buffer:                                        &mut row_buffer,
+            #[cfg(feature = "extended-types")]
+            dynamic_prefix:                                    None,
+            #[cfg(feature = "extended-types")]
+            variant_prefix:                                    None,
+        };
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -365,327 +416,9 @@ mod tests {
             &mut reader,
             rows,
             &nulls,
-            &mut vec![],
+            &mut ctx,
         )
         .await;
-        assert!(matches!(result, Err(Error::ArrowDeserialize(_))));
-    }
-}
-
-#[cfg(test)]
-mod tests_sync {
-    use std::io::Cursor;
-
-    use arrow::array::{Array, Int32Array, StringArray, StructArray};
-    use arrow::datatypes::{DataType, Field, Fields};
-
-    use super::*;
-    use crate::arrow::types::{TUPLE_FIELD_NAME_PREFIX, ch_to_arrow_type};
-    use crate::native::types::Type;
-    use crate::{ArrowOptions, Error};
-
-    fn create_inner_fields(inner: &[Type]) -> Fields {
-        let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        inner
-            .iter()
-            .map(|i| ch_to_arrow_type(i, opts).unwrap())
-            .enumerate()
-            .map(|(i, (d, nil))| Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}{i}"), d, nil))
-            .collect::<Fields>()
-    }
-
-    #[test]
-    fn test_deserialize_tuple_int32_string() {
-        let inner_types = vec![Type::Int32, Type::String];
-        let rows = 3;
-        let nulls = vec![];
-        let input = vec![
-            // Field 1: Int32 [1, 2, 3]
-            1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, // Field 2: String ["a", "bb", "ccc"]
-            1, b'a', 2, b'b', b'b', 3, b'c', b'c', b'c',
-        ];
-        let mut reader = Cursor::new(input);
-
-        let inner_fields = create_inner_fields(&inner_types);
-        let data_type = DataType::Struct(inner_fields.clone());
-
-        let mut builders = inner_types
-            .iter()
-            .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
-            .collect::<Vec<_>>();
-        let result = deserialize(
-            &mut builders,
-            &mut reader,
-            &inner_types,
-            &data_type,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Tuple(Int32, String)");
-        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
-        let fields = struct_array.fields();
-        let arrays = struct_array.columns();
-
-        assert_eq!(fields, &inner_fields);
-        assert_eq!(
-            arrays[0].as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![1, 2, 3])
-        );
-        assert_eq!(
-            arrays[1].as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(vec!["a", "bb", "ccc"])
-        );
-        assert_eq!(struct_array.nulls(), None);
-    }
-
-    #[test]
-    fn test_deserialize_tuple_nullable_int32_string() {
-        let inner_types = vec![Type::Nullable(Box::new(Type::Int32)), Type::String];
-        let rows = 3;
-        let nulls = vec![];
-        let input = vec![
-            // Field 1: Nullable(Int32) [Some(1), None, Some(3)]
-            0, 1, 0, // Null mask: [1, 0, 1]
-            1, 0, 0, 0, // Data: 1
-            0, 0, 0, 0, // Data: None
-            3, 0, 0, 0, // Data: 3
-            1, b'a', 1, b'b', 1, b'c', // Field 2: String ["a", "b", "c"]
-        ];
-        let mut reader = Cursor::new(input);
-
-        let inner_fields = create_inner_fields(&inner_types);
-        let data_type = DataType::Struct(inner_fields.clone());
-
-        let mut builders = inner_types
-            .iter()
-            .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
-            .collect::<Vec<_>>();
-        let result = deserialize(
-            &mut builders,
-            &mut reader,
-            &inner_types,
-            &data_type,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .inspect_err(|error| {
-            eprintln!("Error reading data: {error:?}");
-            eprintln!("Currently read: {reader:?}");
-        })
-        .expect("Failed to deserialize Tuple(Nullable(Int32), String)");
-        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
-        let fields = struct_array.fields();
-        let arrays = struct_array.columns();
-
-        assert_eq!(fields, &inner_fields);
-        assert_eq!(
-            arrays[0].as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![Some(1), None, Some(3)])
-        );
-        assert_eq!(
-            arrays[1].as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(vec!["a", "b", "c"])
-        );
-        assert_eq!(struct_array.nulls(), None);
-    }
-
-    #[test]
-    fn test_deserialize_nullable_tuple_int32_string() {
-        let inner_types = vec![Type::Int32, Type::String];
-        let rows = 3;
-        let nulls = vec![0, 1, 0]; // [not null, null, not null]
-        let input = vec![
-            // Field 1: Int32 [1, 2, 3]
-            1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, // Field 2: String ["a", "b", "c"]
-            1, b'a', 1, b'b', 1, b'c',
-        ];
-        let mut reader = Cursor::new(input);
-
-        let inner_fields = create_inner_fields(&inner_types);
-        let data_type = DataType::Struct(inner_fields.clone());
-
-        let mut builders = inner_types
-            .iter()
-            .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
-            .collect::<Vec<_>>();
-        let result = deserialize(
-            &mut builders,
-            &mut reader,
-            &inner_types,
-            &data_type,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize nullable Tuple(Int32, String)");
-        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
-        let fields = struct_array.fields();
-        let arrays = struct_array.columns();
-
-        assert_eq!(fields, &inner_fields,);
-        //     &Fields::from(vec![
-        //         Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Int32, false),
-        //         Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"), DataType::Utf8, false),
-        //     ])
-        // );
-        assert_eq!(
-            arrays[0].as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![1, 2, 3])
-        );
-        assert_eq!(
-            arrays[1].as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(vec!["a", "b", "c"])
-        );
-        assert_eq!(
-            struct_array.nulls().unwrap().iter().collect::<Vec<bool>>(),
-            vec![true, false, true] // 0=not null, 1=null
-        );
-    }
-
-    #[test]
-    fn test_deserialize_tuple_nested() {
-        let inner_types = vec![Type::Int32, Type::Tuple(vec![Type::String, Type::Int32])];
-        let rows = 2;
-        let nulls = vec![];
-        let input = vec![
-            // Field 1: Int32 [1, 2]
-            1, 0, 0, 0, 2, 0, 0, 0,
-            // Field 2: Tuple(String, Int32) [("a", 10), ("b", 20)]
-            // Inner field 1: String ["a", "b"]
-            1, b'a', 1, b'b', // Inner field 2: Int32 [10, 20]
-            10, 0, 0, 0, 20, 0, 0, 0,
-        ];
-        let mut reader = Cursor::new(input);
-
-        let inner_fields = create_inner_fields(&inner_types);
-        let data_type = DataType::Struct(inner_fields.clone());
-
-        let mut builders = inner_types
-            .iter()
-            .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
-            .collect::<Vec<_>>();
-        let result = deserialize(
-            &mut builders,
-            &mut reader,
-            &inner_types,
-            &data_type,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Tuple(Int32, Tuple(String, Int32))");
-        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
-        let fields = struct_array.fields();
-        let arrays = struct_array.columns();
-
-        assert_eq!(
-            fields,
-            &inner_fields,
-            // &Fields::from(vec![
-            //     Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Int32, false),
-            //     Field::new(
-            //         format!("{TUPLE_FIELD_NAME_PREFIX}1"),
-            //         DataType::Struct(Fields::from(vec![
-            //             Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}0"), DataType::Utf8,
-            // false),             Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"),
-            // DataType::Int32, false),         ])),
-            //         false
-            //     ),
-            // ])
-        );
-        assert_eq!(
-            arrays[0].as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![1, 2])
-        );
-        let inner_struct = arrays[1].as_any().downcast_ref::<StructArray>().unwrap();
-        assert_eq!(
-            inner_struct.column(0).as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(vec!["a", "b"])
-        );
-        assert_eq!(
-            inner_struct.column(1).as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(vec![10, 20])
-        );
-        assert_eq!(struct_array.nulls(), None);
-    }
-
-    #[test]
-    fn test_deserialize_tuple_zero_rows() {
-        let inner_types = vec![Type::Int32, Type::String];
-        let rows = 0;
-        let nulls = vec![];
-        let input = vec![]; // No data for zero rows
-        let mut reader = Cursor::new(input);
-
-        let inner_fields = create_inner_fields(&inner_types);
-        let data_type = DataType::Struct(inner_fields.clone());
-
-        let mut builders = inner_types
-            .iter()
-            .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
-            .collect::<Vec<_>>();
-        let result = deserialize(
-            &mut builders,
-            &mut reader,
-            &inner_types,
-            &data_type,
-            rows,
-            &nulls,
-            &mut vec![],
-        )
-        .expect("Failed to deserialize Tuple(Int32, String) with zero rows");
-        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
-        let fields = struct_array.fields();
-        let arrays = struct_array.columns();
-
-        assert_eq!(fields, &inner_fields,);
-        assert_eq!(
-            arrays[0].as_any().downcast_ref::<Int32Array>().unwrap(),
-            &Int32Array::from(Vec::<i32>::new())
-        );
-        assert_eq!(
-            arrays[1].as_any().downcast_ref::<StringArray>().unwrap(),
-            &StringArray::from(Vec::<String>::new())
-        );
-        assert_eq!(struct_array.nulls(), None);
-    }
-
-    #[test]
-    fn test_deserialize_tuple_invalid_inner_type() {
-        let inner_types = vec![Type::Enum16(vec![]), Type::String]; // Enum16 may be unsupported
-        let rows = 3;
-        let nulls = vec![];
-        let input = vec![
-            // Field 1: Invalid Enum16 data
-            1, 0, 2, 0, 3, 0, // Field 2: String ["a", "b", "c"]
-            1, b'a', 1, b'b', 1, b'c',
-        ];
-        let mut reader = Cursor::new(input);
-
-        let inner_fields = create_inner_fields(&inner_types);
-        let data_type = DataType::Struct(inner_fields.clone());
-
-        let mut builders = inner_types
-            .iter()
-            .zip(inner_fields.iter())
-            .map(|(t, f)| TypedBuilder::try_new(t, f.data_type()).unwrap())
-            .collect::<Vec<_>>();
-        let result = deserialize(
-            &mut builders,
-            &mut reader,
-            &inner_types,
-            &data_type,
-            rows,
-            &nulls,
-            &mut vec![],
-        );
         assert!(matches!(result, Err(Error::ArrowDeserialize(_))));
     }
 }

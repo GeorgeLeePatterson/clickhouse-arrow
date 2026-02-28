@@ -17,6 +17,7 @@ pub(crate) mod variant;
 use tokio::io::AsyncReadExt;
 
 use super::*;
+use crate::formats::{CustomSerializationEntry, CustomSerializationState};
 
 const CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT: u8 = 0;
 const CUSTOM_SERIALIZATION_KIND_STACK_SPARSE: u8 = 1;
@@ -32,9 +33,10 @@ const CUSTOM_SERIALIZATION_KIND_REPLICATED: u8 = 3;
 
 // Core protocol parsing
 pub(crate) trait ClickHouseNativeDeserializer {
-    fn deserialize_custom_serialization_prefix<'a, R: ClickHouseRead>(
+    fn deserialize_custom_serialization_prefix<'a, R: ClickHouseRead, T: Default + Send>(
         &'a self,
         reader: &'a mut R,
+        state: &'a mut DeserializerState<T>,
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 
     fn deserialize_prefix<'a, R: ClickHouseRead, T: Default + Send>(
@@ -45,14 +47,17 @@ pub(crate) trait ClickHouseNativeDeserializer {
 }
 
 impl ClickHouseNativeDeserializer for Type {
-    fn deserialize_custom_serialization_prefix<'a, R: ClickHouseRead>(
+    fn deserialize_custom_serialization_prefix<'a, R: ClickHouseRead, T: Default + Send>(
         &'a self,
         reader: &'a mut R,
+        state: &'a mut DeserializerState<T>,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
         async move {
             let mut stack = vec![self.strip_null()];
+            let mut entries = Vec::with_capacity(1);
             while let Some(next) = stack.pop() {
                 let kind_stack_type = reader.read_u8().await?;
+                let mut kinds = Vec::new();
                 match kind_stack_type {
                     CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT
                     | CUSTOM_SERIALIZATION_KIND_STACK_SPARSE
@@ -62,6 +67,7 @@ impl ClickHouseNativeDeserializer for Type {
                     CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION => {
                         #[expect(clippy::cast_possible_truncation)]
                         let num_kinds = reader.read_var_uint().await? as usize;
+                        kinds.reserve(num_kinds);
                         for _ in 0..num_kinds {
                             let kind = reader.read_u8().await?;
                             if !matches!(
@@ -75,6 +81,7 @@ impl ClickHouseNativeDeserializer for Type {
                                     "invalid custom serialization kind: {kind}"
                                 )));
                             }
+                            kinds.push(kind);
                         }
                     }
                     _ => {
@@ -86,10 +93,14 @@ impl ClickHouseNativeDeserializer for Type {
 
                 if let Type::Tuple(inner) = next {
                     for item in inner.iter().rev() {
-                        stack.push(item.strip_null());
+                        stack.push(item.1.strip_null());
                     }
                 }
+
+                entries.push(CustomSerializationEntry { stack_type: kind_stack_type, kinds });
             }
+
+            drop(state.replace_custom_serialization(CustomSerializationState { entries }));
             Ok(())
         }
         .boxed()
@@ -179,7 +190,7 @@ impl ClickHouseNativeDeserializer for Type {
                     if let Some(inner) = types.first() {
                         inner.deserialize_prefix(reader, state).await?;
                     } else {
-                        return Err(Error::DeserializeError(
+                        return Err(Error::Deserialize(
                             "SimpleAggregateFunction has no inner type".to_string(),
                         ));
                     }
@@ -209,7 +220,7 @@ impl ClickHouseNativeDeserializer for Type {
 impl AggregateParameter {
     fn parse_quoted_string(input: &str) -> Result<String> {
         if !(input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2) {
-            return Err(Error::TypeParseError(format!(
+            return Err(Error::TypeParse(format!(
                 "invalid quoted aggregate parameter literal: {input}"
             )));
         }
@@ -220,7 +231,7 @@ impl AggregateParameter {
         while let Some(ch) = chars.next() {
             if ch == '\\' {
                 let Some(escaped) = chars.next() else {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "invalid escape sequence in aggregate parameter literal: {input}"
                     )));
                 };
@@ -286,7 +297,7 @@ impl FromStr for AggregateParameter {
             return Ok(Self::Float64(value.to_bits()));
         }
 
-        Err(Error::TypeParseError(format!("unsupported aggregate parameter literal '{input}'")))
+        Err(Error::TypeParse(format!("unsupported aggregate parameter literal '{input}'")))
     }
 }
 
@@ -305,7 +316,7 @@ macro_rules! parse_enum_options {
     ($opt_str:expr, $num_type:ty) => {{
         fn inner_parse(input: &str) -> Result<Vec<(String, $num_type)>> {
             if !input.starts_with('(') || !input.ends_with(')') {
-                return Err(Error::TypeParseError(
+                return Err(Error::TypeParse(
                     "Enum arguments must be enclosed in parentheses".to_string(),
                 ));
             }
@@ -327,7 +338,7 @@ macro_rules! parse_enum_options {
                         if ch == '\'' {
                             state = EnumParseState::InName;
                         } else if !ch.is_whitespace() {
-                            return Err(Error::TypeParseError(format!(
+                            return Err(Error::TypeParse(format!(
                                 "Expected single quote at start of variant name, found '{}'",
                                 ch
                             )));
@@ -349,7 +360,7 @@ macro_rules! parse_enum_options {
                         if ch == '=' {
                             state = EnumParseState::InValue;
                         } else if !ch.is_whitespace() {
-                            return Err(Error::TypeParseError(format!(
+                            return Err(Error::TypeParse(format!(
                                 "Expected '=' after variant name, found '{}'",
                                 ch
                             )));
@@ -358,7 +369,7 @@ macro_rules! parse_enum_options {
                     EnumParseState::InValue => {
                         if ch == ',' {
                             let parsed_value = value.parse::<$num_type>().map_err(|e| {
-                                Error::TypeParseError(format!("Invalid enum value '{value}': {e}"))
+                                Error::TypeParse(format!("Invalid enum value '{value}': {e}"))
                             })?;
                             options.push((name, parsed_value));
                             name = String::new();
@@ -374,17 +385,17 @@ macro_rules! parse_enum_options {
             match state {
                 EnumParseState::InValue if !value.is_empty() => {
                     let parsed_value = value.parse::<$num_type>().map_err(|e| {
-                        Error::TypeParseError(format!("Invalid enum value '{value}': {e}"))
+                        Error::TypeParse(format!("Invalid enum value '{value}': {e}"))
                     })?;
                     options.push((name, parsed_value));
                 }
                 EnumParseState::ExpectQuote if !input.is_empty() => {
-                    return Err(Error::TypeParseError(
+                    return Err(Error::TypeParse(
                         "Expected enum variant, found end of input".to_string(),
                     ));
                 }
                 EnumParseState::InName | EnumParseState::ExpectEqual => {
-                    return Err(Error::TypeParseError(
+                    return Err(Error::TypeParse(
                         "Incomplete enum variant at end of input".to_string(),
                     ));
                 }
@@ -392,7 +403,7 @@ macro_rules! parse_enum_options {
             }
 
             if input.ends_with(',') {
-                return Err(Error::TypeParseError("Trailing comma in enum variants".to_string()));
+                return Err(Error::TypeParse("Trailing comma in enum variants".to_string()));
             }
 
             Ok(options)
@@ -420,7 +431,7 @@ impl FromStr for Type {
         let (ident, following) = eat_identifier(s);
 
         if ident.is_empty() {
-            return Err(Error::TypeParseError(format!("invalid empty identifier for type: '{s}'")));
+            return Err(Error::TypeParse(format!("invalid empty identifier for type: '{s}'")));
         }
 
         let following = following.trim();
@@ -429,7 +440,7 @@ impl FromStr for Type {
                 "Decimal" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if count != 2 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Decimal expects 2 args, got {count}: {args:?}"
                         )));
                     }
@@ -441,7 +452,7 @@ impl FromStr for Type {
                         || (p <= 38 && s > 38)
                         || (p <= 76 && s > 76)
                     {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Invalid scale {s} for precision {p}"
                         )));
                     }
@@ -454,7 +465,7 @@ impl FromStr for Type {
                     } else if p <= 76 {
                         Type::Decimal256(s)
                     } else {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "bad decimal spec, cannot exceed 76 precision".to_string(),
                         ));
                     }
@@ -462,13 +473,13 @@ impl FromStr for Type {
                 "Decimal32" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "bad arg count for Decimal32, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 9 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Invalid scale {s} for Decimal32, must be 1..=9"
                         )));
                     }
@@ -477,13 +488,13 @@ impl FromStr for Type {
                 "Decimal64" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "bad arg count for Decimal64, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 18 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Invalid scale {s} for Decimal64, must be 1..=18"
                         )));
                     }
@@ -492,13 +503,13 @@ impl FromStr for Type {
                 "Decimal128" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "bad arg count for Decimal128, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 38 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Invalid scale {s} for Decimal128, must be 1..=38"
                         )));
                     }
@@ -507,13 +518,13 @@ impl FromStr for Type {
                 "Decimal256" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "bad arg count for Decimal256, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: u8 = parse_scale(args[0])?;
                     if s == 0 || s > 76 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Invalid scale {s} for Decimal256, must be 1..=76"
                         )));
                     }
@@ -522,13 +533,13 @@ impl FromStr for Type {
                 "FixedString" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "bad arg count for FixedString, expected 1 and got {count}: {args:?}"
                         )));
                     }
                     let s: usize = parse_precision(args[0])?;
                     if s == 0 {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "FixedString size must be greater than 0".to_string(),
                         ));
                     }
@@ -537,7 +548,7 @@ impl FromStr for Type {
                 "DateTime" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count > 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "DateTime expects 0 or 1 arg: {args:?}"
                         )));
                     }
@@ -546,14 +557,12 @@ impl FromStr for Type {
                     } else {
                         let tz_str = args[0];
                         if !tz_str.starts_with('\'') || !tz_str.ends_with('\'') {
-                            return Err(Error::TypeParseError(format!(
+                            return Err(Error::TypeParse(format!(
                                 "DateTime timezone must be quoted: '{tz_str}'"
                             )));
                         }
                         let tz = tz_str[1..tz_str.len() - 1].parse().map_err(|e| {
-                            Error::TypeParseError(format!(
-                                "failed to parse timezone '{tz_str}': {e}"
-                            ))
+                            Error::TypeParse(format!("failed to parse timezone '{tz_str}': {e}"))
                         })?;
                         Type::DateTime(tz)
                     }
@@ -561,24 +570,22 @@ impl FromStr for Type {
                 "DateTime64" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if !(1..=2).contains(&count) {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "DateTime64 expects 1 or 2 args, got {count}: {args:?}"
                         )));
                     }
-                    let precision: u8 = args[0].parse().map_err(|_| {
-                        Error::TypeParseError("could not parse precision".to_string())
-                    })?;
+                    let precision: u8 = args[0]
+                        .parse()
+                        .map_err(|_| Error::TypeParse("could not parse precision".to_string()))?;
                     let tz = if count == 2 {
                         let tz_str = args[1];
                         if !tz_str.starts_with('\'') || !tz_str.ends_with('\'') {
-                            return Err(Error::TypeParseError(format!(
+                            return Err(Error::TypeParse(format!(
                                 "DateTime64 timezone must be quoted: '{tz_str}'"
                             )));
                         }
                         tz_str[1..tz_str.len() - 1].parse().map_err(|e| {
-                            Error::TypeParseError(format!(
-                                "failed to parse timezone '{tz_str}': {e}"
-                            ))
+                            Error::TypeParse(format!("failed to parse timezone '{tz_str}': {e}"))
                         })?
                     } else {
                         chrono_tz::UTC
@@ -590,7 +597,7 @@ impl FromStr for Type {
                 "LowCardinality" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "LowCardinality expected 1 arg and got {count}: {args:?}"
                         )));
                     }
@@ -599,7 +606,7 @@ impl FromStr for Type {
                 "Array" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Array expected 1 arg and got {count}: {args:?}"
                         )));
                     }
@@ -607,27 +614,21 @@ impl FromStr for Type {
                 }
                 "Tuple" => {
                     let args = parse_variable_args(following)?;
-                    let inner: Vec<Type> = args
-                        .into_iter()
-                        // Handle named tuple fields: "name Type" -> extract just "Type"
-                        .map(strip_tuple_field_name)
-                        .map(Type::from_str)
-                        .collect::<Result<_, _>>()?;
+                    let inner =
+                        args.into_iter().map(parse_tuple_field).collect::<Result<_, _>>()?;
                     Type::Tuple(inner)
                 }
                 "Nullable" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
-                            "Nullable expects 1 arg: {args:?}"
-                        )));
+                        return Err(Error::TypeParse(format!("Nullable expects 1 arg: {args:?}")));
                     }
                     Type::Nullable(Box::new(Type::from_str(args[0])?))
                 }
                 "Map" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if count != 2 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Map expects 2 args, got {count}: {args:?}"
                         )));
                     }
@@ -640,20 +641,20 @@ impl FromStr for Type {
                 "Time64" => {
                     let (args, count) = parse_fixed_args::<1>(following)?;
                     if count != 1 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "Time64 expects 1 arg (precision), got {count}: {args:?}"
                         )));
                     }
-                    let precision: u8 = args[0].parse().map_err(|_| {
-                        Error::TypeParseError("could not parse precision".to_string())
-                    })?;
+                    let precision: u8 = args[0]
+                        .parse()
+                        .map_err(|_| Error::TypeParse("could not parse precision".to_string()))?;
                     Type::Time64(precision)
                 }
                 #[cfg(feature = "extended-types")]
                 "QBit" => {
                     let (args, count) = parse_fixed_args::<2>(following)?;
                     if count != 2 {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "QBit expects 2 args (element_type, dimension), got {count}: {args:?}"
                         )));
                     }
@@ -665,7 +666,7 @@ impl FromStr for Type {
                 "Variant" => {
                     let args = parse_variable_args(following)?;
                     if args.is_empty() {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "Variant requires at least one inner type".to_string(),
                         ));
                     }
@@ -680,20 +681,20 @@ impl FromStr for Type {
                         let arg = args[0].trim();
                         let max_types = if let Some(value) = arg.strip_prefix("max_types=") {
                             value.parse::<u8>().map_err(|e| {
-                                Error::TypeParseError(format!(
+                                Error::TypeParse(format!(
                                     "Invalid Dynamic max_types value '{value}': {e}"
                                 ))
                             })?
                         } else {
                             arg.parse::<u8>().map_err(|e| {
-                                Error::TypeParseError(format!(
+                                Error::TypeParse(format!(
                                     "Invalid Dynamic argument '{arg}', expected max_types=<n> or \
                                      <n>: {e}"
                                 ))
                             })?
                         };
                         if max_types > 254 {
-                            return Err(Error::TypeParseError(format!(
+                            return Err(Error::TypeParse(format!(
                                 "Invalid Dynamic max_types value '{max_types}', must be in range \
                                  (0..=254)"
                             )));
@@ -705,7 +706,7 @@ impl FromStr for Type {
                 "Nested" => {
                     let args = parse_variable_args(following)?;
                     if args.is_empty() {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "Nested requires at least one field".to_string(),
                         ));
                     }
@@ -717,7 +718,7 @@ impl FromStr for Type {
                         let name = name.trim();
                         let type_spec = type_spec.trim();
                         if name.is_empty() || type_spec.is_empty() {
-                            return Err(Error::TypeParseError(format!(
+                            return Err(Error::TypeParse(format!(
                                 "Invalid Nested field '{arg}', expected '<name> <type>'"
                             )));
                         }
@@ -729,14 +730,14 @@ impl FromStr for Type {
                 "AggregateFunction" => {
                     let args = parse_variable_args(following)?;
                     if args.is_empty() {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "AggregateFunction requires at least a function name".to_string(),
                         ));
                     }
                     let signature = args[0].trim();
                     let (name, following) = eat_identifier(signature);
                     if name.is_empty() {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "AggregateFunction requires a non-empty function name".to_string(),
                         ));
                     }
@@ -764,14 +765,14 @@ impl FromStr for Type {
                 "SimpleAggregateFunction" => {
                     let args = parse_variable_args(following)?;
                     if args.len() < 2 {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "SimpleAggregateFunction requires function name and type".to_string(),
                         ));
                     }
                     let signature = args[0].trim();
                     let (name, following) = eat_identifier(signature);
                     if name.is_empty() {
-                        return Err(Error::TypeParseError(
+                        return Err(Error::TypeParse(
                             "SimpleAggregateFunction requires a non-empty function name"
                                 .to_string(),
                         ));
@@ -790,7 +791,7 @@ impl FromStr for Type {
                     Type::SimpleAggregateFunction { name: name.to_string(), parameters, types }
                 }
                 id => {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "invalid type with arguments: '{ident}' (ident = {id})"
                     )));
                 }
@@ -834,7 +835,7 @@ impl FromStr for Type {
             #[cfg(feature = "extended-types")]
             "Dynamic" => Type::Dynamic { max_types: 32 },
             _ => {
-                return Err(Error::TypeParseError(format!("invalid type name: '{ident}'")));
+                return Err(Error::TypeParse(format!("invalid type name: '{ident}'")));
             }
         };
         Ok(parsed)
@@ -852,29 +853,18 @@ fn eat_identifier(input: &str) -> (&str, &str) {
     (input, "")
 }
 
-/// Strips the field name from a named tuple argument.
-///
-/// `ClickHouse` tuples can be named (`Tuple(name Type, ...)`) or anonymous (`Tuple(Type, ...)`).
-/// This extracts just the type portion from named fields like `"s String"` → `"String"`.
-///
-/// Important: We must not strip parts of types that contain internal spaces, like
-/// `Map(String, Int32)` where the space after the comma is part of the type itself.
-/// A field name is always a simple identifier (no parentheses) followed by a space.
-fn strip_tuple_field_name(arg: &str) -> &str {
+fn parse_tuple_field(arg: &str) -> Result<(Option<String>, Type)> {
     let arg = arg.trim();
-    if let Some(space_idx) = arg.find(' ') {
-        let before_space = &arg[..space_idx];
-        // If the part before the space contains '(', it's a type with arguments,
-        // not a field name. E.g., "Map(String, Int32)" - the space is inside the type.
-        if before_space.contains('(') {
-            return arg;
-        }
-        let rest = arg[space_idx..].trim_start();
-        if rest.chars().next().is_some_and(char::is_alphabetic) {
-            return rest;
-        }
+    let (name, rest) = eat_identifier(arg);
+    let name = name.trim();
+    let type_spec = rest.trim_start();
+    if !name.is_empty()
+        && !type_spec.is_empty()
+        && type_spec.chars().next().is_some_and(char::is_alphabetic)
+    {
+        return Ok((Some(name.to_string()), Type::from_str(type_spec)?));
     }
-    arg
+    Ok((None, Type::from_str(arg)?))
 }
 
 /// Parse arguments into a fixed-size array for types with a known number of args
@@ -891,7 +881,7 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 
     // Check for excess arguments
     if iter.next().is_some() {
-        return Err(Error::TypeParseError("too many arguments".to_string()));
+        return Err(Error::TypeParse("too many arguments".to_string()));
     }
     Ok((out, count))
 }
@@ -900,21 +890,21 @@ fn parse_fixed_args<const N: usize>(input: &str) -> Result<([&str; N], usize)> {
 fn parse_variable_args(input: &str) -> Result<Vec<&str>> { parse_args_iter(input)?.collect() }
 
 fn parse_scale(from: &str) -> Result<u8> {
-    from.parse().map_err(|_| Error::TypeParseError("couldn't parse scale".to_string()))
+    from.parse().map_err(|_| Error::TypeParse("couldn't parse scale".to_string()))
 }
 
 fn parse_precision(from: &str) -> Result<usize> {
-    from.parse().map_err(|_| Error::TypeParseError("could not parse precision".to_string()))
+    from.parse().map_err(|_| Error::TypeParse("could not parse precision".to_string()))
 }
 
 /// Core iterator for parsing comma-separated arguments within parentheses
 fn parse_args_iter(input: &str) -> Result<impl Iterator<Item = Result<&str, Error>>> {
     if !input.starts_with('(') || !input.ends_with(')') {
-        return Err(Error::TypeParseError("Malformed arguments to type".to_string()));
+        return Err(Error::TypeParse("Malformed arguments to type".to_string()));
     }
     let input = input[1..input.len() - 1].trim();
     if input.ends_with(',') {
-        return Err(Error::TypeParseError("Trailing comma in argument list".to_string()));
+        return Err(Error::TypeParse("Trailing comma in argument list".to_string()));
     }
 
     Ok(ArgsIterator { input, last_start: 0, in_parens: 0, in_quotes: false, done: false })
@@ -964,9 +954,7 @@ impl<'a> Iterator for ArgsIterator<'a> {
                 ',' if self.in_parens == 0 => {
                     let slice = self.input[self.last_start..i].trim();
                     if slice.is_empty() {
-                        return Some(Err(Error::TypeParseError(
-                            "Empty argument in list".to_string(),
-                        )));
+                        return Some(Err(Error::TypeParse("Empty argument in list".to_string())));
                     }
                     self.last_start = i + 1;
                     return Some(Ok(slice));
@@ -978,7 +966,7 @@ impl<'a> Iterator for ArgsIterator<'a> {
 
         if self.in_parens != 0 {
             self.done = true;
-            return Some(Err(Error::TypeParseError("Mismatched parentheses".to_string())));
+            return Some(Err(Error::TypeParse("Mismatched parentheses".to_string())));
         }
         if self.last_start <= self.input.len() {
             let slice = self.input[self.last_start..].trim();
@@ -988,9 +976,7 @@ impl<'a> Iterator for ArgsIterator<'a> {
             }
             if slice == "," {
                 self.done = true;
-                return Some(Err(Error::TypeParseError(
-                    "Trailing comma in argument list".to_string(),
-                )));
+                return Some(Err(Error::TypeParse("Trailing comma in argument list".to_string())));
             }
             self.done = true;
             return Some(Ok(slice));
@@ -1183,7 +1169,7 @@ mod tests {
         assert_eq!(Type::from_str("Array(Int32)").unwrap(), Type::Array(Box::new(Type::Int32)));
         assert_eq!(
             Type::from_str("Tuple(Int32, String)").unwrap(),
-            Type::Tuple(vec![Type::Int32, Type::String])
+            Type::tuple_anon(vec![Type::Int32, Type::String])
         );
         assert_eq!(
             Type::from_str("Nullable(Int32)").unwrap(),
@@ -1229,7 +1215,7 @@ mod tests {
             Type::Enum16(vec![("high".into(), 1000)]),
             Type::LowCardinality(Box::new(Type::String)),
             Type::Array(Box::new(Type::Int32)),
-            Type::Tuple(vec![Type::Int32, Type::String]),
+            Type::tuple_anon(vec![Type::Int32, Type::String]),
             Type::Nullable(Box::new(Type::Int32)),
             Type::Map(Box::new(Type::String), Box::new(Type::Int32)),
             Type::Object,
@@ -1328,34 +1314,28 @@ mod tests {
         });
     }
 
-    /// Tests `strip_tuple_field_name` helper function.
+    /// Tests `parse_tuple_field` helper function.
     #[test]
-    fn test_strip_tuple_field_name() {
-        // Anonymous tuple fields (no name) - should return as-is
-        assert_eq!(strip_tuple_field_name("String"), "String");
-        assert_eq!(strip_tuple_field_name("Int64"), "Int64");
-        assert_eq!(strip_tuple_field_name("Nullable(Int32)"), "Nullable(Int32)");
-
-        // Named tuple fields - should strip the name
-        assert_eq!(strip_tuple_field_name("s String"), "String");
-        assert_eq!(strip_tuple_field_name("i Int64"), "Int64");
-        assert_eq!(strip_tuple_field_name("my_field Nullable(Int32)"), "Nullable(Int32)");
+    fn test_parse_tuple_field() {
+        assert_eq!(parse_tuple_field("String").unwrap(), (None, Type::String));
+        assert_eq!(parse_tuple_field("Int64").unwrap(), (None, Type::Int64));
         assert_eq!(
-            strip_tuple_field_name("status Enum8('active' = 1, 'inactive' = 2)"),
-            "Enum8('active' = 1, 'inactive' = 2)"
+            parse_tuple_field("Nullable(Int32)").unwrap(),
+            (None, Type::Nullable(Box::new(Type::Int32)))
         );
-
-        // Edge cases
-        assert_eq!(strip_tuple_field_name("  s String  "), "String"); // Extra whitespace
-        assert_eq!(strip_tuple_field_name("field123 UInt32"), "UInt32"); // Name with numbers
-
-        // Types with internal spaces (must NOT be stripped) - regression test for Codex review
-        assert_eq!(strip_tuple_field_name("Map(String, Int32)"), "Map(String, Int32)");
-        assert_eq!(strip_tuple_field_name("Array(Nullable(String))"), "Array(Nullable(String))");
-        assert_eq!(strip_tuple_field_name("Tuple(String, Int32)"), "Tuple(String, Int32)");
-
-        // Named field with complex type containing spaces
-        assert_eq!(strip_tuple_field_name("my_map Map(String, Int32)"), "Map(String, Int32)");
+        assert_eq!(parse_tuple_field("s String").unwrap(), (Some("s".to_string()), Type::String));
+        assert_eq!(
+            parse_tuple_field("my_field Nullable(Int32)").unwrap(),
+            (Some("my_field".to_string()), Type::Nullable(Box::new(Type::Int32)))
+        );
+        assert_eq!(
+            parse_tuple_field("my_map Map(String, Int32)").unwrap(),
+            (Some("my_map".to_string()), Type::Map(Box::new(Type::String), Box::new(Type::Int32)))
+        );
+        assert_eq!(
+            parse_tuple_field("Map(String, Int32)").unwrap(),
+            (None, Type::Map(Box::new(Type::String), Box::new(Type::Int32)))
+        );
     }
 
     /// Tests `Type::from_str` for named tuple fields (issue #85).
@@ -1364,21 +1344,27 @@ mod tests {
         // Simple named tuple
         assert_eq!(
             Type::from_str("Tuple(s String, i Int64)").unwrap(),
-            Type::Tuple(vec![Type::String, Type::Int64])
+            Type::Tuple(vec![
+                (Some("s".to_string()), Type::String),
+                (Some("i".to_string()), Type::Int64),
+            ])
         );
 
         // Named tuple with complex types
         assert_eq!(
             Type::from_str("Tuple(name String, value Nullable(Int32))").unwrap(),
-            Type::Tuple(vec![Type::String, Type::Nullable(Box::new(Type::Int32))])
+            Type::Tuple(vec![
+                (Some("name".to_string()), Type::String),
+                (Some("value".to_string()), Type::Nullable(Box::new(Type::Int32))),
+            ])
         );
 
         // Named tuple with nested types
         assert_eq!(
             Type::from_str("Tuple(arr Array(String), map Map(String, Int32))").unwrap(),
             Type::Tuple(vec![
-                Type::Array(Box::new(Type::String)),
-                Type::Map(Box::new(Type::String), Box::new(Type::Int32))
+                (Some("arr".to_string()), Type::Array(Box::new(Type::String))),
+                (Some("map".to_string()), Type::Map(Box::new(Type::String), Box::new(Type::Int32)),),
             ])
         );
 
@@ -1387,8 +1373,11 @@ mod tests {
             Type::from_str("Tuple(status Enum8('active' = 1, 'inactive' = 2), count Int64)")
                 .unwrap(),
             Type::Tuple(vec![
-                Type::Enum8(vec![("active".into(), 1), ("inactive".into(), 2)]),
-                Type::Int64
+                (
+                    Some("status".to_string()),
+                    Type::Enum8(vec![("active".into(), 1), ("inactive".into(), 2)]),
+                ),
+                (Some("count".to_string()), Type::Int64),
             ])
         );
 
@@ -1396,21 +1385,21 @@ mod tests {
         // Actually, ClickHouse requires all or none to be named, but we handle it gracefully
         assert_eq!(
             Type::from_str("Tuple(String, i Int64)").unwrap(),
-            Type::Tuple(vec![Type::String, Type::Int64])
+            Type::Tuple(vec![(None, Type::String), (Some("i".to_string()), Type::Int64)])
         );
 
         // Anonymous tuples with types containing internal spaces - regression test for Codex review
         // These must continue to parse correctly (they worked before the named tuple fix)
         assert_eq!(
             Type::from_str("Tuple(Map(String, Int32), Int32)").unwrap(),
-            Type::Tuple(vec![
+            Type::tuple_anon(vec![
                 Type::Map(Box::new(Type::String), Box::new(Type::Int32)),
                 Type::Int32
             ])
         );
         assert_eq!(
             Type::from_str("Tuple(Array(Nullable(String)), Map(String, Int64))").unwrap(),
-            Type::Tuple(vec![
+            Type::tuple_anon(vec![
                 Type::Array(Box::new(Type::Nullable(Box::new(Type::String)))),
                 Type::Map(Box::new(Type::String), Box::new(Type::Int64))
             ])

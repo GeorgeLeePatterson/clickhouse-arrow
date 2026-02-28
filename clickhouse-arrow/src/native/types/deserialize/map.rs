@@ -16,12 +16,11 @@ impl Deserializer for MapDeserializer {
     ) -> Result<()> {
         match type_ {
             Type::Map(key, value) => {
-                let nested =
-                    Type::Array(Box::new(Type::Tuple(vec![(**key).clone(), (**value).clone()])));
-                nested.deserialize_prefix(reader, state).await?;
+                key.deserialize_prefix(reader, state).await?;
+                value.deserialize_prefix(reader, state).await?;
             }
             _ => {
-                return Err(Error::DeserializeError(
+                return Err(Error::Deserialize(
                     "MapDeserializer called with non-map type".to_string(),
                 ));
             }
@@ -45,9 +44,7 @@ impl Deserializer for MapDeserializer {
         }
 
         let Type::Map(key, value) = type_ else {
-            return Err(Error::DeserializeError(
-                "MapDeserializer called with non-map type".to_string(),
-            ));
+            return Err(Error::Deserialize("MapDeserializer called with non-map type".to_string()));
         };
 
         let mut offsets: Vec<u64> = Vec::with_capacity(rows);

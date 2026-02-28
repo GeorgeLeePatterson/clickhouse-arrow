@@ -40,9 +40,7 @@ impl Serializer for VariantSerializer {
         _writer: &mut W,
         _state: &mut SerializerState,
     ) -> Result<()> {
-        Err(Error::SerializeError(
-            "Variant native value serialization is not implemented".to_string(),
-        ))
+        Err(Error::serialize("Variant native value serialization is not implemented"))
     }
 
     fn write_sync(
@@ -51,8 +49,6 @@ impl Serializer for VariantSerializer {
         _writer: &mut impl ClickHouseBytesWrite,
         _state: &mut SerializerState,
     ) -> Result<()> {
-        Err(Error::SerializeError(
-            "Variant native value serialization is not implemented".to_string(),
-        ))
+        Err(Error::serialize("Variant native value serialization is not implemented"))
     }
 }

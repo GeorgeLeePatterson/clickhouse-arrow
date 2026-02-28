@@ -32,14 +32,12 @@ impl Deserializer for DynamicDeserializer {
         state: &mut DeserializerState<T>,
     ) -> Result<()> {
         if !matches!(type_, Type::Dynamic { .. }) {
-            return Err(Error::DeserializeError(
-                "DynamicDeserializer called with non-dynamic type".to_string(),
-            ));
+            return Err(Error::deserialize("DynamicDeserializer called with non-dynamic type"));
         }
 
         let serialization_version = reader.read_u64_le().await?;
         if serialization_version != DYNAMIC_FLATTENED_SERIALIZATION_VERSION {
-            return Err(Error::DeserializeError(format!(
+            return Err(Error::deserialize(format!(
                 "Dynamic serialization version {serialization_version} is not supported; only \
                  flattened version {DYNAMIC_FLATTENED_SERIALIZATION_VERSION} is supported"
             )));
@@ -47,11 +45,11 @@ impl Deserializer for DynamicDeserializer {
 
         #[expect(clippy::cast_possible_truncation)]
         let num_flattened_types = reader.read_var_uint().await? as usize;
-        let mut flattened_types = Vec::with_capacity(num_flattened_types);
+        let mut flattened_types: Vec<Type> = Vec::with_capacity(num_flattened_types);
         for _ in 0..num_flattened_types {
             let type_name = reader.read_utf8_string().await?;
             let parsed = Type::from_str(&type_name).map_err(|e| {
-                Error::DeserializeError(format!(
+                Error::deserialize(format!(
                     "Dynamic flattened type list contains unknown type '{type_name}': {e}"
                 ))
             })?;
@@ -79,9 +77,7 @@ impl Deserializer for DynamicDeserializer {
         _rows: usize,
         _state: &mut DeserializerState,
     ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError(
-            "DynamicDeserializer native value read is not implemented".to_string(),
-        ))
+        Err(Error::deserialize("DynamicDeserializer native value read is not implemented"))
     }
 
     // TODO: Remove

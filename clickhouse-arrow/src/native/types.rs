@@ -80,7 +80,7 @@ pub enum Type {
     Enum16(Vec<(String, i16)>),
     LowCardinality(Box<Type>),
     Array(Box<Type>),
-    Tuple(Vec<Type>),
+    Tuple(Vec<(Option<String>, Type)>),
     Map(Box<Type>, Box<Type>),
 
     Object,
@@ -158,18 +158,23 @@ impl Type {
     /// # Errors
     ///
     /// Errors if the type is not a tuple
-    pub fn unwrap_tuple(&self) -> Result<&[Type]> {
+    pub fn unwrap_tuple(&self) -> Result<&[(Option<String>, Type)]> {
         match self {
             Type::Tuple(x) => Ok(&x[..]),
             _ => Err(Error::UnexpectedType(self.clone())),
         }
     }
 
-    pub fn untuple(&self) -> Option<&[Type]> {
+    pub fn untuple(&self) -> Option<&[(Option<String>, Type)]> {
         match self {
             Type::Tuple(x) => Some(&x[..]),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub fn tuple_anon(fields: Vec<Type>) -> Type {
+        Type::Tuple(fields.into_iter().map(|type_| (None, type_)).collect())
     }
 
     pub fn unnull(&self) -> Option<&Type> {
@@ -241,7 +246,9 @@ impl Type {
             Type::Enum16(_) => Value::Enum16(String::new(), 0),
             Type::LowCardinality(x) => x.default_value(),
             Type::Array(_) => Value::Array(vec![]),
-            Type::Tuple(types) => Value::Tuple(types.iter().map(Type::default_value).collect()),
+            Type::Tuple(types) => {
+                Value::Tuple(types.iter().map(|(_, type_)| type_.default_value()).collect())
+            }
             Type::Nullable(_) => Value::Null,
             Type::Map(_, _) => Value::Map(vec![], vec![]),
             Type::Point => Value::Point(Point::default()),
@@ -342,11 +349,23 @@ impl Display for Type {
             }
             Type::LowCardinality(inner) => write!(f, "LowCardinality({inner})"),
             Type::Array(inner) => write!(f, "Array({inner})"),
-            Type::Tuple(items) => write!(
-                f,
-                "Tuple({})",
-                items.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
-            ),
+            Type::Tuple(items) => {
+                write!(f, "Tuple(")?;
+                if !items.is_empty() {
+                    let last_index = items.len() - 1;
+                    for (index, (name, type_)) in items.iter().enumerate() {
+                        if let Some(name) = name {
+                            write!(f, "{name} {type_}")?;
+                        } else {
+                            write!(f, "{type_}")?;
+                        }
+                        if index < last_index {
+                            write!(f, ",")?;
+                        }
+                    }
+                }
+                write!(f, ")")
+            }
             Type::Nullable(inner) => write!(f, "Nullable({inner})"),
             Type::Map(key, value) => write!(f, "Map({key},{value})"),
             Type::Object => write!(f, "JSON"),
@@ -490,7 +509,7 @@ impl Type {
                 Type::Object => object::ObjectDeserializer::read(self, reader, rows, state).await?,
                 #[cfg(feature = "extended-types")]
                 Type::Nested(fields) => {
-                    let tuple_type = Type::Tuple(
+                    let tuple_type = Type::tuple_anon(
                         fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
                     );
                     tuple_type.deserialize_column(reader, rows, state).await?
@@ -500,7 +519,7 @@ impl Type {
                     if let Some(inner) = types.first() {
                         inner.deserialize_column(reader, rows, state).await?
                     } else {
-                        return Err(Error::DeserializeError(
+                        return Err(Error::Deserialize(
                             "SimpleAggregateFunction has no inner type".to_string(),
                         ));
                     }
@@ -510,7 +529,7 @@ impl Type {
                 | Type::Dynamic { .. }
                 | Type::QBit { .. }
                 | Type::AggregateFunction { .. } => {
-                    return Err(Error::DeserializeError(format!(
+                    return Err(Error::Deserialize(format!(
                         "native value deserialization for type '{self}' is not implemented"
                     )));
                 }
@@ -564,7 +583,7 @@ impl Type {
                 }
                 Type::Nothing => {
                     if values.iter().any(|value| !matches!(value, Value::Null)) {
-                        return Err(Error::SerializeError(
+                        return Err(Error::Serialize(
                             "Nothing type only supports NULL values".to_string(),
                         ));
                     }
@@ -600,7 +619,7 @@ impl Type {
                 }
                 #[cfg(feature = "extended-types")]
                 Type::Nested(fields) => {
-                    let tuple_type = Type::Tuple(
+                    let tuple_type = Type::tuple_anon(
                         fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
                     );
                     tuple_type.serialize_column(values, writer, state).await?;
@@ -610,7 +629,7 @@ impl Type {
                     if let Some(inner) = types.first() {
                         inner.serialize_column(values, writer, state).await?;
                     } else {
-                        return Err(Error::SerializeError(
+                        return Err(Error::Serialize(
                             "SimpleAggregateFunction has no inner type".to_string(),
                         ));
                     }
@@ -703,7 +722,7 @@ impl Type {
             Type::Object => object::ObjectSerializer::write_sync(self, values, writer, state)?,
             #[cfg(feature = "extended-types")]
             Type::Nested(fields) => {
-                let tuple_type = Type::Tuple(
+                let tuple_type = Type::tuple_anon(
                     fields.iter().map(|(_, t)| Type::Array(Box::new(t.clone()))).collect(),
                 );
                 tuple_type.serialize_column_sync(values, writer, state)?;
@@ -713,7 +732,7 @@ impl Type {
                 if let Some(inner) = types.first() {
                     inner.serialize_column_sync(values, writer, state)?;
                 } else {
-                    return Err(Error::SerializeError(
+                    return Err(Error::Serialize(
                         "SimpleAggregateFunction has no inner type".to_string(),
                     ));
                 }
@@ -743,7 +762,7 @@ impl Type {
     pub(crate) fn validate_value(&self, value: &Value) -> Result<()> {
         self.validate()?;
         if !self.inner_validate_value(value) {
-            return Err(Error::TypeParseError(format!(
+            return Err(Error::TypeParse(format!(
                 "could not assign value '{value:?}' to type '{self:?}'"
             )));
         }
@@ -755,35 +774,35 @@ impl Type {
         match self {
             Type::Decimal32(scale) => {
                 if *scale == 0 || *scale > 9 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "scale out of bounds for Decimal32({scale}), range (1..=9)"
                     )));
                 }
             }
             Type::Decimal128(scale) => {
                 if *scale == 0 || *scale > 38 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "scale out of bounds for Decimal128({scale}), range (1..=38)"
                     )));
                 }
             }
             Type::Decimal256(scale) => {
                 if *scale == 0 || *scale > 76 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "scale out of bounds for Decimal256({scale}), range (1..=76)"
                     )));
                 }
             }
             Type::Decimal64(precision) => {
                 if *precision == 0 || *precision > 18 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "precision out of bounds for Decimal64({precision}), range (1..=18)"
                     )));
                 }
             }
             Type::DateTime64(precision, _) => {
                 if *precision > 9 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "precision out of bounds for DateTime64({precision}), range (0..=9)"
                     )));
                 }
@@ -791,7 +810,7 @@ impl Type {
             #[cfg(feature = "extended-types")]
             Type::Time64(precision) => {
                 if *precision > 9 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "precision out of bounds for Time64({precision}) must be in range (0..=9)"
                     )));
                 }
@@ -799,12 +818,12 @@ impl Type {
             #[cfg(feature = "extended-types")]
             Type::QBit { element_type, dimension } => {
                 if *dimension == 0 {
-                    return Err(Error::TypeParseError("QBit dims must be greater than 0".into()));
+                    return Err(Error::TypeParse("QBit dims must be greater than 0".into()));
                 }
                 match element_type.strip_null() {
                     Type::BFloat16 | Type::Float32 | Type::Float64 => {}
                     other => {
-                        return Err(Error::TypeParseError(format!(
+                        return Err(Error::TypeParse(format!(
                             "QBit element type must be BFloat16, Float32, or Float64, got \
                              '{other}'"
                         )));
@@ -835,7 +854,7 @@ impl Type {
                 | Type::UInt128
                 | Type::UInt256 => inner.validate()?,
                 _ => {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "illegal type '{inner:?}' in LowCardinality, not allowed"
                     )));
                 }
@@ -844,7 +863,7 @@ impl Type {
                 inner.validate()?;
             }
             Type::Tuple(inner) => {
-                for inner in inner {
+                for (_, inner) in inner {
                     inner.validate()?;
                 }
             }
@@ -854,7 +873,7 @@ impl Type {
                 | Type::LowCardinality(_)
                 | Type::Tuple(_)
                 | Type::Nullable(_) => {
-                    Err(Error::TypeParseError(format!("nullable composite type '{inner:?}'")))?;
+                    Err(Error::TypeParse(format!("nullable composite type '{inner:?}'")))?;
                 }
                 _ => inner.validate()?,
             },
@@ -883,7 +902,7 @@ impl Type {
                         | Type::Enum8(_)
                         | Type::Enum16(_)
                 ) {
-                    return Err(Error::TypeParseError(
+                    return Err(Error::TypeParse(
                         "key in map must be String, Integer, LowCardinality, FixedString, UUID, \
                          Date, DateTime, Date32, Enum"
                             .to_string(),
@@ -895,7 +914,7 @@ impl Type {
             #[cfg(feature = "extended-types")]
             Type::Variant(types) => {
                 if types.is_empty() {
-                    return Err(Error::TypeParseError(
+                    return Err(Error::TypeParse(
                         "Variant requires at least one inner type".to_string(),
                     ));
                 }
@@ -906,7 +925,7 @@ impl Type {
             #[cfg(feature = "extended-types")]
             Type::Dynamic { max_types } => {
                 if *max_types > 254 {
-                    return Err(Error::TypeParseError(format!(
+                    return Err(Error::TypeParse(format!(
                         "Dynamic max_types out of bounds ({max_types}), must be in range (0..=254)"
                     )));
                 }
@@ -914,9 +933,7 @@ impl Type {
             #[cfg(feature = "extended-types")]
             Type::Nested(fields) => {
                 if fields.is_empty() {
-                    return Err(Error::TypeParseError(
-                        "Nested requires at least one field".to_string(),
-                    ));
+                    return Err(Error::TypeParse("Nested requires at least one field".to_string()));
                 }
                 for (_, type_) in fields {
                     type_.validate()?;
@@ -931,7 +948,7 @@ impl Type {
             #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 if types.is_empty() {
-                    return Err(Error::TypeParseError(
+                    return Err(Error::TypeParse(
                         "SimpleAggregateFunction requires at least one inner type".to_string(),
                     ));
                 }
@@ -1005,7 +1022,7 @@ impl Type {
                     && inner_types
                         .iter()
                         .zip(values.iter())
-                        .all(|(type_, value)| type_.inner_validate_value(value))
+                        .all(|((_, type_), value)| type_.inner_validate_value(value))
             }
             (Type::Nullable(inner), value) => {
                 value == &Value::Null || inner.inner_validate_value(value)
@@ -1094,7 +1111,7 @@ impl Type {
                 (4 + inner_data) * 8 // 4 bytes for offsets estimate 8 items per array
             }
             Type::Nullable(inner) => inner.estimate_capacity(),
-            Type::Tuple(types) => types.iter().map(Type::estimate_capacity).sum(),
+            Type::Tuple(types) => types.iter().map(|(_, type_)| type_.estimate_capacity()).sum(),
             Type::Map(key, value) => {
                 let key_data = key.estimate_capacity();
                 let value_data = value.estimate_capacity();
@@ -1177,7 +1194,7 @@ impl Type {
                         Type::Float32 => writer.write_f32_le(0.0).await?,
                         Type::Float64 => writer.write_f64_le(0.0).await?,
                         other => {
-                            return Err(Error::SerializeError(format!(
+                            return Err(Error::Serialize(format!(
                                 "unsupported QBit element type for default value: {other}"
                             )));
                         }
@@ -1188,7 +1205,7 @@ impl Type {
             // Recursive
             Type::LowCardinality(inner) => Box::pin(inner.write_default(writer)).await?,
             Type::Tuple(inner) => {
-                for t in inner {
+                for (_, t) in inner {
                     Box::pin(t.write_default(writer)).await?;
                 }
             }
@@ -1197,7 +1214,7 @@ impl Type {
                 if let Some(inner) = types.first() {
                     Box::pin(inner.write_default(writer)).await?;
                 } else {
-                    return Err(Error::SerializeError(
+                    return Err(Error::Serialize(
                         "SimpleAggregateFunction has no inner type".to_string(),
                     ));
                 }
@@ -1210,21 +1227,21 @@ impl Type {
             }
             #[cfg(feature = "extended-types")]
             Type::Variant(_) => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "default value serialization is not implemented for Variant in native format"
                         .to_string(),
                 ));
             }
             #[cfg(feature = "extended-types")]
             Type::Dynamic { .. } => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "default value serialization is not implemented for Dynamic in native format"
                         .to_string(),
                 ));
             }
             #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "default value serialization is not implemented for AggregateFunction in \
                      native format"
                         .to_string(),
@@ -1280,7 +1297,7 @@ impl Type {
                         Type::Float32 => writer.put_f32_le(0.0),
                         Type::Float64 => writer.put_f64_le(0.0),
                         other => {
-                            return Err(Error::SerializeError(format!(
+                            return Err(Error::Serialize(format!(
                                 "unsupported QBit element type for default value: {other}"
                             )));
                         }
@@ -1292,7 +1309,7 @@ impl Type {
             // Recursive
             Type::LowCardinality(inner) => inner.put_default(writer)?,
             Type::Tuple(inner) => {
-                for t in inner {
+                for (_, t) in inner {
                     t.put_default(writer)?;
                 }
             }
@@ -1301,7 +1318,7 @@ impl Type {
                 if let Some(inner) = types.first() {
                     inner.put_default(writer)?;
                 } else {
-                    return Err(Error::SerializeError(
+                    return Err(Error::Serialize(
                         "SimpleAggregateFunction has no inner type".to_string(),
                     ));
                 }
@@ -1314,21 +1331,21 @@ impl Type {
             }
             #[cfg(feature = "extended-types")]
             Type::Variant(_) => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "default value serialization is not implemented for Variant in native format"
                         .to_string(),
                 ));
             }
             #[cfg(feature = "extended-types")]
             Type::Dynamic { .. } => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "default value serialization is not implemented for Dynamic in native format"
                         .to_string(),
                 ));
             }
             #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "default value serialization is not implemented for AggregateFunction in \
                      native format"
                         .to_string(),
