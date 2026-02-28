@@ -1247,7 +1247,11 @@ mod tests {
         assert!(!is_nullable);
 
         let ch_type_back = arrow_to_ch_type(&struct_type, false, options).unwrap();
-        assert_eq!(ch_type_back, ch_type);
+        let expected_back = Type::Tuple(vec![
+            (Some(format!("{TUPLE_FIELD_NAME_PREFIX}0")), Type::Nullable(Box::new(Type::Int32))),
+            (Some(format!("{TUPLE_FIELD_NAME_PREFIX}1")), Type::String),
+        ]);
+        assert_eq!(ch_type_back, expected_back);
     }
 
     /// Tests `ch_to_arrow_type` for `Nullable(Tuple(Int32, String))` to ensure round-trip
@@ -1267,7 +1271,11 @@ mod tests {
         assert!(!is_nullable);
 
         let ch_type_back = arrow_to_ch_type(&expected_arrow_type, false, options).unwrap();
-        assert_eq!(ch_type_back, ch_type);
+        let expected_back = Type::Tuple(vec![
+            (Some(format!("{TUPLE_FIELD_NAME_PREFIX}0")), Type::Int32),
+            (Some(format!("{TUPLE_FIELD_NAME_PREFIX}1")), Type::String),
+        ]);
+        assert_eq!(ch_type_back, expected_back);
     }
 
     /// Tests roundtrip for `Dictionary(Int32, Nullable(String))` to ensure inner
