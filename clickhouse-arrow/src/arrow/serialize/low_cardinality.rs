@@ -1088,4 +1088,144 @@ mod tests {
             if msg.contains("Unsupported data type")
         ));
     }
+
+    // ---
+    // SYNC TESTS
+    // ---
+
+    fn test_type_serializer_sync(
+        expected: Vec<u8>,
+        type_: &Type,
+        data_type: &DataType,
+        array: &ArrayRef,
+    ) {
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default()
+            .with_arrow_options(ArrowOptions::default().with_strings_as_strings(true));
+        serialize(type_, &mut writer, array, data_type, &mut state).unwrap();
+        assert_eq!(writer, expected);
+    }
+
+    #[test]
+    fn test_serialize_low_cardinality_dictionary_sync() {
+        let array = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(vec![0, 1, 0]),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            )
+            .unwrap(),
+        ) as ArrayRef;
+        let expected = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            1, b'a', // Dict: "a" (var_uint length)
+            1, b'b', // Dict: "b" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            0, 1, 0, // Keys: [0, 1, 0]
+        ];
+        test_type_serializer_sync(
+            expected,
+            &Type::LowCardinality(Box::new(Type::String)),
+            array.data_type(),
+            &array,
+        );
+    }
+
+    #[test]
+    fn test_serialize_low_cardinality_string_sync() {
+        let array = Arc::new(StringArray::from(vec!["a", "b", "a"])) as ArrayRef;
+        let expected = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            1, b'a', // Dict: "a" (var_uint length)
+            1, b'b', // Dict: "b" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            0, 1, 0, // Keys: [0, 1, 0]
+        ];
+        test_type_serializer_sync(
+            expected,
+            &Type::LowCardinality(Box::new(Type::String)),
+            &DataType::Utf8,
+            &array,
+        );
+    }
+
+    #[test]
+    fn test_serialize_low_cardinality_nullable_variations_sync() {
+        let expected = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            0, // Dict: "" (var_uint length)
+            1, b'a', // Dict: "a" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            1, 0, 1, // Keys: [1, 0, 1]
+        ];
+        let cases = [
+            (
+                &DataType::Utf8,
+                Arc::new(StringArray::from(vec![Some("a"), None, Some("a")])) as ArrayRef,
+            ),
+            (
+                &DataType::Utf8View,
+                Arc::new(StringViewArray::from(vec![Some("a"), None, Some("a")])) as ArrayRef,
+            ),
+            (
+                &DataType::LargeUtf8,
+                Arc::new(LargeStringArray::from(vec![Some("a"), None, Some("a")])) as ArrayRef,
+            ),
+            (
+                &DataType::Binary,
+                Arc::new(BinaryArray::from_opt_vec(vec![Some(b"a"), None, Some(b"a")])) as ArrayRef,
+            ),
+            (
+                &DataType::BinaryView,
+                Arc::new(BinaryViewArray::from(vec![Some(b"a" as &[u8]), None, Some(b"a")]))
+                    as ArrayRef,
+            ),
+            (
+                &DataType::LargeBinary,
+                Arc::new(LargeBinaryArray::from_opt_vec(vec![Some(b"a"), None, Some(b"a")]))
+                    as ArrayRef,
+            ),
+        ];
+
+        for (dt, array) in &cases {
+            test_type_serializer_sync(
+                expected.clone(),
+                &Type::LowCardinality(Box::new(Type::String)),
+                dt,
+                array,
+            );
+        }
+    }
+
+    #[test]
+    fn test_serialize_low_cardinality_invalid_type_sync() {
+        let array = Arc::new(Int8Array::from(vec![1, 2, 1])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(
+            &Type::LowCardinality(Box::new(Type::String)),
+            &mut writer,
+            &array,
+            &DataType::Int8,
+            &mut state,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg)) if msg.contains("`LowCardinality` must be either String or Dictionary")
+        ));
+    }
+
+    #[test]
+    fn test_serialize_low_cardinality_wrong_type_sync() {
+        let array = Arc::new(Int8Array::from(vec![1, 2, 1])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(&Type::String, &mut writer, &array, &DataType::Int8, &mut state);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg)) if msg.contains("Unsupported data type")
+        ));
+    }
 }

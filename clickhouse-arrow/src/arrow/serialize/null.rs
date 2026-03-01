@@ -154,4 +154,36 @@ mod tests {
         .unwrap();
         assert!(writer.is_empty());
     }
+
+    #[test]
+    fn test_write_nullability_sync_with_nulls() {
+        let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        serialize_nulls(&Type::Int32, &mut writer, &array);
+        assert_eq!(writer, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn test_write_nullability_sync_without_nulls() {
+        let array = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        serialize_nulls(&Type::Int32, &mut writer, &array);
+        assert_eq!(writer, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn test_write_nullability_sync_array_and_map_are_skipped() {
+        let int_array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        serialize_nulls(&Type::Array(Box::new(Type::Int32)), &mut writer, &int_array);
+        assert!(writer.is_empty());
+
+        let mut writer = MockWriter::new();
+        serialize_nulls(
+            &Type::Map(Box::new(Type::Int32), Box::new(Type::String)),
+            &mut writer,
+            &int_array,
+        );
+        assert!(writer.is_empty());
+    }
 }

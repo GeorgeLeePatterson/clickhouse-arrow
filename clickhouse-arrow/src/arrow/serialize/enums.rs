@@ -720,4 +720,94 @@ mod tests {
         .await;
         assert!(matches!(result, Err(Error::ArrowSerialize(_))));
     }
+
+    // ---
+    // SYNC TESTS
+    // ---
+
+    #[test]
+    fn test_serialize_enum8_dictionary_sync() {
+        let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+        let keys = Int8Array::from(vec![0, 1, 0]);
+        let values = StringArray::from(vec!["a", "b"]);
+        let array = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap())
+            as ArrayRef;
+        let mut writer = MockWriter::new();
+        serialize(&Type::Enum8(pairs), &mut writer, &array).unwrap();
+        assert_eq!(writer, vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn test_serialize_enum16_dictionary_sync() {
+        let pairs = vec![("x".to_string(), 10_i16), ("y".to_string(), 20_i16)];
+        let keys = Int16Array::from(vec![0, 1, 0]);
+        let values = StringArray::from(vec!["x", "y"]);
+        let array = Arc::new(DictionaryArray::<Int16Type>::try_new(keys, Arc::new(values)).unwrap())
+            as ArrayRef;
+        let mut writer = MockWriter::new();
+        serialize(&Type::Enum16(pairs), &mut writer, &array).unwrap();
+        assert_eq!(writer, vec![10, 0, 20, 0, 10, 0]);
+    }
+
+    #[test]
+    fn test_serialize_enum8_primitive_sync() {
+        let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+        let array = Arc::new(Int8Array::from(vec![1, 2, 1])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        serialize(&Type::Enum8(pairs), &mut writer, &array).unwrap();
+        assert_eq!(writer, vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn test_serialize_enum8_string_like_values_sync() {
+        let cases = vec![
+            Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])) as ArrayRef,
+            Arc::new(StringViewArray::from(vec![Some("a"), Some("b"), None])) as ArrayRef,
+            Arc::new(LargeStringArray::from(vec![Some("a"), Some("b"), None])) as ArrayRef,
+            Arc::new(BinaryArray::from_opt_vec(vec![Some(b"a"), Some(b"b"), None])) as ArrayRef,
+            Arc::new(BinaryViewArray::from(vec![Some(b"a" as &[u8]), Some(b"b"), None]))
+                as ArrayRef,
+            Arc::new(LargeBinaryArray::from_opt_vec(vec![Some(b"a"), Some(b"b"), None]))
+                as ArrayRef,
+        ];
+        let enum_values = vec![("a".to_string(), 1), ("b".to_string(), 2)];
+
+        for array in cases {
+            let mut writer = MockWriter::new();
+            serialize(&Type::Enum8(enum_values.clone()), &mut writer, &array).unwrap();
+            assert_eq!(writer, vec![1, 2, 0]);
+        }
+    }
+
+    #[test]
+    fn test_serialize_enum8_binary_invalid_utf8_sync() {
+        let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+        let array =
+            Arc::new(BinaryArray::from_opt_vec(vec![Some(&[0xFF_u8][..]), None])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Enum8(pairs), &mut writer, &array);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_enum8_dictionary_wrong_order_sync() {
+        let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
+        let keys = Int8Array::from(vec![0, 1, 0]);
+        let values = StringArray::from(vec!["b", "a"]); // Wrong dictionary order
+        let array = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap())
+            as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Enum8(pairs), &mut writer, &array);
+        assert!(matches!(
+            result, Err(Error::ArrowSerialize(msg)) if msg.contains("Enum value mismatch")
+        ));
+    }
+
+    #[test]
+    fn test_serialize_enum_wrong_type_sync() {
+        let mut writer = MockWriter::new();
+        let array = Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef;
+        let result = serialize(&Type::String, &mut writer, &array);
+        assert!(matches!(result, Err(Error::ArrowSerialize(_))));
+    }
 }

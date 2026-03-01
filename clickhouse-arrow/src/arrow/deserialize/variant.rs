@@ -270,6 +270,14 @@ mod tests {
 
     fn variant_type() -> Type { Type::Variant(vec![Type::Int32, Type::String]) }
 
+    fn ctx<'a>(row_buffer: &'a mut Vec<u8>, discriminator_mode: u8) -> ArrowFieldCtx<'a> {
+        ArrowFieldCtx {
+            row_buffer,
+            dynamic_prefix: None,
+            variant_prefix: Some(VariantPrefixState { discriminator_mode }),
+        }
+    }
+
     #[tokio::test]
     async fn test_deserialize_variant_basic_mode() {
         let type_hint = variant_type();
@@ -349,5 +357,333 @@ mod tests {
         let union = array.as_any().downcast_ref::<UnionArray>().unwrap();
         assert_eq!((0..4).map(|i| union.type_id(i)).collect::<Vec<_>>(), vec![0, 1, 2, 0]);
         assert_eq!((0..4).map(|i| union.value_offset(i)).collect::<Vec<_>>(), vec![0, 0, 0, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_non_variant_type() {
+        let type_hint = Type::Int32;
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&variant_type(), &data_type).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("non-Variant"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_non_dense_union() {
+        let type_hint = variant_type();
+        let data_type = DataType::UInt8;
+        let mut builder = TypedBuilder::try_new(&Type::UInt8, &DataType::UInt8).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("expects Arrow DenseUnion"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_empty_variants() {
+        let type_hint = Type::Variant(vec![]);
+        let data_type = DataType::Union(
+            UnionFields::new([0_i8], vec![Field::new("Nothing", DataType::Null, false)]),
+            UnionMode::Dense,
+        );
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("requires at least one nested type"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_union_child_count_mismatch() {
+        let type_hint = variant_type();
+        let data_type = DataType::Union(
+            UnionFields::new([0_i8, 1_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+            ]),
+            UnionMode::Dense,
+        );
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("child count mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_outer_null_mask_length_mismatch() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![255_u8]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            1,
+            &[0_u8, 1_u8],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("outer null mask length mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_non_union_builder() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&Type::UInt8, &DataType::UInt8).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Unexpected builder"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_invalid_discriminator_mode() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 9),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported Variant discriminator mode"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_compact_granule_zero_rows() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![0_u8]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            1,
+            &[],
+            &mut ctx(&mut row_buffer, 1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("granule 0 rows"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_compact_invalid_granule_format() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![1_u8, 2_u8]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            1,
+            &[],
+            &mut ctx(&mut row_buffer, 1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported Variant compact granule format"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_out_of_bounds_discriminator() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut reader = Cursor::new(vec![3_u8]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            1,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("out of bounds"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_trailing_compact_granule_rows() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let mut input = vec![2_u8, 1_u8, 0_u8];
+        input.extend_from_slice(&7_i32.to_le_bytes());
+        let mut reader = Cursor::new(input);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            1,
+            &[],
+            &mut ctx(&mut row_buffer, 1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("trailing row(s)"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_forced_outer_null_filters_child_values() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let mut input = vec![0_u8, 1_u8];
+        input.extend_from_slice(&10_i32.to_le_bytes());
+        input.extend_from_slice(&[1_u8, b'z']);
+        let mut reader = Cursor::new(input);
+        let mut row_buffer = Vec::new();
+
+        let array = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            2,
+            &[1_u8, 0_u8],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap();
+
+        let union = array.as_any().downcast_ref::<UnionArray>().unwrap();
+        assert_eq!(union.type_id(0), 2);
+        assert_eq!(union.type_id(1), 1);
+
+        let ints = union.child(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(ints.len(), 0);
+        let strings = union.child(1).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(strings, &StringArray::from(vec!["z"]));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_variant_rejects_null_builder_schema_mismatch() {
+        let type_hint = variant_type();
+        let data_type = variant_data_type();
+        let builder_data_type = DataType::Union(
+            UnionFields::new([0_i8, 1_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+            ]),
+            UnionMode::Dense,
+        );
+        let mut builder = TypedBuilder::try_new(&type_hint, &builder_data_type).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+
+        let error = deserialize(
+            &type_hint,
+            &mut builder,
+            &mut reader,
+            &data_type,
+            0,
+            &[],
+            &mut ctx(&mut row_buffer, 0),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("builder/schema child count mismatch"));
     }
 }

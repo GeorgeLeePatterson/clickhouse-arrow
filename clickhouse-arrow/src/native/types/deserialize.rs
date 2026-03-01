@@ -1405,4 +1405,116 @@ mod tests {
             ])
         );
     }
+
+    #[tokio::test]
+    async fn test_deserialize_custom_serialization_prefix_tuple_default_stack() {
+        let type_ = Type::Tuple(vec![(None, Type::UInt8), (None, Type::String)]);
+        let mut reader = std::io::Cursor::new(vec![
+            CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT,
+            CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT,
+            CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT,
+        ]);
+        let mut state = DeserializerState::<()>::default();
+
+        type_.deserialize_custom_serialization_prefix(&mut reader, &mut state).await.unwrap();
+
+        let custom = state.take_custom_serialization().expect("custom serialization state missing");
+        assert_eq!(custom.entries.len(), 3);
+        assert!(
+            custom
+                .entries
+                .iter()
+                .all(|entry| entry.stack_type == CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT)
+        );
+        assert!(custom.entries.iter().all(|entry| entry.kinds.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_custom_serialization_prefix_combination_stack() {
+        let mut reader = std::io::Cursor::new(vec![
+            CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION,
+            2,
+            CUSTOM_SERIALIZATION_KIND_DEFAULT,
+            CUSTOM_SERIALIZATION_KIND_REPLICATED,
+        ]);
+        let mut state = DeserializerState::<()>::default();
+
+        Type::UInt8
+            .deserialize_custom_serialization_prefix(&mut reader, &mut state)
+            .await
+            .unwrap();
+
+        let custom = state.take_custom_serialization().expect("custom serialization state missing");
+        assert_eq!(custom.entries.len(), 1);
+        assert_eq!(custom.entries[0].stack_type, CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION);
+        assert_eq!(custom.entries[0].kinds, vec![
+            CUSTOM_SERIALIZATION_KIND_DEFAULT,
+            CUSTOM_SERIALIZATION_KIND_REPLICATED
+        ]);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_custom_serialization_prefix_invalid_stack_type() {
+        let mut reader = std::io::Cursor::new(vec![255]);
+        let mut state = DeserializerState::<()>::default();
+        let error =
+            Type::UInt8.deserialize_custom_serialization_prefix(&mut reader, &mut state).await;
+        assert!(error.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_custom_serialization_prefix_invalid_combination_kind() {
+        let mut reader =
+            std::io::Cursor::new(vec![CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION, 1, 255]);
+        let mut state = DeserializerState::<()>::default();
+        let error =
+            Type::UInt8.deserialize_custom_serialization_prefix(&mut reader, &mut state).await;
+        assert!(error.is_err());
+    }
+
+    #[cfg(feature = "extended-types")]
+    #[test]
+    fn test_aggregate_parameter_from_str_literals() {
+        assert_eq!(AggregateParameter::from_str("NULL").unwrap(), AggregateParameter::Null);
+        assert_eq!(AggregateParameter::from_str("true").unwrap(), AggregateParameter::Bool(true));
+        assert_eq!(AggregateParameter::from_str("false").unwrap(), AggregateParameter::Bool(false));
+        assert_eq!(
+            AggregateParameter::from_str("inf").unwrap(),
+            AggregateParameter::Float64(f64::INFINITY.to_bits())
+        );
+        assert_eq!(
+            AggregateParameter::from_str("+inf").unwrap(),
+            AggregateParameter::Float64(f64::INFINITY.to_bits())
+        );
+        assert_eq!(
+            AggregateParameter::from_str("-inf").unwrap(),
+            AggregateParameter::Float64(f64::NEG_INFINITY.to_bits())
+        );
+        assert_eq!(AggregateParameter::from_str("42").unwrap(), AggregateParameter::UInt64(42));
+        assert_eq!(AggregateParameter::from_str("-42").unwrap(), AggregateParameter::Int64(-42));
+        assert_eq!(
+            AggregateParameter::from_str("3.5").unwrap(),
+            AggregateParameter::Float64(3.5_f64.to_bits())
+        );
+        assert_eq!(
+            AggregateParameter::from_str("'hello\\nworld'").unwrap(),
+            AggregateParameter::String("hello\nworld".to_string())
+        );
+        assert_eq!(
+            AggregateParameter::from_str("'it''s fine'").unwrap(),
+            AggregateParameter::String("it's fine".to_string())
+        );
+        assert_eq!(
+            AggregateParameter::from_str("'quote: \\' and slash: \\\\'").unwrap(),
+            AggregateParameter::String("quote: ' and slash: \\".to_string())
+        );
+    }
+
+    #[cfg(feature = "extended-types")]
+    #[test]
+    fn test_aggregate_parameter_from_str_invalid_literals() {
+        assert!(AggregateParameter::from_str("'unterminated").is_err());
+        assert!(AggregateParameter::from_str("'bad\\'").is_err());
+        assert!(AggregateParameter::from_str("abc def").is_err());
+    }
 }

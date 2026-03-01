@@ -99,3 +99,124 @@ impl Serializer for DynamicSerializer {
         Err(Error::serialize("Dynamic native value serialization is not implemented"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+    use crate::formats::DynamicPrefixState;
+
+    fn dynamic_prefix() -> DynamicPrefixState {
+        DynamicPrefixState {
+            serialization_version: 3,
+            flattened_types:       vec![Type::UInt8, Type::String],
+        }
+    }
+
+    #[tokio::test]
+    async fn write_prefix_async_is_noop_for_non_dynamic_type() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        DynamicSerializer::write_prefix(&Type::UInt8, &mut writer, &mut state).await.unwrap();
+        assert!(writer.into_inner().is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_prefix_async_requires_dynamic_prefix_metadata() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        let error = DynamicSerializer::write_prefix(
+            &Type::Dynamic { max_types: 8 },
+            &mut writer,
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("prefix metadata"));
+    }
+
+    #[tokio::test]
+    async fn write_prefix_async_writes_header_and_restores_state() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix()));
+
+        DynamicSerializer::write_prefix(&Type::Dynamic { max_types: 8 }, &mut writer, &mut state)
+            .await
+            .unwrap();
+
+        let out = writer.into_inner();
+        assert!(!out.is_empty());
+        assert_eq!(&out[..8], &3_u64.to_le_bytes());
+        assert_eq!(out[8], 2_u8);
+        assert!(state.take_dynamic_prefix().is_some());
+    }
+
+    #[test]
+    fn write_prefix_sync_is_noop_for_non_dynamic_type() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        DynamicSerializer::write_prefix_sync(&Type::UInt8, &mut writer, &mut state);
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Dynamic prefix metadata is required for sync serialization")]
+    fn write_prefix_sync_requires_dynamic_prefix_metadata() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        DynamicSerializer::write_prefix_sync(
+            &Type::Dynamic { max_types: 8 },
+            &mut writer,
+            &mut state,
+        );
+    }
+
+    #[test]
+    fn write_prefix_sync_writes_header_and_restores_state() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix()));
+
+        DynamicSerializer::write_prefix_sync(
+            &Type::Dynamic { max_types: 8 },
+            &mut writer,
+            &mut state,
+        );
+
+        assert!(!writer.is_empty());
+        assert_eq!(&writer[..8], &3_u64.to_le_bytes());
+        assert_eq!(writer[8], 2_u8);
+        assert!(state.take_dynamic_prefix().is_some());
+    }
+
+    #[tokio::test]
+    async fn write_async_returns_unimplemented_error() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        let error = DynamicSerializer::write(
+            &Type::Dynamic { max_types: 8 },
+            vec![],
+            &mut writer,
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+
+    #[test]
+    fn write_sync_returns_unimplemented_error() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        let error = DynamicSerializer::write_sync(
+            &Type::Dynamic { max_types: 8 },
+            vec![],
+            &mut writer,
+            &mut state,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+}

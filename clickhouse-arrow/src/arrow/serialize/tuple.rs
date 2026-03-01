@@ -306,4 +306,60 @@ mod tests {
             if msg.contains("StructArray has 1 fields, but Tuple expects 2")
         ));
     }
+
+    #[test]
+    fn test_serialize_tuple_int32_string_sync() {
+        let data = vec![
+            (
+                Arc::new(Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"), DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}2"), DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+            ),
+        ];
+        let struct_array = Arc::new(StructArray::from(data)) as ArrayRef;
+        let type_hint = wrap_tuple(vec![Type::Int32, Type::String]);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+
+        serialize(&type_hint, &mut writer, &struct_array, &mut state).unwrap();
+        let expected = vec![1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 1, 97, 1, 98, 1, 99];
+        assert_eq!(writer, expected);
+    }
+
+    #[test]
+    fn test_serialize_tuple_invalid_array_type_sync() {
+        let column = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+        let type_hint = wrap_tuple(vec![Type::Int32]);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+
+        let result = serialize(&type_hint, &mut writer, &column, &mut state);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Expected StructArray for Tuple type")
+        ));
+    }
+
+    #[test]
+    fn test_serialize_tuple_mismatched_field_count_sync() {
+        let fields = vec![(
+            Arc::new(Field::new(format!("{TUPLE_FIELD_NAME_PREFIX}1"), DataType::Int32, false)),
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+        )];
+        let struct_array = Arc::new(StructArray::from(fields)) as ArrayRef;
+        let type_hint = wrap_tuple(vec![Type::Int32, Type::String]);
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+
+        let result = serialize(&type_hint, &mut writer, &struct_array, &mut state);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("StructArray has 1 fields, but Tuple expects 2")
+        ));
+    }
 }

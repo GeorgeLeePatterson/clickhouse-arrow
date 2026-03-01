@@ -52,3 +52,63 @@ impl Serializer for VariantSerializer {
         Err(Error::serialize("Variant native value serialization is not implemented"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    fn variant_type() -> Type { Type::Variant(vec![Type::UInt8, Type::String]) }
+
+    #[tokio::test]
+    async fn write_prefix_async_is_noop_for_non_variant() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        VariantSerializer::write_prefix(&Type::UInt8, &mut writer, &mut state).await.unwrap();
+        assert!(writer.into_inner().is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_prefix_async_writes_version_word() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        VariantSerializer::write_prefix(&variant_type(), &mut writer, &mut state).await.unwrap();
+        assert_eq!(&writer.into_inner()[..8], &0_u64.to_le_bytes());
+    }
+
+    #[test]
+    fn write_prefix_sync_is_noop_for_non_variant() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        VariantSerializer::write_prefix_sync(&Type::UInt8, &mut writer, &mut state);
+        assert!(writer.is_empty());
+    }
+
+    #[test]
+    fn write_prefix_sync_writes_version_word() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        VariantSerializer::write_prefix_sync(&variant_type(), &mut writer, &mut state);
+        assert_eq!(&writer[..8], &0_u64.to_le_bytes());
+    }
+
+    #[tokio::test]
+    async fn write_async_returns_unimplemented_error() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        let error = VariantSerializer::write(&variant_type(), vec![], &mut writer, &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+
+    #[test]
+    fn write_sync_returns_unimplemented_error() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        let error = VariantSerializer::write_sync(&variant_type(), vec![], &mut writer, &mut state)
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+}

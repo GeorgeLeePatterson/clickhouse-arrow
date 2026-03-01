@@ -2002,4 +2002,291 @@ mod tests {
             if msg.contains("Unsupported data type: String")
         ));
     }
+
+    async fn assert_sync_matches_async(type_hint: Type, column: ArrayRef, data_type: DataType) {
+        let mut async_writer = MockWriter::new();
+        serialize_async(&type_hint, &mut async_writer, &column, &data_type).await.unwrap();
+
+        let mut sync_writer = MockWriter::new();
+        serialize(&type_hint, &mut sync_writer, &column, &data_type).unwrap();
+
+        assert_eq!(sync_writer, async_writer);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_core_paths() {
+        assert_sync_matches_async(
+            Type::Int8,
+            Arc::new(Int8Array::from(vec![1, -2, 0])) as ArrayRef,
+            DataType::Int8,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::UInt8,
+            Arc::new(BooleanArray::from(vec![true, false, true])) as ArrayRef,
+            DataType::Boolean,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::UInt8,
+            Arc::new(UInt8Array::from(vec![0, u8::MAX, 42])) as ArrayRef,
+            DataType::UInt8,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Int128,
+            Arc::new(BinaryArray::from_iter(vec![Some(i128::from(-456).to_le_bytes().as_ref())]))
+                as ArrayRef,
+            DataType::Binary,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::UInt128,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![u128::from(123_u32).to_le_bytes().as_ref()].into_iter(),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(16),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Int256,
+            Arc::new(Int64Array::from(vec![-123])) as ArrayRef,
+            DataType::Int64,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::UInt256,
+            Arc::new(UInt64Array::from(vec![123])) as ArrayRef,
+            DataType::UInt64,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Decimal32(0),
+            Arc::new(Decimal32Array::from(vec![1, -2])) as ArrayRef,
+            DataType::Decimal32(9, 0),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Decimal64(0),
+            Arc::new(Decimal64Array::from(vec![1, -2])) as ArrayRef,
+            DataType::Decimal64(18, 0),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Date,
+            Arc::new(Date32Array::from(vec![0, 1])) as ArrayRef,
+            DataType::Date32,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime(Tz::UTC),
+            Arc::new(TimestampSecondArray::from(vec![1, 2])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Second, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(0, Tz::UTC),
+            Arc::new(TimestampSecondArray::from(vec![1000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Second, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(3, Tz::UTC),
+            Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(6, Tz::UTC),
+            Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(9, Tz::UTC),
+            Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Ipv4,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![[192, 168, 1, 1].as_ref(), [10, 0, 0, 1].as_ref()].into_iter(),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(4),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Ipv6,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    vec![
+                        Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1].as_ref()),
+                        Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2].as_ref()),
+                    ]
+                    .into_iter(),
+                    16,
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(16),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Uuid,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![
+                        [
+                            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
+                            0x9a, 0xbc, 0xde, 0xf0,
+                        ]
+                        .as_ref(),
+                    ]
+                    .into_iter(),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(16),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Float32,
+            Arc::new(Float32Array::from(vec![1.5, -2.0, 0.0])) as ArrayRef,
+            DataType::Float32,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Float64,
+            Arc::new(Float64Array::from(vec![1.5, -2.0, 0.0])) as ArrayRef,
+            DataType::Float64,
+        )
+        .await;
+
+        #[cfg(feature = "extended-types")]
+        {
+            assert_sync_matches_async(
+                Type::BFloat16,
+                Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef,
+                DataType::Float32,
+            )
+            .await;
+
+            assert_sync_matches_async(
+                Type::Time,
+                Arc::new(Time32SecondArray::from(vec![1_i32, 2_i32])) as ArrayRef,
+                DataType::Time32(TimeUnit::Second),
+            )
+            .await;
+
+            assert_sync_matches_async(
+                Type::Time64(3),
+                Arc::new(Time32MillisecondArray::from(vec![10_i32, 20_i32])) as ArrayRef,
+                DataType::Time32(TimeUnit::Millisecond),
+            )
+            .await;
+
+            assert_sync_matches_async(
+                Type::Time64(6),
+                Arc::new(Time64MicrosecondArray::from(vec![100_i64, 200_i64])) as ArrayRef,
+                DataType::Time64(TimeUnit::Microsecond),
+            )
+            .await;
+
+            assert_sync_matches_async(
+                Type::Time64(9),
+                Arc::new(Time64NanosecondArray::from(vec![1_000_i64, 2_000_i64])) as ArrayRef,
+                DataType::Time64(TimeUnit::Nanosecond),
+            )
+            .await;
+        }
+    }
+
+    #[test]
+    fn test_serialize_sync_error_paths() {
+        let string_column = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::String, &mut writer, &string_column, &DataType::Utf8);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Unsupported data type: String")
+        ));
+
+        let ts_column = Arc::new(TimestampSecondArray::from(vec![1000])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(
+            &Type::DateTime64(10, Tz::UTC),
+            &mut writer,
+            &ts_column,
+            &DataType::Timestamp(TimeUnit::Second, None),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Unsupported precision for DateTime64: 10")
+        ));
+
+        let bad_uuid = Arc::new(
+            FixedSizeBinaryArray::try_from_iter(vec![[0x12, 0x34].as_ref()].into_iter()).unwrap(),
+        ) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Uuid, &mut writer, &bad_uuid, &DataType::FixedSizeBinary(2));
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("UUID must be 16 bytes")
+        ));
+
+        let bad_date = Arc::new(Date32Array::from(vec![-1])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Date, &mut writer, &bad_date, &DataType::Date32);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Date out of range")
+        ));
+
+        #[cfg(feature = "extended-types")]
+        {
+            let bad_time = Arc::new(Time32SecondArray::from(vec![1_i32])) as ArrayRef;
+            let mut writer = MockWriter::new();
+            let result = serialize(
+                &Type::Time64(10),
+                &mut writer,
+                &bad_time,
+                &DataType::Time32(TimeUnit::Second),
+            );
+            assert!(matches!(
+                result,
+                Err(Error::ArrowSerialize(msg))
+                if msg.contains("Unsupported precision for Time64: 10")
+            ));
+        }
+    }
 }

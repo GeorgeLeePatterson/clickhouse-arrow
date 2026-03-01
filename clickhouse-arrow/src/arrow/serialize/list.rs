@@ -274,6 +274,19 @@ mod tests {
         assert_eq!(*writer, expected);
     }
 
+    pub(crate) fn test_type_serializer_sync(
+        expected: Vec<u8>,
+        type_: &Type,
+        field: &Field,
+        array: &ArrayRef,
+    ) {
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default()
+            .with_arrow_options(ArrowOptions::default().with_strings_as_strings(true));
+        serialize(type_, &mut writer, array, field.data_type(), &mut state).unwrap();
+        assert_eq!(*writer, expected);
+    }
+
     #[tokio::test]
     async fn test_serialize_list_int32() {
         let type_ = wrap_array(Type::Int32);
@@ -516,5 +529,70 @@ mod tests {
             1, 2, 3, 0, 1, 0, // Key indicies
         ];
         test_type_serializer(expected, &type_, &field, &array).await;
+    }
+
+    #[test]
+    fn test_serialize_list_int32_sync() {
+        let type_ = wrap_array(Type::Int32);
+        let inner_field = Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, false));
+        let field = Arc::new(Field::new("list", DataType::List(Arc::clone(&inner_field)), false));
+        let array = Arc::new(ListArray::new(
+            inner_field,
+            OffsetBuffer::new(vec![0, 2, 3, 5].into()),
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef,
+            None,
+        )) as ArrayRef;
+
+        let expected = vec![
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            3, 0, 0, 0, 0, 0, 0, 0, // 3
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            1, 0, 0, 0, // 1
+            2, 0, 0, 0, // 2
+            3, 0, 0, 0, // 3
+            4, 0, 0, 0, // 4
+            5, 0, 0, 0, // 5
+        ];
+        test_type_serializer_sync(expected, &type_, &field, &array);
+    }
+
+    #[test]
+    fn test_serialize_list_nullable_int32_sync() {
+        let type_ = wrap_array(Type::Nullable(Box::new(Type::Int32)));
+        let offsets = OffsetBuffer::new(vec![0, 2, 3, 5].into());
+        let inner_field = Arc::new(Field::new(LIST_ITEM_FIELD_NAME, DataType::Int32, true));
+        let field = Arc::new(Field::new("list", DataType::List(Arc::clone(&inner_field)), false));
+        let array = Arc::new(ListArray::new(
+            inner_field,
+            offsets,
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(3), None, Some(5)])) as ArrayRef,
+            None,
+        )) as ArrayRef;
+        let expected = vec![
+            2, 0, 0, 0, 0, 0, 0, 0, // 2
+            3, 0, 0, 0, 0, 0, 0, 0, // 3
+            5, 0, 0, 0, 0, 0, 0, 0, // 5
+            0, 1, 0, 1, 0, // null mask
+            1, 0, 0, 0, // 1
+            0, 0, 0, 0, // 0 (null)
+            3, 0, 0, 0, // 3
+            0, 0, 0, 0, // 0 (null)
+            5, 0, 0, 0, // 5
+        ];
+        test_type_serializer_sync(expected, &type_, &field, &array);
+    }
+
+    #[test]
+    fn test_serialize_list_invalid_type_sync() {
+        let type_ = wrap_array(Type::Int32);
+        let column = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(&type_, &mut writer, &column, &DataType::Int32, &mut state);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Expected ListArray or FixedSizeListArray")
+        ));
     }
 }

@@ -346,7 +346,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    use arrow::array::{Int32Array, StringArray};
+    use arrow::array::{Int32Array, StringArray, UInt8Array};
     use arrow::datatypes::{Field, UnionFields, UnionMode};
 
     use super::*;
@@ -386,6 +386,134 @@ mod tests {
             serialization_version: 3,
             flattened_types:       vec![Type::Int32, Type::String],
         }
+    }
+
+    fn dynamic_sparse_offsets_column() -> ArrayRef {
+        let DataType::Union(fields, _) = dynamic_data_type() else {
+            unreachable!();
+        };
+
+        Arc::new(
+            UnionArray::try_new(
+                fields,
+                vec![0_i8, 0_i8, 0_i8].into(),
+                Some(vec![0_i32, 2_i32, 1_i32].into()),
+                vec![
+                    Arc::new(Int32Array::from(vec![
+                        Option::<i32>::None,
+                        Some(20_i32),
+                        Some(30_i32),
+                        Some(40_i32),
+                    ])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![Option::<&str>::None])) as ArrayRef,
+                ],
+            )
+            .unwrap(),
+        ) as ArrayRef
+    }
+
+    #[test]
+    fn test_dynamic_type_id_lookup_insert_and_resolve() {
+        let mut lookup = DynamicTypeIdLookup::new();
+        lookup.insert(-1_i8, 3).unwrap();
+        lookup.insert(7_i8, 5).unwrap();
+        assert_eq!(lookup.resolve(-1_i8).unwrap(), 3);
+        assert_eq!(lookup.resolve(7_i8).unwrap(), 5);
+    }
+
+    #[test]
+    fn test_dynamic_type_id_lookup_rejects_duplicate_type_id() {
+        let mut lookup = DynamicTypeIdLookup::new();
+        lookup.insert(1_i8, 0).unwrap();
+        let error = lookup.insert(1_i8, 1).unwrap_err();
+        assert!(error.to_string().contains("duplicate type id"));
+    }
+
+    #[test]
+    fn test_dynamic_type_id_lookup_rejects_field_index_overflow() {
+        let mut lookup = DynamicTypeIdLookup::new();
+        let error = lookup.insert(1_i8, usize::from(u16::MAX) + 1).unwrap_err();
+        assert!(error.to_string().contains("exceeds supported lookup range"));
+    }
+
+    #[test]
+    fn test_dynamic_type_id_lookup_rejects_unknown_type_id() {
+        let lookup = DynamicTypeIdLookup::new();
+        let error = lookup.resolve(4_i8).unwrap_err();
+        assert!(error.to_string().contains("unknown type id"));
+    }
+
+    #[test]
+    fn test_dynamic_index_width_boundaries() {
+        assert_eq!(dynamic_index_width(1), 1);
+        assert_eq!(dynamic_index_width(255), 1);
+        assert_eq!(dynamic_index_width(256), 2);
+        assert_eq!(dynamic_index_width(65_535), 2);
+        assert_eq!(dynamic_index_width(65_536), 4);
+        assert_eq!(dynamic_index_width(usize::MAX), 8);
+    }
+
+    #[test]
+    fn test_parse_dynamic_union_schema_rejects_non_union_type() {
+        let error =
+            parse_dynamic_union_schema(&DataType::Int32, dynamic_prefix_state()).unwrap_err();
+        assert!(error.to_string().contains("expects Arrow Union"));
+    }
+
+    #[tokio::test]
+    async fn test_write_dynamic_index_async_widths() {
+        let mut writer = Cursor::new(Vec::new());
+        write_dynamic_index_async(&mut writer, 1, 1).await.unwrap();
+        write_dynamic_index_async(&mut writer, 2, 2).await.unwrap();
+        write_dynamic_index_async(&mut writer, 4, 3).await.unwrap();
+        write_dynamic_index_async(&mut writer, 8, 4).await.unwrap();
+
+        assert_eq!(writer.into_inner(), vec![
+            1_u8, 2_u8, 0_u8, 3_u8, 0_u8, 0_u8, 0_u8, 4_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8,
+            0_u8,
+        ]);
+    }
+
+    #[test]
+    fn test_write_dynamic_index_sync_widths() {
+        let mut writer = Vec::new();
+        write_dynamic_index_sync(&mut writer, 1, 1).unwrap();
+        write_dynamic_index_sync(&mut writer, 2, 2).unwrap();
+        write_dynamic_index_sync(&mut writer, 4, 3).unwrap();
+        write_dynamic_index_sync(&mut writer, 8, 4).unwrap();
+
+        assert_eq!(writer, vec![
+            1_u8, 2_u8, 0_u8, 3_u8, 0_u8, 0_u8, 0_u8, 4_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8,
+            0_u8,
+        ]);
+    }
+
+    #[tokio::test]
+    async fn test_write_dynamic_index_async_rejects_invalid_width() {
+        let mut writer = Cursor::new(Vec::new());
+        let error = write_dynamic_index_async(&mut writer, 3, 1).await.unwrap_err();
+        assert!(error.to_string().contains("invalid Dynamic discriminator width"));
+    }
+
+    #[test]
+    fn test_write_dynamic_index_sync_rejects_invalid_width() {
+        let mut writer = Vec::new();
+        let error = write_dynamic_index_sync(&mut writer, 3, 1).unwrap_err();
+        assert!(error.to_string().contains("invalid Dynamic discriminator width"));
+    }
+
+    #[test]
+    fn test_parse_dynamic_union_schema_rejects_empty_union() {
+        let empty_union = DataType::Union(
+            UnionFields::new(Vec::<i8>::new(), Vec::<Field>::new()),
+            UnionMode::Dense,
+        );
+        let error = parse_dynamic_union_schema(&empty_union, DynamicPrefixState {
+            serialization_version: 3,
+            flattened_types:       vec![],
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("must contain at least one child field"));
     }
 
     #[tokio::test]
@@ -428,6 +556,30 @@ mod tests {
         ]);
     }
 
+    #[tokio::test]
+    async fn test_serialize_dynamic_async_slices_and_filters_sparse_offsets() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        serialize_async(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_sparse_offsets_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(writer.into_inner(), vec![
+            2_u8, // row 0 => null discriminator (child offset 0 is null)
+            0_u8, // row 1 => Int32 discriminator
+            0_u8, // row 2 => Int32 discriminator
+            20, 0, 0, 0, 30, 0, 0, 0, // filtered Int32 child values
+        ]);
+    }
+
     #[test]
     fn test_serialize_dynamic_with_null_rows_sync() {
         let mut writer = Vec::new();
@@ -449,5 +601,189 @@ mod tests {
             0_u8, // row 2 => Int32
             10, 0, 0, 0, 20, 0, 0, 0,
         ]);
+    }
+
+    #[test]
+    fn test_serialize_dynamic_sync_slices_and_filters_sparse_offsets() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        serialize(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_sparse_offsets_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(writer, vec![
+            2_u8, // row 0 => null discriminator (child offset 0 is null)
+            0_u8, // row 1 => Int32 discriminator
+            0_u8, // row 2 => Int32 discriminator
+            20, 0, 0, 0, 30, 0, 0, 0, // filtered Int32 child values
+        ]);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_dynamic_rejects_non_dynamic_type() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        let error = serialize_async(
+            &Type::Int32,
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_dynamic_rejects_non_union_array() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+        let column = Arc::new(UInt8Array::from(vec![1_u8, 2, 3])) as ArrayRef;
+
+        let error = serialize_async(
+            &dynamic_type(),
+            &mut writer,
+            &column,
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Expected UnionArray"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_dynamic_rejects_prefix_child_count_mismatch() {
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(DynamicPrefixState {
+            serialization_version: 3,
+            flattened_types:       vec![Type::Int32],
+        }));
+
+        let error = serialize_async(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("child count mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_dynamic_rejects_unknown_union_type_id_in_row() {
+        let mismatched_data_type = DataType::Union(
+            UnionFields::new([5_i8, 6_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, true),
+            ]),
+            UnionMode::Dense,
+        );
+        let mut writer = Cursor::new(Vec::new());
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        let error = serialize_async(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &mismatched_data_type,
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown type id"));
+    }
+
+    #[test]
+    fn test_serialize_dynamic_sync_rejects_non_dynamic_type() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+        let error = serialize(
+            &Type::Int32,
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn test_serialize_dynamic_sync_rejects_non_union_array() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+        let column = Arc::new(UInt8Array::from(vec![1_u8, 2, 3])) as ArrayRef;
+        let error =
+            serialize(&dynamic_type(), &mut writer, &column, &dynamic_data_type(), &mut state)
+                .unwrap_err();
+        assert!(error.to_string().contains("Expected UnionArray"));
+    }
+
+    #[test]
+    fn test_serialize_dynamic_sync_rejects_prefix_child_count_mismatch() {
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(DynamicPrefixState {
+            serialization_version: 3,
+            flattened_types:       vec![Type::Int32],
+        }));
+
+        let error = serialize(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &dynamic_data_type(),
+            &mut state,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("child count mismatch"));
+    }
+
+    #[test]
+    fn test_serialize_dynamic_sync_rejects_unknown_union_type_id_in_row() {
+        let mismatched_data_type = DataType::Union(
+            UnionFields::new([5_i8, 6_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, true),
+            ]),
+            UnionMode::Dense,
+        );
+        let mut writer = Vec::new();
+        let mut state = SerializerState::default();
+        drop(state.replace_dynamic_prefix(dynamic_prefix_state()));
+
+        let error = serialize(
+            &dynamic_type(),
+            &mut writer,
+            &dynamic_column(),
+            &mismatched_data_type,
+            &mut state,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown type id"));
     }
 }

@@ -65,3 +65,48 @@ impl std::fmt::Debug for TypedUnionBuilder {
         write!(f, "TypedUnionBuilder(children={})", self.children.len())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::{Field, UnionFields};
+
+    use super::*;
+
+    fn dense_union_type() -> DataType {
+        DataType::Union(
+            UnionFields::new([3_i8, 9_i8], vec![
+                Field::new("a", DataType::Int32, false),
+                Field::new("b", DataType::Utf8, false),
+            ]),
+            UnionMode::Dense,
+        )
+    }
+
+    #[test]
+    fn try_new_rejects_non_dense_union() {
+        let error = TypedUnionBuilder::try_new(&DataType::Int32).unwrap_err();
+        assert!(error.to_string().contains("Unexpected datatype for Dynamic"));
+    }
+
+    #[test]
+    fn data_type_out_of_bounds_errors() {
+        let builder = TypedUnionBuilder::try_new(&dense_union_type()).unwrap();
+        let error = builder.data_type(10).unwrap_err();
+        assert!(error.to_string().contains("index out of bounds"));
+    }
+
+    #[test]
+    fn child_parts_mut_out_of_bounds_errors() {
+        let mut builder = TypedUnionBuilder::try_new(&dense_union_type()).unwrap();
+        let error = builder.child_parts_mut(3, &Type::Int32).unwrap_err();
+        assert!(error.to_string().contains("index out of bounds"));
+    }
+
+    #[test]
+    fn child_parts_mut_initializes_builder_once() {
+        let mut builder = TypedUnionBuilder::try_new(&dense_union_type()).unwrap();
+        let first = builder.child_parts_mut(0, &Type::Int32).unwrap().1 as *const TypedBuilder;
+        let second = builder.child_parts_mut(0, &Type::Int32).unwrap().1 as *const TypedBuilder;
+        assert_eq!(first, second);
+    }
+}

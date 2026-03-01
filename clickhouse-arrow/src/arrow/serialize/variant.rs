@@ -209,8 +209,8 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    use arrow::array::{Int32Array, NullArray, StringArray};
-    use arrow::datatypes::{Field, UnionFields};
+    use arrow::array::{Int32Array, NullArray, StringArray, UInt8Array};
+    use arrow::datatypes::{Field, UnionFields, UnionMode};
 
     use super::*;
     use crate::formats::SerializerState;
@@ -243,6 +243,23 @@ mod tests {
         ) as ArrayRef
     }
 
+    fn variant_array_with_extra_child_values() -> ArrayRef {
+        let DataType::Union(fields, _) = variant_data_type() else { unreachable!() };
+        Arc::new(
+            UnionArray::try_new(
+                fields,
+                vec![0_i8, 2_i8, 0_i8].into(),
+                Some(vec![0_i32, 0_i32, 1_i32].into()),
+                vec![
+                    Arc::new(Int32Array::from(vec![10_i32, 20, 30])) as ArrayRef,
+                    Arc::new(StringArray::from(vec!["a"])) as ArrayRef,
+                    Arc::new(NullArray::new(1)) as ArrayRef,
+                ],
+            )
+            .unwrap(),
+        ) as ArrayRef
+    }
+
     #[tokio::test]
     async fn test_serialize_variant_dense_union_async() {
         let type_hint = Type::Variant(vec![Type::Int32, Type::String]);
@@ -266,5 +283,159 @@ mod tests {
         serialize(&type_hint, &mut writer, &column, &mut SerializerState::default()).unwrap();
 
         assert_eq!(writer, vec![0_u8, 1, 255, 0, 10, 0, 0, 0, 20, 0, 0, 0, 1, b'a',]);
+    }
+
+    #[test]
+    fn test_variant_schema_parse_rejects_non_variant_type() {
+        let error = match VariantSchema::parse(&Type::Int32, &variant_data_type()) {
+            Err(error) => error,
+            Ok(_) => panic!("expected non-Variant parse error"),
+        };
+        assert!(error.to_string().contains("non-Variant"));
+    }
+
+    #[test]
+    fn test_variant_schema_parse_rejects_non_dense_union() {
+        let data_type = DataType::Union(
+            UnionFields::new([0_i8], vec![Field::new("Int32", DataType::Int32, false)]),
+            UnionMode::Sparse,
+        );
+        let error = match VariantSchema::parse(&Type::Variant(vec![Type::Int32]), &data_type) {
+            Err(error) => error,
+            Ok(_) => panic!("expected non-dense parse error"),
+        };
+        assert!(error.to_string().contains("expects Arrow DenseUnion"));
+    }
+
+    #[test]
+    fn test_variant_schema_parse_rejects_empty_variant_list() {
+        let data_type = DataType::Union(
+            UnionFields::new([0_i8], vec![Field::new("Nothing", DataType::Null, false)]),
+            UnionMode::Dense,
+        );
+        let error = match VariantSchema::parse(&Type::Variant(vec![]), &data_type) {
+            Err(error) => error,
+            Ok(_) => panic!("expected empty-variants parse error"),
+        };
+        assert!(error.to_string().contains("requires at least one nested type"));
+    }
+
+    #[test]
+    fn test_variant_schema_parse_rejects_child_count_mismatch() {
+        let data_type = DataType::Union(
+            UnionFields::new([0_i8, 1_i8], vec![
+                Field::new("Int32", DataType::Int32, false),
+                Field::new("String", DataType::Utf8, false),
+            ]),
+            UnionMode::Dense,
+        );
+        let error =
+            match VariantSchema::parse(&Type::Variant(vec![Type::Int32, Type::String]), &data_type)
+            {
+                Err(error) => error,
+                Ok(_) => panic!("expected child-count mismatch parse error"),
+            };
+        assert!(error.to_string().contains("child count mismatch"));
+    }
+
+    #[test]
+    fn test_variant_schema_resolve_rejects_unknown_type_id() {
+        let schema = VariantSchema::parse(
+            &Type::Variant(vec![Type::Int32]),
+            &DataType::Union(
+                UnionFields::new([7_i8, 8_i8], vec![
+                    Field::new("Int32", DataType::Int32, false),
+                    Field::new("Nothing", DataType::Null, false),
+                ]),
+                UnionMode::Dense,
+            ),
+        )
+        .unwrap();
+
+        let error = schema.resolve(99_i8).unwrap_err();
+        assert!(error.to_string().contains("unknown type id"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_variant_rejects_non_union_array() {
+        let mut writer = Cursor::new(Vec::new());
+        let column = Arc::new(UInt8Array::from(vec![1_u8, 2, 3])) as ArrayRef;
+        let error = serialize_async(
+            &Type::Variant(vec![Type::UInt8]),
+            &mut writer,
+            &column,
+            &mut SerializerState::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Expected UnionArray"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_variant_async_rejects_non_variant_type() {
+        let mut writer = Cursor::new(Vec::new());
+        let error = serialize_async(
+            &Type::Int32,
+            &mut writer,
+            &variant_array(),
+            &mut SerializerState::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("non-Variant"));
+    }
+
+    #[tokio::test]
+    async fn test_serialize_variant_async_slices_unused_child_tail() {
+        let type_hint = Type::Variant(vec![Type::Int32, Type::String]);
+        let column = variant_array_with_extra_child_values();
+        let mut writer = Cursor::new(Vec::new());
+
+        serialize_async(&type_hint, &mut writer, &column, &mut SerializerState::default())
+            .await
+            .unwrap();
+
+        let output = writer.into_inner();
+        assert_eq!(output, vec![
+            0_u8, 255_u8, 0_u8, // discriminators
+            10, 0, 0, 0, 20, 0, 0, 0, // Int32 values (trimmed to referenced rows)
+        ]);
+    }
+
+    #[test]
+    fn test_serialize_variant_sync_rejects_non_union_array() {
+        let mut writer = Vec::new();
+        let column = Arc::new(UInt8Array::from(vec![1_u8, 2, 3])) as ArrayRef;
+        let error = serialize(
+            &Type::Variant(vec![Type::UInt8]),
+            &mut writer,
+            &column,
+            &mut SerializerState::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Expected UnionArray"));
+    }
+
+    #[test]
+    fn test_serialize_variant_sync_rejects_non_variant_type() {
+        let mut writer = Vec::new();
+        let error =
+            serialize(&Type::Int32, &mut writer, &variant_array(), &mut SerializerState::default())
+                .unwrap_err();
+        assert!(error.to_string().contains("non-Variant"));
+    }
+
+    #[test]
+    fn test_serialize_variant_sync_slices_unused_child_tail() {
+        let type_hint = Type::Variant(vec![Type::Int32, Type::String]);
+        let column = variant_array_with_extra_child_values();
+        let mut writer = Vec::new();
+
+        serialize(&type_hint, &mut writer, &column, &mut SerializerState::default()).unwrap();
+
+        assert_eq!(writer, vec![
+            0_u8, 255_u8, 0_u8, // discriminators
+            10, 0, 0, 0, 20, 0, 0, 0, // Int32 values (trimmed to referenced rows)
+        ]);
     }
 }

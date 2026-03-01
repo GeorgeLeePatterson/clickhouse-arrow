@@ -43,3 +43,40 @@ impl Deserializer for NestedDeserializer {
     //     ))
     // }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    fn nested_type() -> Type {
+        Type::Nested(vec![("k".to_string(), Type::UInt8), ("v".to_string(), Type::String)])
+    }
+
+    #[tokio::test]
+    async fn read_prefix_rejects_non_nested_type() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let mut state = DeserializerState::<()>::default();
+        let error = NestedDeserializer::read_prefix(&Type::UInt8, &mut reader, &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("non-nested"));
+    }
+
+    #[tokio::test]
+    async fn read_prefix_accepts_nested_type() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let mut state = DeserializerState::<()>::default();
+        NestedDeserializer::read_prefix(&nested_type(), &mut reader, &mut state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_returns_unimplemented_error() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let mut state = DeserializerState::<()>::default();
+        let error =
+            NestedDeserializer::read(&nested_type(), &mut reader, 0, &mut state).await.unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+}

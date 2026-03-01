@@ -62,49 +62,55 @@ fn nested_prefix_matches_tuple_of_arrays_prefix() {
     assert_eq!(nested_bytes, tuple_bytes);
 }
 
-// TODO: Remove
-// #[cfg(feature = "extended-types")]
-// #[test]
-// fn prefix_behavior_for_variant_dynamic_and_aggregate_function() {
-//     let types = vec![Type::Variant(vec![Type::UInt8, Type::String]), Type::AggregateFunction {
-//         name:  "sumState".to_string(),
-//         types: vec![Type::UInt64],
-//     }];
+#[cfg(feature = "extended-types")]
+#[test]
+fn prefix_behavior_for_variant_dynamic_and_aggregate_function() {
+    let types = vec![
+        Type::Variant(vec![Type::UInt8, Type::String]),
+        Type::AggregateFunction {
+            name:       "sumState".to_string(),
+            parameters: vec![],
+            types:      vec![Type::UInt64],
+            version:    0,
+        },
+        Type::SimpleAggregateFunction {
+            name:       "sum".to_string(),
+            parameters: vec![],
+            types:      vec![Type::UInt64],
+        },
+    ];
 
-//     let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-//     rt.block_on(async {
-//         for type_ in types {
-//             let mut bytes = vec![];
-//             let mut serializer_state = SerializerState::default();
-//             type_.serialize_prefix_async(&mut bytes, &mut serializer_state).await.unwrap();
-//             assert!(bytes.is_empty(), "expected no prefix bytes for {type_}");
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    rt.block_on(async {
+        for type_ in types {
+            let mut bytes = vec![];
+            let mut serializer_state = SerializerState::default();
+            type_.serialize_prefix_async(&mut bytes, &mut serializer_state).await.unwrap();
 
-//             let mut cursor = Cursor::new(bytes);
-//             let mut deserializer_state = DeserializerState::default();
-//             type_.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
-//             assert_eq!(cursor.position(), 0, "expected no prefix bytes consumed for {type_}");
-//         }
+            let mut cursor = Cursor::new(bytes.clone());
+            let mut deserializer_state = DeserializerState::<()>::default();
+            type_.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
+            assert_eq!(cursor.position() as usize, bytes.len());
+        }
 
-//         let dynamic = Type::Dynamic { max_types: 8 };
-//         let mut dynamic_prefix = Vec::new();
-//         dynamic_prefix.extend_from_slice(&3_u64.to_le_bytes()); // flattened
-//         dynamic_prefix.push(1); // one flattened source type
-//         dynamic_prefix.push(5); // "UInt8" length
-//         dynamic_prefix.extend_from_slice(b"UInt8");
+        let dynamic = Type::Dynamic { max_types: 8 };
+        let mut dynamic_prefix = Vec::new();
+        dynamic_prefix.extend_from_slice(&3_u64.to_le_bytes());
+        dynamic_prefix.push(1);
+        dynamic_prefix.push(5);
+        dynamic_prefix.extend_from_slice(b"UInt8");
 
-//         let mut cursor = Cursor::new(dynamic_prefix.clone());
-//         let mut deserializer_state =
-//             DeserializerState::<crate::arrow::ArrowDeserializerState>::default();
-//         dynamic.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
-//         assert_eq!(cursor.position() as usize, dynamic_prefix.len());
-//         let dynamic_state = deserializer_state
-//             .deserializer()
-//             .take_dynamic()
-//             .expect("dynamic prefix metadata should be stored in deserializer state");
-//         assert_eq!(dynamic_state.serialization_version, 3);
-//         assert_eq!(dynamic_state.flattened_types, vec![Type::UInt8]);
-//     });
-// }
+        let mut cursor = Cursor::new(dynamic_prefix.clone());
+        let mut deserializer_state = DeserializerState::<()>::default();
+        dynamic.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
+        assert_eq!(cursor.position() as usize, dynamic_prefix.len());
+        let dynamic_state = deserializer_state
+            .take_dynamic_prefix()
+            .expect("dynamic prefix metadata should be stored in deserializer state");
+        assert_eq!(dynamic_state.serialization_version, 3);
+        assert_eq!(dynamic_state.flattened_types, vec![Type::UInt8]);
+    });
+}
 
 #[tokio::test]
 async fn roundtrip_u8() {
@@ -843,6 +849,33 @@ fn test_type_validate() {
     assert!(Type::Nullable(Box::new(Type::Nullable(Box::new(Type::String)))).validate().is_err());
     assert!(Type::Map(Box::new(Type::String), Box::new(Type::String)).validate().is_ok());
     assert!(Type::Map(Box::new(Type::Ipv4), Box::new(Type::String)).validate().is_err());
+
+    #[cfg(feature = "extended-types")]
+    {
+        assert!(Type::Variant(vec![]).validate().is_err());
+        assert!(Type::Variant(vec![Type::UInt8]).validate().is_ok());
+        assert!(Type::Dynamic { max_types: 255 }.validate().is_err());
+        assert!(Type::Dynamic { max_types: 254 }.validate().is_ok());
+        assert!(Type::Time64(10).validate().is_err());
+        assert!(
+            Type::QBit { element_type: Box::new(Type::String), dimension: 1 }.validate().is_err()
+        );
+        assert!(
+            Type::QBit { element_type: Box::new(Type::Float32), dimension: 0 }.validate().is_err()
+        );
+        assert!(
+            Type::QBit { element_type: Box::new(Type::BFloat16), dimension: 8 }.validate().is_ok()
+        );
+        assert!(
+            Type::SimpleAggregateFunction {
+                name:       "sum".to_string(),
+                parameters: vec![],
+                types:      vec![],
+            }
+            .validate()
+            .is_err()
+        );
+    }
 }
 
 // Sync tests for sized deserializer coverage
@@ -1113,6 +1146,15 @@ async fn test_write_default() {
 
     #[cfg(feature = "extended-types")]
     {
+        assert!(Type::BFloat16.write_default(&mut writer).await.is_ok());
+        assert!(Type::Time.write_default(&mut writer).await.is_ok());
+        assert!(Type::Time64(3).write_default(&mut writer).await.is_ok());
+        assert!(
+            Type::QBit { element_type: Box::new(Type::Float32), dimension: 4 }
+                .write_default(&mut writer)
+                .await
+                .is_ok()
+        );
         assert!(
             Type::SimpleAggregateFunction {
                 name:       "sum".to_string(),
@@ -1213,6 +1255,14 @@ fn test_put_default() {
 
     #[cfg(feature = "extended-types")]
     {
+        assert!(Type::BFloat16.put_default(&mut writer).is_ok());
+        assert!(Type::Time.put_default(&mut writer).is_ok());
+        assert!(Type::Time64(3).put_default(&mut writer).is_ok());
+        assert!(
+            Type::QBit { element_type: Box::new(Type::Float32), dimension: 4 }
+                .put_default(&mut writer)
+                .is_ok()
+        );
         assert!(Type::Variant(vec![Type::UInt8]).put_default(&mut writer).is_err());
         assert!(Type::Dynamic { max_types: 32 }.put_default(&mut writer).is_err());
         assert!(

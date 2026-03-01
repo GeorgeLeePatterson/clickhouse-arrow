@@ -161,7 +161,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    use arrow::array::{Array, Int32Array, ListArray, StringArray};
+    use arrow::array::{Array, Int32Array, LargeListArray, ListArray, StringArray};
     use arrow::datatypes::{Field, Fields};
 
     use super::*;
@@ -267,5 +267,242 @@ mod tests {
 
         let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
         assert_eq!(struct_array.nulls().unwrap().iter().collect::<Vec<_>>(), vec![true, false]);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_rejects_non_struct_data_type() {
+        let fields = nested_type_fields();
+        let mut builder = TypedBuilder::try_new(&Type::Int32, &DataType::Int32).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+        let error = deserialize(
+            &fields,
+            &mut builder,
+            &DataType::Int32,
+            &mut reader,
+            0,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("expects Struct datatype"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_rejects_non_tuple_builder() {
+        let fields = nested_type_fields();
+        let data_type = nested_data_type();
+        let mut builder = TypedBuilder::try_new(&Type::Int32, &DataType::Int32).unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+        let error = deserialize(
+            &fields,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            0,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Unexpected Nested builder"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_rejects_field_count_mismatch() {
+        let fields = nested_type_fields();
+        let data_type = nested_data_type();
+        let mut builder = TypedBuilder::try_new(
+            &Type::Tuple(vec![(Some("name".to_string()), Type::String)]),
+            &DataType::Struct(Fields::from(vec![Field::new(
+                "name",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            )])),
+        )
+        .unwrap();
+        let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
+        let error = deserialize(
+            &fields,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            0,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("field count mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_rejects_offset_length_mismatch() {
+        let fields = nested_type_fields();
+        let data_type = nested_data_type();
+        let mut builder = TypedBuilder::try_new(&Type::Nested(fields.clone()), &data_type).unwrap();
+        // rows=2 expects 2 offsets from wire plus implicit 0 => len should be 3.
+        let mut reader = Cursor::new(vec![1_u64.to_le_bytes(), 2_u64.to_le_bytes()].concat());
+        let mut row_buffer = Vec::new();
+        let error = deserialize(
+            &fields,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            2,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        drop(error);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_rejects_name_mismatch() {
+        let fields =
+            vec![("bad_name".to_string(), Type::String), ("score".to_string(), Type::Int32)];
+        let type_fields = nested_type_fields();
+        let data_type = nested_data_type();
+        let mut builder =
+            TypedBuilder::try_new(&Type::Nested(type_fields.clone()), &data_type).unwrap();
+        let mut reader = Cursor::new(
+            vec![0_u64.to_le_bytes(), 0_u64.to_le_bytes(), 0_u64.to_le_bytes()].concat(),
+        );
+        let mut row_buffer = Vec::new();
+        let error = deserialize(
+            &fields,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            3,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("field name mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_rejects_non_list_child_data_type() {
+        let fields = nested_type_fields();
+        let data_type = DataType::Struct(Fields::from(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new(
+                "score",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            ),
+        ]));
+        let mut builder = TypedBuilder::try_new(
+            &Type::Tuple(vec![
+                (Some("name".to_string()), Type::String),
+                (Some("score".to_string()), Type::Int32),
+            ]),
+            &data_type,
+        )
+        .unwrap();
+        let mut reader = Cursor::new(vec![0_u64.to_le_bytes(), 0_u64.to_le_bytes()].concat());
+        let mut row_buffer = Vec::new();
+        let error = deserialize(
+            &fields,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            2,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("expected List/LargeList datatype"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_nested_large_list() {
+        let fields = nested_type_fields();
+        let data_type = DataType::Struct(Fields::from(vec![
+            Field::new(
+                "name",
+                DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            ),
+            Field::new(
+                "score",
+                DataType::LargeList(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            ),
+        ]));
+        let mut builder = TypedBuilder::try_new(
+            &Type::Tuple(vec![
+                (Some("name".to_string()), Type::String),
+                (Some("score".to_string()), Type::Int32),
+            ]),
+            &data_type,
+        )
+        .unwrap();
+
+        let mut input = Vec::new();
+        input.extend_from_slice(&1_u64.to_le_bytes());
+        input.extend_from_slice(&2_u64.to_le_bytes());
+        input.extend_from_slice(&[1_u8, b'a']);
+        input.extend_from_slice(&[1_u8, b'b']);
+        input.extend_from_slice(&10_i32.to_le_bytes());
+        input.extend_from_slice(&20_i32.to_le_bytes());
+        let mut reader = Cursor::new(input);
+        let mut row_buffer = Vec::new();
+
+        let array = deserialize(
+            &fields,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            2,
+            &[],
+            &mut ArrowFieldCtx {
+                row_buffer:     &mut row_buffer,
+                dynamic_prefix: None,
+                variant_prefix: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
+        assert!(struct_array.column(0).as_any().downcast_ref::<LargeListArray>().is_some());
     }
 }

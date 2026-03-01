@@ -58,3 +58,51 @@ impl Deserializer for VariantDeserializer {
     //     ))
     // }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    fn variant_type() -> Type { Type::Variant(vec![Type::UInt8, Type::String]) }
+
+    #[tokio::test]
+    async fn read_prefix_rejects_non_variant_type() {
+        let mut reader = Cursor::new(0_u64.to_le_bytes().to_vec());
+        let mut state = DeserializerState::<()>::default();
+        let error = VariantDeserializer::read_prefix(&Type::UInt8, &mut reader, &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("non-variant"));
+    }
+
+    #[tokio::test]
+    async fn read_prefix_rejects_unsupported_discriminator_mode() {
+        let mut reader = Cursor::new(2_u64.to_le_bytes().to_vec());
+        let mut state = DeserializerState::<()>::default();
+        let error = VariantDeserializer::read_prefix(&variant_type(), &mut reader, &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unsupported Variant discriminator mode"));
+    }
+
+    #[tokio::test]
+    async fn read_prefix_stores_variant_prefix_state() {
+        let mut reader = Cursor::new(1_u64.to_le_bytes().to_vec());
+        let mut state = DeserializerState::<()>::default();
+        VariantDeserializer::read_prefix(&variant_type(), &mut reader, &mut state).await.unwrap();
+        let prefix = state.take_variant_prefix().unwrap();
+        assert_eq!(prefix.discriminator_mode, 1);
+    }
+
+    #[tokio::test]
+    async fn read_returns_unimplemented_error() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let mut state = DeserializerState::<()>::default();
+        let error = VariantDeserializer::read(&variant_type(), &mut reader, 0, &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not implemented"));
+    }
+}

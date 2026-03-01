@@ -435,4 +435,94 @@ mod tests {
             if msg.contains("Expected Map data type for MapArray")
         ));
     }
+
+    #[test]
+    fn test_serialize_map_int32_string_sync() {
+        let key_field = Arc::new(Field::new(STRUCT_KEY_FIELD_NAME, DataType::Int32, false));
+        let value_field = Arc::new(Field::new(STRUCT_VALUE_FIELD_NAME, DataType::Utf8, false));
+        let fields = Fields::from(vec![key_field, value_field]);
+
+        let keys = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+        let values = Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef;
+        let columns = vec![keys, values];
+
+        let entries = StructArray::new(fields.clone(), columns, None);
+        let field = Arc::new(Field::new(MAP_FIELD_NAME, DataType::Struct(fields.clone()), false));
+
+        let offsets = OffsetBuffer::new(vec![0, 2, 2, 3].into());
+        let map_array =
+            Arc::new(MapArray::try_new(field.clone(), offsets, entries, None, false).unwrap())
+                as ArrayRef;
+
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        serialize(
+            &wrap_map_type(Type::Int32, Type::String),
+            &mut writer,
+            &map_array,
+            map_array.data_type(),
+            &mut state,
+        )
+        .unwrap();
+
+        let expected = vec![
+            2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2,
+            0, 0, 0, 3, 0, 0, 0, 1, 97, 1, 98, 1, 99,
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[test]
+    fn test_serialize_map_invalid_array_type_sync() {
+        let column = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+
+        let result = serialize(
+            &wrap_map_type(Type::Int32, Type::String),
+            &mut writer,
+            &column,
+            &DataType::Int32,
+            &mut state,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Expected MapArray for Map type")
+        ));
+    }
+
+    #[test]
+    fn test_serialize_map_invalid_data_type_sync() {
+        let key_field = Arc::new(Field::new(STRUCT_KEY_FIELD_NAME, DataType::Int32, false));
+        let value_field = Arc::new(Field::new(STRUCT_VALUE_FIELD_NAME, DataType::Utf8, false));
+        let fields = Fields::from(vec![key_field, value_field]);
+
+        let keys = Arc::new(Int32Array::from(vec![1])) as ArrayRef;
+        let values = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
+        let columns = vec![keys, values];
+
+        let entries = StructArray::new(fields.clone(), columns, None);
+        let field = Arc::new(Field::new(MAP_FIELD_NAME, DataType::Struct(fields.clone()), false));
+
+        let offsets = OffsetBuffer::new(vec![0, 1].into());
+        let map_array =
+            Arc::new(MapArray::try_new(field.clone(), offsets, entries, None, false).unwrap())
+                as ArrayRef;
+
+        let mut writer = MockWriter::new();
+        let mut state = SerializerState::default();
+        let result = serialize(
+            &wrap_map_type(Type::Int32, Type::String),
+            &mut writer,
+            &map_array,
+            &DataType::Int32,
+            &mut state,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Expected Map data type for MapArray")
+        ));
+    }
 }

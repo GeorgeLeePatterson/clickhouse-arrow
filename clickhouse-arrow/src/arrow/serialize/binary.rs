@@ -550,4 +550,60 @@ mod tests {
             if msg.contains("Expected one of")
         ));
     }
+
+    async fn assert_sync_matches_async(type_hint: Type, column: ArrayRef) {
+        let mut async_writer = MockWriter::new();
+        serialize_async(&type_hint, &mut async_writer, &column).await.unwrap();
+
+        let mut sync_writer = MockWriter::new();
+        serialize(&type_hint, &mut sync_writer, &column).unwrap();
+
+        assert_eq!(sync_writer, async_writer);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_paths() {
+        assert_sync_matches_async(
+            Type::String,
+            Arc::new(StringArray::from(vec![Some("hello"), None, Some("world")])) as ArrayRef,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Binary,
+            Arc::new(BinaryArray::from(vec![Some(b"abc".as_ref()), None, Some(b"def".as_ref())]))
+                as ArrayRef,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::FixedSizedString(5),
+            Arc::new(StringArray::from(vec!["abc", "de", "fghij"])) as ArrayRef,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::FixedSizedBinary(3),
+            Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    vec![Some(b"ab".as_ref()), None, Some(b"cd".as_ref())].into_iter(),
+                    2,
+                )
+                .unwrap(),
+            ) as ArrayRef,
+        )
+        .await;
+    }
+
+    #[test]
+    fn test_serialize_sync_invalid_array_type() {
+        let column = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::String, &mut writer, &column);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Expected one of")
+        ));
+    }
 }
