@@ -88,6 +88,7 @@ impl std::fmt::Display for ClickHouseEngine {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CreateOptions {
     pub engine:                String,
+    pub cluster_name:          Option<String>,
     pub order_by:              Vec<String>,
     pub primary_keys:          Vec<String>,
     pub partition_by:          Option<String>,
@@ -219,6 +220,24 @@ impl CreateOptions {
         let ttl = ttl.into();
         if !ttl.is_empty() {
             self.ttl = Some(ttl);
+        }
+        self
+    }
+
+    /// Sets the `ON CLUSTER` clause for the table.
+    ///
+    /// Ignores empty strings.
+    ///
+    /// # Arguments
+    /// - `cluster_name`: The name of the cluster.
+    ///
+    /// # Returns
+    /// Self for method chaining.
+    #[must_use]
+    pub fn with_cluster(mut self, cluster_name: impl Into<String>) -> Self {
+        let cluster_name = cluster_name.into();
+        if !cluster_name.is_empty() {
+            self.cluster_name = Some(cluster_name);
         }
         self
     }
@@ -563,8 +582,10 @@ pub(crate) fn create_table_statement<T: ColumnDefine>(
 
     let db_pre = database.map(|c| format!("{c}.")).unwrap_or_default();
     let table = table.trim_matches('`');
+    let on_cluster =
+        options.cluster_name.as_deref().map(|c| format!(" ON CLUSTER `{c}`")).unwrap_or_default();
     let mut sql = String::new();
-    let _ = writeln!(sql, "CREATE TABLE IF NOT EXISTS {db_pre}`{table}` (");
+    let _ = writeln!(sql, "CREATE TABLE IF NOT EXISTS {db_pre}`{table}`{on_cluster} (");
 
     let total = definitions.len();
     for (i, (name, type_, default_value)) in definitions.into_iter().enumerate() {
@@ -1136,6 +1157,26 @@ mod tests {
         assert!(sql.contains("category Enum16('x' = 1,'y' = 2)"));
         assert!(sql.contains("ENGINE = MergeTree"));
         assert!(sql.contains("ORDER BY (category)"));
+    }
+
+    #[test]
+    fn test_create_table_statement_with_cluster_name() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let options = CreateOptions::new("MergeTree")
+            .with_order_by(&["id".to_string()])
+            .with_defaults(vec![("name".to_string(), "'unknown'".to_string())].into_iter())
+            .with_defaults_for_nullable()
+            .with_cluster("my_cluster");
+        let sql =
+            create_table_statement_from_arrow(None, "my_table", &schema, &options, None).unwrap();
+        compare_sql(
+            sql,
+            "CREATE TABLE IF NOT EXISTS `my_table` ON CLUSTER `my_cluster` (\n  id Int32,\n  name \
+             Nullable(String) DEFAULT 'unknown'\n)\nENGINE = MergeTree\nORDER BY (id)",
+        );
     }
 
     #[test]
