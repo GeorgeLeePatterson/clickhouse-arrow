@@ -511,7 +511,7 @@ async fn write_string_values<W: ClickHouseWrite>(
         DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
         DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
         dt => {
-            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}",)));
+            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
     }
 
@@ -605,7 +605,7 @@ fn put_string_values<W: ClickHouseBytesWrite>(
         DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
         DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
         dt => {
-            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}",)));
+            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
     }
 
@@ -1094,7 +1094,7 @@ mod tests {
     // ---
 
     fn test_type_serializer_sync(
-        expected: Vec<u8>,
+        expected: &[u8],
         type_: &Type,
         data_type: &DataType,
         array: &ArrayRef,
@@ -1124,7 +1124,7 @@ mod tests {
             0, 1, 0, // Keys: [0, 1, 0]
         ];
         test_type_serializer_sync(
-            expected,
+            &expected,
             &Type::LowCardinality(Box::new(Type::String)),
             array.data_type(),
             &array,
@@ -1143,7 +1143,7 @@ mod tests {
             0, 1, 0, // Keys: [0, 1, 0]
         ];
         test_type_serializer_sync(
-            expected,
+            &expected,
             &Type::LowCardinality(Box::new(Type::String)),
             &DataType::Utf8,
             &array,
@@ -1191,7 +1191,7 @@ mod tests {
 
         for (dt, array) in &cases {
             test_type_serializer_sync(
-                expected.clone(),
+                &expected,
                 &Type::LowCardinality(Box::new(Type::String)),
                 dt,
                 array,

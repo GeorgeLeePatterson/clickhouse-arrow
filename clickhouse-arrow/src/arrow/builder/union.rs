@@ -105,8 +105,10 @@ mod tests {
     #[test]
     fn child_parts_mut_initializes_builder_once() {
         let mut builder = TypedUnionBuilder::try_new(&dense_union_type()).unwrap();
-        let first = builder.child_parts_mut(0, &Type::Int32).unwrap().1 as *const TypedBuilder;
-        let second = builder.child_parts_mut(0, &Type::Int32).unwrap().1 as *const TypedBuilder;
+        let first =
+            std::ptr::from_ref::<TypedBuilder>(builder.child_parts_mut(0, &Type::Int32).unwrap().1);
+        let second =
+            std::ptr::from_ref::<TypedBuilder>(builder.child_parts_mut(0, &Type::Int32).unwrap().1);
         assert_eq!(first, second);
     }
 }

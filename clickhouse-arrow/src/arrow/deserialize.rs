@@ -37,17 +37,147 @@ use super::types::ch_to_arrow_type;
 #[cfg(feature = "extended-types")]
 use crate::Error;
 #[cfg(feature = "extended-types")]
+use crate::formats::CustomPlanNode;
+use crate::formats::{CustomPlan, CustomPlanNodeId};
+#[cfg(feature = "extended-types")]
 use crate::formats::{DynamicPrefixState, VariantPrefixState};
 use crate::geo::normalize_geo_type;
 use crate::io::ClickHouseRead;
+use crate::native::sparse::read_sparse_offsets;
 use crate::{Result, Type};
 
 pub(crate) struct ArrowFieldCtx<'a> {
-    pub(crate) row_buffer:     &'a mut Vec<u8>,
+    pub(crate) row_buffer: &'a mut Vec<u8>,
+    sparse_offsets:        Option<Vec<usize>>,
+    sparse_node:           Option<CustomPlanNodeId>,
+    custom_plan:           Option<CustomPlan>,
+    custom_node:           Option<CustomPlanNodeId>,
+}
+
+impl ArrowFieldCtx<'_> {
+    #[inline]
+    pub(crate) fn new(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> {
+        ArrowFieldCtx {
+            row_buffer,
+            sparse_offsets: None,
+            sparse_node: None,
+            custom_plan: None,
+            custom_node: None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn with_custom_plan(mut self, custom_plan: Option<CustomPlan>) -> Self {
+        self.custom_node = custom_plan.as_ref().map(|plan| plan.root);
+        self.custom_plan = custom_plan;
+        self
+    }
+
+    #[inline]
+    pub(crate) fn sparse_offsets(&self) -> Option<&[usize]> { self.sparse_offsets.as_deref() }
+
+    #[inline]
+    pub(crate) fn sparse_rows(&self) -> Option<usize> { self.sparse_offsets.as_ref().map(Vec::len) }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn with_sparse_offsets(mut self, sparse_offsets: Vec<usize>) -> Self {
+        self.sparse_offsets = Some(sparse_offsets);
+        self
+    }
+
+    #[inline]
+    pub(crate) fn custom_node(&self) -> Option<CustomPlanNodeId> { self.custom_node }
+
+    #[inline]
+    pub(crate) fn set_custom_node(
+        &mut self,
+        node: Option<CustomPlanNodeId>,
+    ) -> Option<CustomPlanNodeId> {
+        std::mem::replace(&mut self.custom_node, node)
+    }
+
+    #[inline]
+    pub(crate) fn custom_child_node(&self, child_index: usize) -> Option<CustomPlanNodeId> {
+        let node_id = self.custom_node?;
+        self.custom_plan.as_ref()?.child(node_id, child_index)
+    }
+
     #[cfg(feature = "extended-types")]
-    pub(crate) dynamic_prefix: Option<DynamicPrefixState>,
+    #[inline]
+    pub(crate) fn custom_node_data(&self) -> Option<&CustomPlanNode> {
+        let node_id = self.custom_node?;
+        self.custom_plan.as_ref()?.node(node_id)
+    }
+
     #[cfg(feature = "extended-types")]
-    pub(crate) variant_prefix: Option<VariantPrefixState>,
+    #[inline]
+    pub(crate) fn dynamic_prefix(&self) -> Option<&DynamicPrefixState> {
+        self.custom_node_data().and_then(|node| node.dynamic_prefix.as_ref())
+    }
+
+    #[cfg(feature = "extended-types")]
+    #[inline]
+    pub(crate) fn variant_prefix(&self) -> Option<VariantPrefixState> {
+        self.custom_node_data().and_then(|node| node.variant_prefix)
+    }
+
+    pub(crate) async fn prepare_sparse_offsets<R: ClickHouseRead>(
+        &mut self,
+        reader: &mut R,
+        rows: usize,
+    ) -> Result<()> {
+        let Some(node_id) = self.custom_node else {
+            return Ok(());
+        };
+        let Some(node) = self.custom_plan.as_ref().and_then(|plan| plan.node(node_id)) else {
+            return Ok(());
+        };
+        if !node.is_sparse() {
+            self.sparse_offsets = None;
+            self.sparse_node = None;
+            return Ok(());
+        }
+        if self.sparse_node != Some(node_id) {
+            self.sparse_offsets = Some(read_sparse_offsets(reader, rows).await?);
+            self.sparse_node = Some(node_id);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(test, feature = "extended-types"))]
+    fn with_root_prefix_node(
+        mut self,
+        dynamic_prefix: Option<DynamicPrefixState>,
+        variant_prefix: Option<VariantPrefixState>,
+    ) -> Self {
+        self.custom_plan = Some(CustomPlan {
+            nodes: vec![CustomPlanNode {
+                stack_type: 0,
+                kinds: Vec::new(),
+                edge_start: 0,
+                edge_len: 0,
+                dynamic_prefix,
+                variant_prefix,
+            }],
+            edges: Vec::new(),
+            root:  0,
+        });
+        self.custom_node = Some(0);
+        self
+    }
+
+    #[cfg(all(test, feature = "extended-types"))]
+    #[inline]
+    pub(crate) fn with_dynamic_prefix_for_test(self, dynamic_prefix: DynamicPrefixState) -> Self {
+        self.with_root_prefix_node(Some(dynamic_prefix), None)
+    }
+
+    #[cfg(all(test, feature = "extended-types"))]
+    #[inline]
+    pub(crate) fn with_variant_prefix_for_test(self, variant_prefix: VariantPrefixState) -> Self {
+        self.with_root_prefix_node(None, Some(variant_prefix))
+    }
 }
 
 #[derive(Default)]
@@ -160,12 +290,16 @@ macro_rules! deser_bulk {
             let byte_count =
                 $crate::arrow::deserialize::primitive::primitive_bulk!($reader, $rows, $buf, $t1);
             let values: &[$t1] = bytemuck::cast_slice::<u8, $t1>(&$buf[..byte_count]);
-            #[allow(clippy::cast_lossless)]
-            #[allow(clippy::cast_possible_wrap)]
-            #[allow(clippy::cast_possible_truncation)]
             for (i, &value) in values.iter().enumerate() {
                 if $nulls.is_empty() || $nulls[i] == 0 {
-                    $builder.append_value(value as $t2);
+                    let value = <$t2>::try_from(value).map_err(|_| {
+                        $crate::Error::ArrowDeserialize(format!(
+                            "failed to convert {} to {} during Arrow deserialization",
+                            stringify!($t1),
+                            stringify!($t2)
+                        ))
+                    })?;
+                    $builder.append_value(value);
                 } else {
                     $builder.append_null();
                 }
@@ -253,7 +387,9 @@ impl ClickHouseArrowDeserializer for Type {
         nulls: &[u8],
         ctx: &mut ArrowFieldCtx<'_>,
     ) -> Result<ArrayRef> {
-        Ok(match self {
+        ctx.prepare_sparse_offsets(reader, rows).await?;
+
+        match self {
             // Primitive types
             Type::Int8
             | Type::Int16
@@ -273,14 +409,14 @@ impl ClickHouseArrowDeserializer for Type {
             | Type::Decimal64(_)
             | Type::Decimal128(_)
             | Type::Decimal256(_) =>
-                primitive::deserialize(self, builder, reader, rows, nulls, ctx.row_buffer).await?,
+                primitive::deserialize(self, builder, reader, rows, nulls, ctx).await,
             #[cfg(feature = "extended-types")]
             Type::BFloat16 | Type::Time | Type::Time64(_) =>
-                primitive::deserialize(self, builder, reader, rows, nulls, ctx.row_buffer).await?,
-            Type::Nothing => Arc::new(NullArray::new(rows)) as ArrayRef,
+                primitive::deserialize(self, builder, reader, rows, nulls, ctx).await,
+            Type::Nothing => Ok(Arc::new(NullArray::new(rows)) as ArrayRef),
             #[cfg(feature = "extended-types")]
             Type::QBit { .. } => {
-                qbit::deserialize(self, builder, reader, rows, nulls, ctx.row_buffer).await?
+                qbit::deserialize(self, builder, reader, rows, nulls, ctx.row_buffer).await
             }
             // String/Binary
             Type::String
@@ -295,7 +431,7 @@ impl ClickHouseArrowDeserializer for Type {
             | Type::UInt256
             | Type::Ipv6
             | Type::Uuid
-            | Type::Ipv4 => binary::deserialize(self, builder, reader, rows, nulls).await?,
+            | Type::Ipv4 => binary::deserialize(self, builder, reader, rows, nulls, ctx).await,
             // Nullable
             Type::Nullable(inner) => Box::pin(
                 null::deserialize(
@@ -306,7 +442,7 @@ impl ClickHouseArrowDeserializer for Type {
                     rows,
                     ctx,
                 )
-            ).await?,
+            ).await,
             // Array
             Type::Array(inner) => Box::pin(list::deserialize(
                 inner,
@@ -317,7 +453,7 @@ impl ClickHouseArrowDeserializer for Type {
                 nulls,
                 ctx,
             ))
-            .await?,
+            .await,
             // LowCardinality
             Type::LowCardinality(inner) => Box::pin(low_cardinality::deserialize(
                 inner,
@@ -328,10 +464,10 @@ impl ClickHouseArrowDeserializer for Type {
                 nulls,
                 ctx,
             )
-            ).await?,
+            ).await,
             // Enum
             Type::Enum8(_) | Type::Enum16(_) =>
-                enums::deserialize_async(self, builder, reader, rows, nulls).await?,
+                enums::deserialize_async(self, builder, reader, rows, nulls, ctx).await,
             // Map
             Type::Map(key, value) => Box::pin(map::deserialize(
                 (key, value),
@@ -341,7 +477,7 @@ impl ClickHouseArrowDeserializer for Type {
                 rows,
                 nulls,
                 ctx,
-            )).await?,
+            )).await,
             // Tuple
             Type::Tuple(inner) => Box::pin(tuple::deserialize(
                 inner,
@@ -352,17 +488,16 @@ impl ClickHouseArrowDeserializer for Type {
                 nulls,
                 ctx,
             ))
-            .await?,
+            .await,
             #[cfg(feature = "extended-types")]
             Type::Nested(fields) =>
                 Box::pin(nested::deserialize(fields, builder, data_type, reader, rows, nulls, ctx))
-                    .await?,
+                    .await,
             #[cfg(feature = "extended-types")]
             Type::SimpleAggregateFunction { types, .. } => {
                 let Some(inner) = types.first() else {
                     return Err(Error::deserialize("SimpleAggregateFunction has no inner type"));
                 };
-
                 Box::pin(inner.deserialize_arrow(
                     builder,
                     reader,
@@ -371,22 +506,22 @@ impl ClickHouseArrowDeserializer for Type {
                     nulls,
                     ctx,
                 ))
-                .await?
+                .await
             }
             #[cfg(feature = "extended-types")]
             Type::Variant(_) => {
-                variant::deserialize(self, builder, reader, data_type, rows, nulls, ctx).await?
+                variant::deserialize(self, builder, reader, data_type, rows, nulls, ctx).await
             }
             #[cfg(feature = "extended-types")]
             Type::Dynamic { .. } => {
-                dynamic::deserialize(self, builder, reader, data_type, rows, nulls, ctx).await?
+                dynamic::deserialize(self, builder, reader, data_type, rows, nulls, ctx).await
             }
             #[cfg(feature = "extended-types")]
             Type::AggregateFunction { .. } => {
-                return Err(Error::ArrowDeserialize(
+                Err(Error::ArrowDeserialize(
                     "Arrow deserialization for AggregateFunction is not supported: aggregate \
                         states are function-specific opaque binary blobs".into()
-                ));
+                ))
             }
             // Geo types
             Type::Polygon | Type::MultiPolygon | Type::Point | Type::Ring => {
@@ -401,9 +536,9 @@ impl ClickHouseArrowDeserializer for Type {
                     nulls,
                     ctx,
                 ))
-                .await?
+                .await
             }
-        })
+        }
     }
 }
 
@@ -421,15 +556,7 @@ mod tests {
     use crate::arrow::ch_to_arrow_type;
     use crate::native::types::Type;
 
-    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> {
-        ArrowFieldCtx {
-            row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix: None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix: None,
-        }
-    }
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
 
     async fn deserialize_for_test(
         type_: &Type,

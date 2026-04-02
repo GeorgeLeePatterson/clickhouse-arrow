@@ -13,8 +13,12 @@ impl Deserializer for TupleDeserializer {
     ) -> Result<()> {
         match type_ {
             Type::Tuple(inner) => {
-                for (_, item) in inner {
-                    item.deserialize_prefix(reader, state).await?;
+                for (idx, (_, item)) in inner.iter().enumerate() {
+                    let child_node = state.custom_child_node(idx).or(state.custom_node());
+                    let previous_node = state.set_custom_node(child_node);
+                    let result = item.deserialize_prefix(reader, state).await;
+                    let _ = state.set_custom_node(previous_node);
+                    result?;
                 }
             }
             _ => {

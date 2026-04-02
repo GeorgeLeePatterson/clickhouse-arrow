@@ -262,7 +262,7 @@ mod tests {
 
     /// Helper function used by individual type serializers
     pub(crate) async fn test_type_serializer(
-        expected: Vec<u8>,
+        expected: &[u8],
         type_: &Type,
         field: &Field,
         array: &ArrayRef,
@@ -271,11 +271,11 @@ mod tests {
         let mut state = SerializerState::default()
             .with_arrow_options(ArrowOptions::default().with_strings_as_strings(true));
         serialize_async(type_, &mut writer, array, field.data_type(), &mut state).await.unwrap();
-        assert_eq!(*writer, expected);
+        assert_eq!(writer, expected);
     }
 
     pub(crate) fn test_type_serializer_sync(
-        expected: Vec<u8>,
+        expected: &[u8],
         type_: &Type,
         field: &Field,
         array: &ArrayRef,
@@ -284,7 +284,7 @@ mod tests {
         let mut state = SerializerState::default()
             .with_arrow_options(ArrowOptions::default().with_strings_as_strings(true));
         serialize(type_, &mut writer, array, field.data_type(), &mut state).unwrap();
-        assert_eq!(*writer, expected);
+        assert_eq!(writer, expected);
     }
 
     #[tokio::test]
@@ -311,7 +311,7 @@ mod tests {
             4, 0, 0, 0, // 4
             5, 0, 0, 0, // 5
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[tokio::test]
@@ -340,7 +340,7 @@ mod tests {
             0, 0, 0, 0, // 0 (null)
             5, 0, 0, 0, // 5
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[tokio::test]
@@ -369,7 +369,7 @@ mod tests {
             3,    // var_uint length: 3 (1 byte)
             b'o', b'd', b'd', // "odd" (3 bytes)
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[tokio::test]
@@ -397,7 +397,7 @@ mod tests {
             5, 0, 0, 0, // 5
             6, 0, 0, 0, // 6
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[tokio::test]
@@ -413,7 +413,7 @@ mod tests {
             // Offsets: [0] (u64, little-endian)
             /* No values written */
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[tokio::test]
@@ -430,7 +430,7 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, /* 0
                * No values written */
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[tokio::test]
@@ -470,7 +470,7 @@ mod tests {
             4, 0, 0, 0, // 4
             5, 0, 0, 0, // 5
         ];
-        test_type_serializer(expected, &type_, &outer_field, &array).await;
+        test_type_serializer(&expected, &type_, &outer_field, &array).await;
     }
 
     #[tokio::test]
@@ -528,7 +528,7 @@ mod tests {
             6, 0, 0, 0, 0, 0, 0, 0, // Key length
             1, 2, 3, 0, 1, 0, // Key indicies
         ];
-        test_type_serializer(expected, &type_, &field, &array).await;
+        test_type_serializer(&expected, &type_, &field, &array).await;
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
             4, 0, 0, 0, // 4
             5, 0, 0, 0, // 5
         ];
-        test_type_serializer_sync(expected, &type_, &field, &array);
+        test_type_serializer_sync(&expected, &type_, &field, &array);
     }
 
     #[test]
@@ -579,7 +579,7 @@ mod tests {
             0, 0, 0, 0, // 0 (null)
             5, 0, 0, 0, // 5
         ];
-        test_type_serializer_sync(expected, &type_, &field, &array);
+        test_type_serializer_sync(&expected, &type_, &field, &array);
     }
 
     #[test]

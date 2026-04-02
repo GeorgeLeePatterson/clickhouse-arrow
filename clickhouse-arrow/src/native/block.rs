@@ -7,7 +7,7 @@ use super::block_info::BlockInfo;
 use super::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::deserialize::ClickHouseNativeDeserializer;
 use crate::formats::protocol_data::ProtocolData;
-use crate::formats::{DeserializerState, SerializerState};
+use crate::formats::{CustomPlan, DeserializerState, SerializerState};
 use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::values::Value;
 use crate::prelude::*;
@@ -286,7 +286,7 @@ impl ProtocolData<Self, ()> for Block {
                 .await
                 .inspect_err(|e| error!("reading column type (name {name}): {e}"))?;
 
-            drop(state.take_custom_serialization());
+            drop(state.take_custom_plan());
 
             let has_custom_serialization =
                 if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
@@ -301,9 +301,12 @@ impl ProtocolData<Self, ()> for Block {
 
             if has_custom_serialization {
                 type_.deserialize_custom_serialization_prefix(reader, state).await?;
+            } else {
+                drop(state.replace_custom_plan(CustomPlan::from_type_structure(&type_)));
             }
 
             let mut row_data = if rows > 0 {
+                state.reset_custom_node_to_root();
                 type_.deserialize_prefix(reader, state).await?;
 
                 #[allow(clippy::cast_possible_truncation)]
@@ -321,68 +324,6 @@ impl ProtocolData<Self, ()> for Block {
 
         Ok(block)
     }
-
-    // TODO: Remove
-    // fn read<R: ClickHouseBytesRead + 'static>(
-    //     reader: &mut R,
-    //     revision: u64,
-    //     _options: (),
-    //     state: &mut DeserializerState,
-    // ) -> Result<Self> {
-    //     let info = if revision > 0 { BlockInfo::read(reader)? } else { BlockInfo::default() };
-
-    //     #[allow(clippy::cast_possible_truncation)]
-    //     let columns = reader.try_get_var_uint()? as usize;
-    //     let rows = reader.try_get_var_uint()?;
-
-    //     let mut block = Block {
-    //         info,
-    //         rows,
-    //         column_types: Vec::with_capacity(columns),
-    //         column_data: Vec::with_capacity(columns),
-    //     };
-
-    //     for i in 0..columns {
-    //         let name = String::from_utf8(
-    //             reader
-    //                 .try_get_string()
-    //                 .inspect_err(|e| error!("reading column name (index {i}): {e}"))?
-    //                 .to_vec(),
-    //         )?;
-
-    //         let type_name = String::from_utf8(
-    //             reader
-    //                 .try_get_string()
-    //                 .inspect_err(|e| error!("reading column type (name {name}): {e}"))?
-    //                 .to_vec(),
-    //         )?;
-
-    //         // TODO: implement
-    //         let mut _has_custom_serialization = false;
-    //         if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-    //             _has_custom_serialization = reader.try_get_u8()? != 0;
-    //         }
-
-    //         let type_ = Type::from_str(&type_name).inspect_err(|error| {
-    //             error!(?error, "Type deserialize failed: name={name}, type={type_name}");
-    //         })?;
-
-    //         #[allow(clippy::cast_possible_truncation)]
-    //         let mut row_data = if rows > 0 {
-    //             type_.deserialize_prefix(reader, state)?;
-    //             type_
-    //                 .deserialize_column_sync(reader, rows as usize, state)
-    //                 .inspect_err(|e| error!("deserialize (name {name}): {e}"))?
-    //         } else {
-    //             vec![]
-    //         };
-
-    //         block.column_types.push((name, type_));
-    //         block.column_data.append(&mut row_data);
-    //     }
-
-    //     Ok(block)
-    // }
 }
 
 #[cfg(test)]

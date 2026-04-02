@@ -287,9 +287,8 @@ mod tests {
 
     #[test]
     fn test_variant_schema_parse_rejects_non_variant_type() {
-        let error = match VariantSchema::parse(&Type::Int32, &variant_data_type()) {
-            Err(error) => error,
-            Ok(_) => panic!("expected non-Variant parse error"),
+        let Err(error) = VariantSchema::parse(&Type::Int32, &variant_data_type()) else {
+            panic!("expected non-Variant parse error");
         };
         assert!(error.to_string().contains("non-Variant"));
     }
@@ -300,9 +299,8 @@ mod tests {
             UnionFields::new([0_i8], vec![Field::new("Int32", DataType::Int32, false)]),
             UnionMode::Sparse,
         );
-        let error = match VariantSchema::parse(&Type::Variant(vec![Type::Int32]), &data_type) {
-            Err(error) => error,
-            Ok(_) => panic!("expected non-dense parse error"),
+        let Err(error) = VariantSchema::parse(&Type::Variant(vec![Type::Int32]), &data_type) else {
+            panic!("expected non-dense parse error");
         };
         assert!(error.to_string().contains("expects Arrow DenseUnion"));
     }
@@ -313,9 +311,8 @@ mod tests {
             UnionFields::new([0_i8], vec![Field::new("Nothing", DataType::Null, false)]),
             UnionMode::Dense,
         );
-        let error = match VariantSchema::parse(&Type::Variant(vec![]), &data_type) {
-            Err(error) => error,
-            Ok(_) => panic!("expected empty-variants parse error"),
+        let Err(error) = VariantSchema::parse(&Type::Variant(vec![]), &data_type) else {
+            panic!("expected empty-variants parse error");
         };
         assert!(error.to_string().contains("requires at least one nested type"));
     }
@@ -329,12 +326,11 @@ mod tests {
             ]),
             UnionMode::Dense,
         );
-        let error =
-            match VariantSchema::parse(&Type::Variant(vec![Type::Int32, Type::String]), &data_type)
-            {
-                Err(error) => error,
-                Ok(_) => panic!("expected child-count mismatch parse error"),
-            };
+        let Err(error) =
+            VariantSchema::parse(&Type::Variant(vec![Type::Int32, Type::String]), &data_type)
+        else {
+            panic!("expected child-count mismatch parse error");
+        };
         assert!(error.to_string().contains("child count mismatch"));
     }
 

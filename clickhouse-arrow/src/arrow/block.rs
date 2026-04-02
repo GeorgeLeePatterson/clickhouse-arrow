@@ -21,7 +21,7 @@ use crate::flags::debug_arrow;
 #[cfg(feature = "extended-types")]
 use crate::formats::DynamicPrefixState;
 use crate::formats::protocol_data::ProtocolData;
-use crate::formats::{DeserializerState, SerializerState};
+use crate::formats::{CustomPlan, DeserializerState, SerializerState};
 use crate::geo::normalize_geo_type;
 use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::block_info::BlockInfo;
@@ -242,7 +242,7 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             let type_name = reader.read_utf8_string().await?;
             let internal_type = Type::from_str(&type_name)?;
 
-            drop(state.take_custom_serialization());
+            drop(state.take_custom_plan());
 
             let has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
                 reader.read_u8().await? != 0
@@ -252,20 +252,21 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
 
             if has_custom {
                 internal_type.deserialize_custom_serialization_prefix(reader, state).await?;
+            } else {
+                drop(state.replace_custom_plan(CustomPlan::from_type_structure(&internal_type)));
             }
 
+            state.reset_custom_node_to_root();
             internal_type.deserialize_prefix(reader, state).await?;
 
-            // Pull out dynamic prefix if available and create ArrowSchemaHint
+            // Pull out root-node dynamic metadata (if present) and create ArrowSchemaHint.
             #[cfg(feature = "extended-types")]
-            let (mut schema_hints, dynamic_prefix_version) = {
-                let prefix = state.take_dynamic_prefix();
-                let version = prefix.as_ref().map(|p| p.serialization_version).unwrap_or_default();
-                let hints = prefix.map(|p| ArrowSchemaHint { dynamic_types: p.flattened_types });
-                (hints, version)
-            };
-            #[cfg(feature = "extended-types")]
-            let variant_prefix = state.take_variant_prefix();
+            let schema_hints =
+                state.custom_plan().and_then(|plan| plan.node(plan.root)).and_then(|node| {
+                    node.dynamic_prefix.as_ref().map(|prefix| ArrowSchemaHint {
+                        dynamic_types: prefix.flattened_types.clone(),
+                    })
+                });
             #[cfg(not(feature = "extended-types"))]
             let schema_hints = None;
 
@@ -282,6 +283,7 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             }
 
             let array = if rows > 0 {
+                let custom_plan = state.take_custom_plan();
                 let deser = state.format_state();
                 let dt = field.data_type();
 
@@ -293,16 +295,7 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                     builders.last_mut().unwrap()
                 };
 
-                let mut ctx = ArrowFieldCtx {
-                    row_buffer: &mut deser.buffer,
-                    #[cfg(feature = "extended-types")]
-                    dynamic_prefix: schema_hints.take().map(|h| DynamicPrefixState {
-                        serialization_version: dynamic_prefix_version,
-                        flattened_types:       h.dynamic_types,
-                    }),
-                    #[cfg(feature = "extended-types")]
-                    variant_prefix,
-                };
+                let mut ctx = ArrowFieldCtx::new(&mut deser.buffer).with_custom_plan(custom_plan);
 
                 type_hint
                     .deserialize_arrow(builder, reader, dt, rows, &[], &mut ctx)

@@ -75,7 +75,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
 
     let null_field_idx = variants.len();
     let discriminator_mode = ctx
-        .variant_prefix
+        .variant_prefix()
         .map_or(VARIANT_DISCRIMINATOR_MODE_BASIC, |state| state.discriminator_mode);
     if discriminator_mode != VARIANT_DISCRIMINATOR_MODE_BASIC
         && discriminator_mode != VARIANT_DISCRIMINATOR_MODE_COMPACT
@@ -184,11 +184,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
             if source_rows == 0 {
                 new_empty_array(child_data_type)
             } else {
-                let mut child_ctx = ArrowFieldCtx {
-                    row_buffer:     ctx.row_buffer,
-                    dynamic_prefix: None,
-                    variant_prefix: None,
-                };
+                let mut child_ctx = ArrowFieldCtx::new(ctx.row_buffer);
                 let source_array = Box::pin(source_type.deserialize_arrow(
                     child_builder,
                     reader,
@@ -270,12 +266,9 @@ mod tests {
 
     fn variant_type() -> Type { Type::Variant(vec![Type::Int32, Type::String]) }
 
-    fn ctx<'a>(row_buffer: &'a mut Vec<u8>, discriminator_mode: u8) -> ArrowFieldCtx<'a> {
-        ArrowFieldCtx {
-            row_buffer,
-            dynamic_prefix: None,
-            variant_prefix: Some(VariantPrefixState { discriminator_mode }),
-        }
+    fn ctx(row_buffer: &mut Vec<u8>, discriminator_mode: u8) -> ArrowFieldCtx<'_> {
+        ArrowFieldCtx::new(row_buffer)
+            .with_variant_prefix_for_test(VariantPrefixState { discriminator_mode })
     }
 
     #[tokio::test]
@@ -298,11 +291,7 @@ mod tests {
             &data_type,
             4,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: Some(VariantPrefixState { discriminator_mode: 0 }),
-            },
+            &mut ctx(&mut row_buffer, 0),
         )
         .await
         .unwrap();
@@ -345,11 +334,7 @@ mod tests {
             &data_type,
             4,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: Some(VariantPrefixState { discriminator_mode: 1 }),
-            },
+            &mut ctx(&mut row_buffer, 1),
         )
         .await
         .unwrap();

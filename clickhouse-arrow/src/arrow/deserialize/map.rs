@@ -71,6 +71,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
     let key_array = key_type
         .deserialize_arrow(key_builder, reader, key_field.data_type(), total_pairs, &[], ctx)
         .await?;
+
     let value_array = value_type
         .deserialize_arrow(value_builder, reader, value_field.data_type(), total_pairs, &[], ctx)
         .await?;
@@ -110,15 +111,7 @@ mod tests {
     use crate::arrow::ch_to_arrow_type;
     use crate::native::types::Type;
 
-    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> {
-        ArrowFieldCtx {
-            row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix: None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix: None,
-        }
-    }
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
 
     fn create_map_type(key: &Type, value: &Type, nullable: bool) -> DataType {
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));

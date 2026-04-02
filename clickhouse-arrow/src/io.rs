@@ -58,6 +58,7 @@ pub(crate) trait ClickHouseWrite: AsyncWrite + Unpin + Send + Sync {
         value: V,
     ) -> impl Future<Output = Result<()>> + Send + use<'_, Self, V>;
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "Exercised by io tests"))]
     fn write_vectored_all<'a>(
         &'a mut self,
         bufs: &'a [IoSlice<'a>],

@@ -165,7 +165,7 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
     }
 
     for (((nested_name, inner_type), arrow_field), values) in
-        fields.iter().zip(arrow_fields.iter()).zip(nested_values.into_iter())
+        fields.iter().zip(arrow_fields.iter()).zip(nested_values)
     {
         let item_type = match arrow_field.data_type() {
             DataType::List(item) | DataType::LargeList(item) => item.data_type(),
@@ -337,7 +337,7 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
     }
 
     for (((nested_name, inner_type), arrow_field), values) in
-        fields.iter().zip(arrow_fields.iter()).zip(nested_values.into_iter())
+        fields.iter().zip(arrow_fields.iter()).zip(nested_values)
     {
         let item_type = match arrow_field.data_type() {
             DataType::List(item) | DataType::LargeList(item) => item.data_type(),
@@ -600,7 +600,7 @@ mod tests {
         let DataType::Struct(fields) = nested_data_type() else {
             unreachable!();
         };
-        let smaller = DataType::Struct(Fields::from(vec![fields[0].clone()]));
+        let smaller = DataType::Struct(Fields::from(vec![Arc::clone(&fields[0])]));
         let error = serialize_async(
             &nested_type(),
             &mut writer,
@@ -817,7 +817,7 @@ mod tests {
         let DataType::Struct(fields) = nested_data_type() else {
             unreachable!();
         };
-        let smaller = DataType::Struct(Fields::from(vec![fields[0].clone()]));
+        let smaller = DataType::Struct(Fields::from(vec![Arc::clone(&fields[0])]));
         let error = serialize(
             &nested_type(),
             &mut writer,

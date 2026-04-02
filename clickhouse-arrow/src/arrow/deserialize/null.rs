@@ -71,11 +71,12 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
     rows: usize,
     ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
-    let nulls = if rows > 0 {
-        let mut mask = vec![0u8; rows];
+    let null_rows = ctx.sparse_rows().unwrap_or(rows);
+    let nulls = if null_rows > 0 {
+        let mut mask = vec![0u8; null_rows];
         let _ = reader.read_exact(&mut mask).await?;
-        if mask.len() != rows {
-            return Err(Error::deserialize(format!("Nulls={}, rows={rows}", mask.len())));
+        if mask.len() != null_rows {
+            return Err(Error::deserialize(format!("Nulls={}, rows={null_rows}", mask.len())));
         }
         mask
     } else {
@@ -95,15 +96,7 @@ mod tests {
     use crate::arrow::ch_to_arrow_type;
     use crate::native::types::Type;
 
-    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> {
-        ArrowFieldCtx {
-            row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix: None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix: None,
-        }
-    }
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
 
     /// Tests deserialization of `Nullable(Int32)` with null values.
     #[tokio::test]

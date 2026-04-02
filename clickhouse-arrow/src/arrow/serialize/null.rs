@@ -19,10 +19,10 @@
 /// let mut buffer = Vec::new();
 /// write_nullability(&mut buffer, &array).await.unwrap();
 /// ```
-use std::io::IoSlice;
-
 use arrow::array::ArrayRef;
+use tokio::io::AsyncWriteExt;
 
+use crate::arrow::simd::expand_null_bitmap;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Result, Type};
 
@@ -50,19 +50,17 @@ pub(super) async fn serialize_nulls_async<W: ClickHouseWrite>(
         return Ok(());
     }
 
-    // Write null bitmap
-    if let Some(null_buffer) = array.nulls() {
-        let mut null_mask = vec![1_u8; array.len()]; // Initialize with all NULLs (1 in ClickHouse)
-        for valid_idx in null_buffer.valid_indices() {
-            null_mask[valid_idx] = 0; // Set to 0 for non-NULL values
-        }
-        let bufs = [IoSlice::new(&null_mask)];
-        writer.write_vectored_all(&bufs).await?;
-    } else {
-        let nulls = vec![0_u8; array.len()];
-        let bufs = [IoSlice::new(&nulls)];
-        writer.write_vectored_all(&bufs).await?;
+    let len = array.len();
+    if len == 0 {
+        return Ok(());
     }
+
+    let mut null_mask = vec![0_u8; len];
+    if let Some(null_buffer) = array.nulls() {
+        let bitmap_bytes = null_buffer.validity();
+        expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+    }
+    writer.write_all(&null_mask).await?;
 
     Ok(())
 }
@@ -76,17 +74,17 @@ pub(super) fn serialize_nulls<W: ClickHouseBytesWrite>(
         return;
     }
 
-    // Write null bitmap
-    if let Some(null_buffer) = array.nulls() {
-        let mut null_mask = vec![1_u8; array.len()]; // Initialize with all NULLs (1 in ClickHouse)
-        for valid_idx in null_buffer.valid_indices() {
-            null_mask[valid_idx] = 0; // Set to 0 for non-NULL values
-        }
-        writer.put_slice(&null_mask);
-    } else {
-        let nulls = vec![0_u8; array.len()];
-        writer.put_slice(&nulls);
+    let len = array.len();
+    if len == 0 {
+        return;
     }
+
+    let mut null_mask = vec![0_u8; len];
+    if let Some(null_buffer) = array.nulls() {
+        let bitmap_bytes = null_buffer.validity();
+        expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+    }
+    writer.put_slice(&null_mask);
 }
 
 #[cfg(test)]

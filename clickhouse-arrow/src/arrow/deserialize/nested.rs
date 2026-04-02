@@ -212,11 +212,7 @@ mod tests {
             &mut reader,
             3,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap();
@@ -256,11 +252,7 @@ mod tests {
             &mut reader,
             2,
             &[0_u8, 1_u8],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap();
@@ -282,11 +274,7 @@ mod tests {
             &mut reader,
             0,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -308,11 +296,7 @@ mod tests {
             &mut reader,
             0,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -342,11 +326,7 @@ mod tests {
             &mut reader,
             0,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -360,7 +340,7 @@ mod tests {
         let data_type = nested_data_type();
         let mut builder = TypedBuilder::try_new(&Type::Nested(fields.clone()), &data_type).unwrap();
         // rows=2 expects 2 offsets from wire plus implicit 0 => len should be 3.
-        let mut reader = Cursor::new(vec![1_u64.to_le_bytes(), 2_u64.to_le_bytes()].concat());
+        let mut reader = Cursor::new([1_u64.to_le_bytes(), 2_u64.to_le_bytes()].concat());
         let mut row_buffer = Vec::new();
         let error = deserialize(
             &fields,
@@ -369,11 +349,7 @@ mod tests {
             &mut reader,
             2,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -389,9 +365,8 @@ mod tests {
         let data_type = nested_data_type();
         let mut builder =
             TypedBuilder::try_new(&Type::Nested(type_fields.clone()), &data_type).unwrap();
-        let mut reader = Cursor::new(
-            vec![0_u64.to_le_bytes(), 0_u64.to_le_bytes(), 0_u64.to_le_bytes()].concat(),
-        );
+        let mut reader =
+            Cursor::new([0_u64.to_le_bytes(), 0_u64.to_le_bytes(), 0_u64.to_le_bytes()].concat());
         let mut row_buffer = Vec::new();
         let error = deserialize(
             &fields,
@@ -400,11 +375,7 @@ mod tests {
             &mut reader,
             3,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -431,7 +402,7 @@ mod tests {
             &data_type,
         )
         .unwrap();
-        let mut reader = Cursor::new(vec![0_u64.to_le_bytes(), 0_u64.to_le_bytes()].concat());
+        let mut reader = Cursor::new([0_u64.to_le_bytes(), 0_u64.to_le_bytes()].concat());
         let mut row_buffer = Vec::new();
         let error = deserialize(
             &fields,
@@ -440,11 +411,7 @@ mod tests {
             &mut reader,
             2,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -493,11 +460,7 @@ mod tests {
             &mut reader,
             2,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ArrowFieldCtx::new(&mut row_buffer),
         )
         .await
         .unwrap();

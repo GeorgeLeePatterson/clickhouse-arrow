@@ -63,3 +63,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# AI
+.claude/

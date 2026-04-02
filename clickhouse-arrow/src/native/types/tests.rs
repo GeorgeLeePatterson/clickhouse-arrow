@@ -7,6 +7,8 @@ use uuid::Uuid;
 use super::Type;
 use super::deserialize::ClickHouseNativeDeserializer;
 use super::serialize::ClickHouseNativeSerializer;
+#[cfg(feature = "extended-types")]
+use crate::formats::CustomPlan;
 use crate::formats::{DeserializerState, SerializerState};
 use crate::{
     Date, Date32, DateTime, DynDateTime64, MultiPolygon, Point, Polygon, Result, Ring, Value, i256,
@@ -89,8 +91,12 @@ fn prefix_behavior_for_variant_dynamic_and_aggregate_function() {
 
             let mut cursor = Cursor::new(bytes.clone());
             let mut deserializer_state = DeserializerState::<()>::default();
+            drop(deserializer_state.replace_custom_plan(CustomPlan::from_type_structure(&type_)));
             type_.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
-            assert_eq!(cursor.position() as usize, bytes.len());
+            assert_eq!(
+                usize::try_from(cursor.position()).expect("cursor position must fit in usize"),
+                bytes.len(),
+            );
         }
 
         let dynamic = Type::Dynamic { max_types: 8 };
@@ -102,11 +108,17 @@ fn prefix_behavior_for_variant_dynamic_and_aggregate_function() {
 
         let mut cursor = Cursor::new(dynamic_prefix.clone());
         let mut deserializer_state = DeserializerState::<()>::default();
+        drop(deserializer_state.replace_custom_plan(CustomPlan::from_type_structure(&dynamic)));
         dynamic.deserialize_prefix(&mut cursor, &mut deserializer_state).await.unwrap();
-        assert_eq!(cursor.position() as usize, dynamic_prefix.len());
+        assert_eq!(
+            usize::try_from(cursor.position()).expect("cursor position must fit in usize"),
+            dynamic_prefix.len(),
+        );
         let dynamic_state = deserializer_state
-            .take_dynamic_prefix()
-            .expect("dynamic prefix metadata should be stored in deserializer state");
+            .take_custom_plan()
+            .and_then(|plan| plan.node(plan.root).cloned())
+            .and_then(|node| node.dynamic_prefix)
+            .expect("dynamic prefix metadata should be stored in custom plan");
         assert_eq!(dynamic_state.serialization_version, 3);
         assert_eq!(dynamic_state.flattened_types, vec![Type::UInt8]);
     });

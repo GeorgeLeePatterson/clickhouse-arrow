@@ -17,7 +17,7 @@ pub(crate) mod variant;
 use tokio::io::AsyncReadExt;
 
 use super::*;
-use crate::formats::{CustomSerializationEntry, CustomSerializationState};
+use crate::formats::{CustomPlan, CustomPlanNode, CustomPlanNodeId};
 
 const CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT: u8 = 0;
 const CUSTOM_SERIALIZATION_KIND_STACK_SPARSE: u8 = 1;
@@ -30,6 +30,46 @@ const CUSTOM_SERIALIZATION_KIND_DEFAULT: u8 = 0;
 const CUSTOM_SERIALIZATION_KIND_SPARSE: u8 = 1;
 const CUSTOM_SERIALIZATION_KIND_DETACHED: u8 = 2;
 const CUSTOM_SERIALIZATION_KIND_REPLICATED: u8 = 3;
+
+async fn read_custom_serialization_node<R: ClickHouseRead>(
+    reader: &mut R,
+) -> Result<(u8, Vec<u8>)> {
+    let stack_type = reader.read_u8().await?;
+    let mut kinds = Vec::new();
+    match stack_type {
+        CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT
+        | CUSTOM_SERIALIZATION_KIND_STACK_SPARSE
+        | CUSTOM_SERIALIZATION_KIND_STACK_DETACHED
+        | CUSTOM_SERIALIZATION_KIND_STACK_DETACHED_OVER_SPARSE
+        | CUSTOM_SERIALIZATION_KIND_STACK_REPLICATED => {}
+        CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION => {
+            #[expect(clippy::cast_possible_truncation)]
+            let num_kinds = reader.read_var_uint().await? as usize;
+            kinds.reserve(num_kinds);
+            for _ in 0..num_kinds {
+                let kind = reader.read_u8().await?;
+                if !matches!(
+                    kind,
+                    CUSTOM_SERIALIZATION_KIND_DEFAULT
+                        | CUSTOM_SERIALIZATION_KIND_SPARSE
+                        | CUSTOM_SERIALIZATION_KIND_DETACHED
+                        | CUSTOM_SERIALIZATION_KIND_REPLICATED
+                ) {
+                    return Err(Error::Protocol(format!(
+                        "invalid custom serialization kind: {kind}"
+                    )));
+                }
+                kinds.push(kind);
+            }
+        }
+        _ => {
+            return Err(Error::Protocol(format!(
+                "invalid custom serialization kind stack type: {stack_type}"
+            )));
+        }
+    }
+    Ok((stack_type, kinds))
+}
 
 // Core protocol parsing
 pub(crate) trait ClickHouseNativeDeserializer {
@@ -52,55 +92,67 @@ impl ClickHouseNativeDeserializer for Type {
         reader: &'a mut R,
         state: &'a mut DeserializerState<T>,
     ) -> impl Future<Output = Result<()>> + Send + 'a {
+        struct Frame<'a> {
+            type_:      &'a Type,
+            node_id:    CustomPlanNodeId,
+            next_child: usize,
+        }
         async move {
-            let mut stack = vec![self.strip_null()];
-            let mut entries = Vec::with_capacity(1);
-            while let Some(next) = stack.pop() {
-                let kind_stack_type = reader.read_u8().await?;
-                let mut kinds = Vec::new();
-                match kind_stack_type {
-                    CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT
-                    | CUSTOM_SERIALIZATION_KIND_STACK_SPARSE
-                    | CUSTOM_SERIALIZATION_KIND_STACK_DETACHED
-                    | CUSTOM_SERIALIZATION_KIND_STACK_DETACHED_OVER_SPARSE
-                    | CUSTOM_SERIALIZATION_KIND_STACK_REPLICATED => {}
-                    CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION => {
-                        #[expect(clippy::cast_possible_truncation)]
-                        let num_kinds = reader.read_var_uint().await? as usize;
-                        kinds.reserve(num_kinds);
-                        for _ in 0..num_kinds {
-                            let kind = reader.read_u8().await?;
-                            if !matches!(
-                                kind,
-                                CUSTOM_SERIALIZATION_KIND_DEFAULT
-                                    | CUSTOM_SERIALIZATION_KIND_SPARSE
-                                    | CUSTOM_SERIALIZATION_KIND_DETACHED
-                                    | CUSTOM_SERIALIZATION_KIND_REPLICATED
-                            ) {
-                                return Err(Error::Protocol(format!(
-                                    "invalid custom serialization kind: {kind}"
-                                )));
-                            }
-                            kinds.push(kind);
-                        }
-                    }
-                    _ => {
-                        return Err(Error::Protocol(format!(
-                            "invalid custom serialization kind stack type: {kind_stack_type}"
-                        )));
-                    }
-                }
+            let mut nodes = Vec::with_capacity(1);
+            let mut edges = Vec::new();
+            let (root_stack_type, root_kinds) = read_custom_serialization_node(reader).await?;
+            nodes.push(CustomPlanNode {
+                stack_type: root_stack_type,
+                kinds: root_kinds,
+                edge_start: 0,
+                edge_len: 0,
+                #[cfg(feature = "extended-types")]
+                dynamic_prefix: None,
+                #[cfg(feature = "extended-types")]
+                variant_prefix: None,
+            });
 
-                if let Type::Tuple(inner) = next {
-                    for item in inner.iter().rev() {
-                        stack.push(item.1.strip_null());
-                    }
+            let mut stack = vec![Frame { type_: self, node_id: 0, next_child: 0 }];
+            while let Some(frame) = stack.last_mut() {
+                let Type::Tuple(inner) = frame.type_ else {
+                    let _ = stack.pop();
+                    continue;
+                };
+                if frame.next_child >= inner.len() {
+                    let _ = stack.pop();
+                    continue;
                 }
-
-                entries.push(CustomSerializationEntry { stack_type: kind_stack_type, kinds });
+                let child_type = &inner[frame.next_child].1;
+                frame.next_child += 1;
+                let (stack_type, kinds) = read_custom_serialization_node(reader).await?;
+                let node_id = u32::try_from(nodes.len())
+                    .map_err(|_| Error::Protocol("custom serialization plan too large".into()))?;
+                let edge_start = u32::try_from(edges.len()).map_err(|_| {
+                    Error::Protocol("custom serialization edge list too large".into())
+                })?;
+                nodes.push(CustomPlanNode {
+                    stack_type,
+                    kinds,
+                    edge_start,
+                    edge_len: 0,
+                    #[cfg(feature = "extended-types")]
+                    dynamic_prefix: None,
+                    #[cfg(feature = "extended-types")]
+                    variant_prefix: None,
+                });
+                let parent_idx = usize::try_from(frame.node_id)
+                    .map_err(|_| Error::Protocol("invalid parent node index".into()))?;
+                let Some(parent_node) = nodes.get_mut(parent_idx) else {
+                    return Err(Error::Protocol("parent node missing in custom plan".into()));
+                };
+                parent_node.edge_len = parent_node.edge_len.checked_add(1).ok_or_else(|| {
+                    Error::Protocol("too many custom children in tuple node".into())
+                })?;
+                edges.push(node_id);
+                stack.push(Frame { type_: child_type, node_id, next_child: 0 });
             }
 
-            drop(state.replace_custom_serialization(CustomSerializationState { entries }));
+            drop(state.replace_custom_plan(CustomPlan { nodes, edges, root: 0 }));
             Ok(())
         }
         .boxed()
@@ -1418,15 +1470,17 @@ mod tests {
 
         type_.deserialize_custom_serialization_prefix(&mut reader, &mut state).await.unwrap();
 
-        let custom = state.take_custom_serialization().expect("custom serialization state missing");
-        assert_eq!(custom.entries.len(), 3);
+        let custom = state.take_custom_plan().expect("custom serialization state missing");
+        assert_eq!(custom.nodes.len(), 3);
+        assert_eq!(custom.edges.len(), 2);
+        assert_eq!(custom.root, 0);
         assert!(
             custom
-                .entries
+                .nodes
                 .iter()
-                .all(|entry| entry.stack_type == CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT)
+                .all(|entry| { entry.stack_type == CUSTOM_SERIALIZATION_KIND_STACK_DEFAULT })
         );
-        assert!(custom.entries.iter().all(|entry| entry.kinds.is_empty()));
+        assert!(custom.nodes.iter().all(|entry| entry.kinds.is_empty()));
     }
 
     #[tokio::test]
@@ -1444,10 +1498,10 @@ mod tests {
             .await
             .unwrap();
 
-        let custom = state.take_custom_serialization().expect("custom serialization state missing");
-        assert_eq!(custom.entries.len(), 1);
-        assert_eq!(custom.entries[0].stack_type, CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION);
-        assert_eq!(custom.entries[0].kinds, vec![
+        let custom = state.take_custom_plan().expect("custom serialization state missing");
+        assert_eq!(custom.nodes.len(), 1);
+        assert_eq!(custom.nodes[0].stack_type, CUSTOM_SERIALIZATION_KIND_STACK_COMBINATION);
+        assert_eq!(custom.nodes[0].kinds, vec![
             CUSTOM_SERIALIZATION_KIND_DEFAULT,
             CUSTOM_SERIALIZATION_KIND_REPLICATED
         ]);

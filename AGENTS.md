@@ -28,3 +28,4 @@ This file defines mandatory implementation and review rules for this repository.
     Lint warnings are resolved across all feature combinations, including pedantic.
     Line coverage is greater than 90%.
 16. Follow the existing folder structure, module layout conventions (modern modules, no `mod.rs` pattern for new work), and established code patterns. When adding new behavior, find and follow the closest existing pattern first.
+17. `just checks` from the repository root is the authoritative local CI mirror and commit-readiness gate. A change is not ready to commit or present as ready until `just checks` passes cleanly.

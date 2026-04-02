@@ -772,48 +772,36 @@ impl Type {
     #[expect(clippy::too_many_lines)]
     pub(crate) fn validate(&self) -> Result<()> {
         match self {
-            Type::Decimal32(scale) => {
-                if *scale == 0 || *scale > 9 {
-                    return Err(Error::TypeParse(format!(
-                        "scale out of bounds for Decimal32({scale}), range (1..=9)"
-                    )));
-                }
+            Type::Decimal32(scale) if *scale == 0 || *scale > 9 => {
+                return Err(Error::TypeParse(format!(
+                    "scale out of bounds for Decimal32({scale}), range (1..=9)"
+                )));
             }
-            Type::Decimal128(scale) => {
-                if *scale == 0 || *scale > 38 {
-                    return Err(Error::TypeParse(format!(
-                        "scale out of bounds for Decimal128({scale}), range (1..=38)"
-                    )));
-                }
+            Type::Decimal128(scale) if *scale == 0 || *scale > 38 => {
+                return Err(Error::TypeParse(format!(
+                    "scale out of bounds for Decimal128({scale}), range (1..=38)"
+                )));
             }
-            Type::Decimal256(scale) => {
-                if *scale == 0 || *scale > 76 {
-                    return Err(Error::TypeParse(format!(
-                        "scale out of bounds for Decimal256({scale}), range (1..=76)"
-                    )));
-                }
+            Type::Decimal256(scale) if *scale == 0 || *scale > 76 => {
+                return Err(Error::TypeParse(format!(
+                    "scale out of bounds for Decimal256({scale}), range (1..=76)"
+                )));
             }
-            Type::Decimal64(precision) => {
-                if *precision == 0 || *precision > 18 {
-                    return Err(Error::TypeParse(format!(
-                        "precision out of bounds for Decimal64({precision}), range (1..=18)"
-                    )));
-                }
+            Type::Decimal64(precision) if *precision == 0 || *precision > 18 => {
+                return Err(Error::TypeParse(format!(
+                    "precision out of bounds for Decimal64({precision}), range (1..=18)"
+                )));
             }
-            Type::DateTime64(precision, _) => {
-                if *precision > 9 {
-                    return Err(Error::TypeParse(format!(
-                        "precision out of bounds for DateTime64({precision}), range (0..=9)"
-                    )));
-                }
+            Type::DateTime64(precision, _) if *precision > 9 => {
+                return Err(Error::TypeParse(format!(
+                    "precision out of bounds for DateTime64({precision}), range (0..=9)"
+                )));
             }
             #[cfg(feature = "extended-types")]
-            Type::Time64(precision) => {
-                if *precision > 9 {
-                    return Err(Error::TypeParse(format!(
-                        "precision out of bounds for Time64({precision}) must be in range (0..=9)"
-                    )));
-                }
+            Type::Time64(precision) if *precision > 9 => {
+                return Err(Error::TypeParse(format!(
+                    "precision out of bounds for Time64({precision}) must be in range (0..=9)"
+                )));
             }
             #[cfg(feature = "extended-types")]
             Type::QBit { element_type, dimension } => {
@@ -923,12 +911,10 @@ impl Type {
                 }
             }
             #[cfg(feature = "extended-types")]
-            Type::Dynamic { max_types } => {
-                if *max_types > 254 {
-                    return Err(Error::TypeParse(format!(
-                        "Dynamic max_types out of bounds ({max_types}), must be in range (0..=254)"
-                    )));
-                }
+            Type::Dynamic { max_types } if *max_types > 254 => {
+                return Err(Error::TypeParse(format!(
+                    "Dynamic max_types out of bounds ({max_types}), must be in range (0..=254)"
+                )));
             }
             #[cfg(feature = "extended-types")]
             Type::Nested(fields) => {

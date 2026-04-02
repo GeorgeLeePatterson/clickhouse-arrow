@@ -6,6 +6,7 @@ pub mod convert;
 pub mod error_codes;
 pub mod progress;
 pub(crate) mod protocol;
+pub(crate) mod sparse;
 pub mod types;
 pub mod values;
 

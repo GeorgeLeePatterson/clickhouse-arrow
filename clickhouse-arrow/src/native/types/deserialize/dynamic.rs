@@ -3,7 +3,7 @@ use std::str::FromStr;
 use tokio::io::AsyncReadExt;
 
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::formats::DynamicPrefixState;
+use crate::formats::{CustomPlan, DynamicPrefixState};
 use crate::io::ClickHouseRead;
 use crate::native::values::Value;
 use crate::{Error, Result};
@@ -62,12 +62,13 @@ impl Deserializer for DynamicDeserializer {
             type_.deserialize_prefix(reader, state).await?;
         }
 
-        {
-            drop(state.replace_dynamic_prefix(DynamicPrefixState {
-                serialization_version,
-                flattened_types,
-            }));
+        if state.custom_node().is_none() {
+            drop(state.replace_custom_plan(CustomPlan::from_type_structure(type_)));
         }
+        drop(state.replace_current_dynamic_prefix(DynamicPrefixState {
+            serialization_version,
+            flattened_types,
+        }));
         Ok(())
     }
 
@@ -98,13 +99,22 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+    use crate::formats::CustomPlan;
+
+    fn state_with_plan(type_: &Type) -> DeserializerState<()> {
+        let mut state = DeserializerState::<()>::default();
+        drop(state.replace_custom_plan(CustomPlan::from_type_structure(type_)));
+        state
+    }
 
     fn push_var_uint(out: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
-            out.push((value as u8) | 0x80);
+            out.push(
+                u8::try_from(value & 0x7f).expect("masked varuint chunk must fit in u8") | 0x80,
+            );
             value >>= 7;
         }
-        out.push(value as u8);
+        out.push(u8::try_from(value).expect("terminal varuint chunk must fit in u8"));
     }
 
     fn push_string(out: &mut Vec<u8>, value: &str) {
@@ -125,7 +135,7 @@ mod tests {
     #[tokio::test]
     async fn read_prefix_rejects_non_dynamic_type() {
         let mut reader = Cursor::new(dynamic_prefix_bytes(&["UInt8"], 3));
-        let mut state = DeserializerState::<()>::default();
+        let mut state = state_with_plan(&Type::UInt8);
         let error = DynamicDeserializer::read_prefix(&Type::UInt8, &mut reader, &mut state)
             .await
             .unwrap_err();
@@ -135,7 +145,7 @@ mod tests {
     #[tokio::test]
     async fn read_prefix_rejects_unsupported_version() {
         let mut reader = Cursor::new(dynamic_prefix_bytes(&["UInt8"], 2));
-        let mut state = DeserializerState::<()>::default();
+        let mut state = state_with_plan(&Type::Dynamic { max_types: 8 });
         let error = DynamicDeserializer::read_prefix(
             &Type::Dynamic { max_types: 8 },
             &mut reader,
@@ -149,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn read_prefix_rejects_unknown_flattened_type() {
         let mut reader = Cursor::new(dynamic_prefix_bytes(&["NopeType"], 3));
-        let mut state = DeserializerState::<()>::default();
+        let mut state = state_with_plan(&Type::Dynamic { max_types: 8 });
         let error = DynamicDeserializer::read_prefix(
             &Type::Dynamic { max_types: 8 },
             &mut reader,
@@ -164,12 +174,16 @@ mod tests {
     async fn read_prefix_stores_dynamic_prefix_metadata() {
         let bytes = dynamic_prefix_bytes(&["UInt8", "String"], 3);
         let mut reader = Cursor::new(bytes);
-        let mut state = DeserializerState::<()>::default();
+        let mut state = state_with_plan(&Type::Dynamic { max_types: 8 });
         DynamicDeserializer::read_prefix(&Type::Dynamic { max_types: 8 }, &mut reader, &mut state)
             .await
             .unwrap();
 
-        let dynamic = state.take_dynamic_prefix().unwrap();
+        let dynamic = state
+            .take_custom_plan()
+            .and_then(|plan| plan.node(plan.root).cloned())
+            .and_then(|node| node.dynamic_prefix)
+            .unwrap();
         assert_eq!(dynamic.serialization_version, 3);
         assert_eq!(dynamic.flattened_types, vec![Type::UInt8, Type::String]);
     }
@@ -177,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn read_returns_unimplemented_error() {
         let mut reader = Cursor::new(Vec::<u8>::new());
-        let mut state = DeserializerState::<()>::default();
+        let mut state = state_with_plan(&Type::Dynamic { max_types: 8 });
         let error =
             DynamicDeserializer::read(&Type::Dynamic { max_types: 8 }, &mut reader, 0, &mut state)
                 .await

@@ -224,13 +224,7 @@ mod tests {
             TypedBuilder::try_new(&Type::LowCardinality(Box::new(inner_type.clone())), &data_type)
                 .unwrap();
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result =
             deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, nulls, &mut ctx)
                 .await?;
@@ -466,13 +460,7 @@ mod tests {
                 .unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
 
         let result =
             deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, &[], &mut ctx)
@@ -502,13 +490,7 @@ mod tests {
                 .unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
 
         let result =
             deserialize(&inner_type, &mut builder, &data_type, &mut reader, rows, &[], &mut ctx)

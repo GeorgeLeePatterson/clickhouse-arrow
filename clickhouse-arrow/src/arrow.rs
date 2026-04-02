@@ -4,6 +4,7 @@ mod builder;
 mod deserialize;
 pub(crate) mod schema;
 mod serialize;
+pub(crate) mod simd;
 pub(crate) mod types;
 pub mod utils;
 

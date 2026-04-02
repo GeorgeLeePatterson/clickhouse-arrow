@@ -2014,7 +2014,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_serialize_sync_matches_async_core_paths() {
+    async fn test_serialize_sync_matches_async_numeric_paths() {
         assert_sync_matches_async(
             Type::Int8,
             Arc::new(Int8Array::from(vec![1, -2, 0])) as ArrayRef,
@@ -2083,7 +2083,10 @@ mod tests {
             DataType::Decimal64(18, 0),
         )
         .await;
+    }
 
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_temporal_paths() {
         assert_sync_matches_async(
             Type::Date,
             Arc::new(Date32Array::from(vec![0, 1])) as ArrayRef,
@@ -2125,7 +2128,10 @@ mod tests {
             DataType::Timestamp(TimeUnit::Nanosecond, None),
         )
         .await;
+    }
 
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_network_paths() {
         assert_sync_matches_async(
             Type::Ipv4,
             Arc::new(
@@ -2187,44 +2193,45 @@ mod tests {
             DataType::Float64,
         )
         .await;
+    }
 
-        #[cfg(feature = "extended-types")]
-        {
-            assert_sync_matches_async(
-                Type::BFloat16,
-                Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef,
-                DataType::Float32,
-            )
-            .await;
+    #[cfg(feature = "extended-types")]
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_extended_temporal_paths() {
+        assert_sync_matches_async(
+            Type::BFloat16,
+            Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef,
+            DataType::Float32,
+        )
+        .await;
 
-            assert_sync_matches_async(
-                Type::Time,
-                Arc::new(Time32SecondArray::from(vec![1_i32, 2_i32])) as ArrayRef,
-                DataType::Time32(TimeUnit::Second),
-            )
-            .await;
+        assert_sync_matches_async(
+            Type::Time,
+            Arc::new(Time32SecondArray::from(vec![1_i32, 2_i32])) as ArrayRef,
+            DataType::Time32(TimeUnit::Second),
+        )
+        .await;
 
-            assert_sync_matches_async(
-                Type::Time64(3),
-                Arc::new(Time32MillisecondArray::from(vec![10_i32, 20_i32])) as ArrayRef,
-                DataType::Time32(TimeUnit::Millisecond),
-            )
-            .await;
+        assert_sync_matches_async(
+            Type::Time64(3),
+            Arc::new(Time32MillisecondArray::from(vec![10_i32, 20_i32])) as ArrayRef,
+            DataType::Time32(TimeUnit::Millisecond),
+        )
+        .await;
 
-            assert_sync_matches_async(
-                Type::Time64(6),
-                Arc::new(Time64MicrosecondArray::from(vec![100_i64, 200_i64])) as ArrayRef,
-                DataType::Time64(TimeUnit::Microsecond),
-            )
-            .await;
+        assert_sync_matches_async(
+            Type::Time64(6),
+            Arc::new(Time64MicrosecondArray::from(vec![100_i64, 200_i64])) as ArrayRef,
+            DataType::Time64(TimeUnit::Microsecond),
+        )
+        .await;
 
-            assert_sync_matches_async(
-                Type::Time64(9),
-                Arc::new(Time64NanosecondArray::from(vec![1_000_i64, 2_000_i64])) as ArrayRef,
-                DataType::Time64(TimeUnit::Nanosecond),
-            )
-            .await;
-        }
+        assert_sync_matches_async(
+            Type::Time64(9),
+            Arc::new(Time64NanosecondArray::from(vec![1_000_i64, 2_000_i64])) as ArrayRef,
+            DataType::Time64(TimeUnit::Nanosecond),
+        )
+        .await;
     }
 
     #[test]

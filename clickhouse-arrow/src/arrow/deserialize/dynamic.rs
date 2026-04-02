@@ -41,7 +41,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
         )));
     };
 
-    let Some(prefix) = ctx.dynamic_prefix.take() else {
+    let Some(prefix) = ctx.dynamic_prefix().cloned() else {
         return Err(Error::ArrowDeserialize(
             "Dynamic strict union deserialization requires prefix metadata".to_string(),
         ));
@@ -176,11 +176,7 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
             if source_rows == 0 {
                 new_empty_array(child_data_type)
             } else {
-                let mut child_ctx = ArrowFieldCtx {
-                    row_buffer:     ctx.row_buffer,
-                    dynamic_prefix: None,
-                    variant_prefix: None,
-                };
+                let mut child_ctx = ArrowFieldCtx::new(ctx.row_buffer);
                 let source_array = Box::pin(logical_type.deserialize_arrow(
                     child_builder,
                     reader,
@@ -265,11 +261,25 @@ mod tests {
         TypedBuilder::try_new(&Type::Dynamic { max_types: 8 }, data_type).unwrap()
     }
 
+    fn ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
+
+    fn dynamic_ctx(
+        row_buffer: &mut Vec<u8>,
+        serialization_version: u64,
+        flattened_types: Vec<Type>,
+    ) -> ArrowFieldCtx<'_> {
+        ArrowFieldCtx::new(row_buffer).with_dynamic_prefix_for_test(DynamicPrefixState {
+            serialization_version,
+            flattened_types,
+        })
+    }
+
     #[tokio::test]
     async fn test_deserialize_dynamic_rejects_non_union_schema() {
         let type_hint = Type::Dynamic { max_types: 8 };
         let mut builder = TypedBuilder::try_new(&Type::Int32, &DataType::Int32).unwrap();
         let mut reader = Cursor::new(vec![]);
+        let mut row_buffer = Vec::new();
 
         let err = deserialize(
             &type_hint,
@@ -278,11 +288,7 @@ mod tests {
             &DataType::Binary,
             0,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut vec![],
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ctx(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -316,14 +322,7 @@ mod tests {
             &data_type,
             5,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 3,
-                    flattened_types:       vec![Type::Int32, Type::String, Type::Nothing],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 3, vec![Type::Int32, Type::String, Type::Nothing]),
         )
         .await
         .unwrap();
@@ -365,14 +364,7 @@ mod tests {
             &data_type,
             3,
             &[1_u8, 0, 0],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 3,
-                    flattened_types:       vec![Type::Int32, Type::String],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 3, vec![Type::Int32, Type::String]),
         )
         .await
         .unwrap();
@@ -410,14 +402,7 @@ mod tests {
             &data_type,
             3,
             &[2_u8, 0, 0],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 3,
-                    flattened_types:       vec![Type::Int32, Type::String],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 3, vec![Type::Int32, Type::String]),
         )
         .await
         .unwrap();
@@ -448,14 +433,7 @@ mod tests {
             &data_type,
             1,
             &[0_u8, 1_u8],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 3,
-                    flattened_types:       vec![Type::Int32],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 3, vec![Type::Int32]),
         )
         .await
         .unwrap_err();
@@ -478,11 +456,7 @@ mod tests {
             &data_type,
             1,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: None,
-                variant_prefix: None,
-            },
+            &mut ctx(&mut row_buffer),
         )
         .await
         .unwrap_err();
@@ -505,14 +479,7 @@ mod tests {
             &data_type,
             1,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 2,
-                    flattened_types:       vec![Type::Int32],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 2, vec![Type::Int32]),
         )
         .await
         .unwrap_err();
@@ -536,14 +503,7 @@ mod tests {
             &data_type,
             1,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 3,
-                    flattened_types:       vec![Type::Int32],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 3, vec![Type::Int32]),
         )
         .await
         .unwrap_err();
@@ -567,14 +527,7 @@ mod tests {
             &data_type,
             0,
             &[],
-            &mut ArrowFieldCtx {
-                row_buffer:     &mut row_buffer,
-                dynamic_prefix: Some(DynamicPrefixState {
-                    serialization_version: 3,
-                    flattened_types:       vec![Type::Int32],
-                }),
-                variant_prefix: None,
-            },
+            &mut dynamic_ctx(&mut row_buffer, 3, vec![Type::Int32]),
         )
         .await
         .unwrap_err();

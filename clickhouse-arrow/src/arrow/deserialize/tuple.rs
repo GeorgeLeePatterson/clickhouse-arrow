@@ -61,9 +61,13 @@ pub(super) async fn deserialize<R: ClickHouseRead>(
 
     let mut arrays = Vec::with_capacity(inner_types.len());
     let field_types = inner_types.iter().zip(fields.iter());
-    for (b, ((_, inner_type), field)) in builders.iter_mut().zip(field_types) {
+    for (idx, (b, ((_, inner_type), field))) in builders.iter_mut().zip(field_types).enumerate() {
         let data_type = field.data_type();
-        arrays.push(inner_type.deserialize_arrow(b, reader, data_type, rows, &[], ctx).await?);
+        let child_node = ctx.custom_child_node(idx).or(ctx.custom_node());
+        let previous_node = ctx.set_custom_node(child_node);
+        let array = inner_type.deserialize_arrow(b, reader, data_type, rows, &[], ctx).await;
+        let _ = ctx.set_custom_node(previous_node);
+        arrays.push(array?);
     }
     let null_buffer = if nulls.is_empty() {
         None
@@ -114,13 +118,7 @@ mod tests {
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -171,13 +169,7 @@ mod tests {
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -224,13 +216,7 @@ mod tests {
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -289,13 +275,7 @@ mod tests {
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -329,6 +309,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_deserialize_tuple_sparse_delegates_to_children() {
+        let inner_types = vec![(None, Type::Int32), (None, Type::String)];
+        let rows = 4;
+        let nulls = vec![];
+        let input = vec![
+            // Sparse rows are [1, 3], so each child column carries only those row values.
+            // Field 1 sparse payload: [10, 20]
+            10, 0, 0, 0, 20, 0, 0, 0, // Field 2 sparse payload: ["a", "b"]
+            1, b'a', 1, b'b',
+        ];
+        let mut reader = Cursor::new(input);
+
+        let inner_fields = create_inner_fields(&inner_types);
+        let data_type = DataType::Struct(inner_fields.clone());
+        let mut builder =
+            TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
+
+        let mut row_buffer = Vec::new();
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer).with_sparse_offsets(vec![1, 3]);
+
+        let result = deserialize(
+            &inner_types,
+            &mut builder,
+            &data_type,
+            &mut reader,
+            rows,
+            &nulls,
+            &mut ctx,
+        )
+        .await
+        .expect("Failed to deserialize sparse Tuple(Int32, String)");
+
+        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
+        let arrays = struct_array.columns();
+        assert_eq!(
+            arrays[0].as_any().downcast_ref::<Int32Array>().unwrap(),
+            &Int32Array::from(vec![0, 10, 0, 20])
+        );
+        assert_eq!(
+            arrays[1].as_any().downcast_ref::<StringArray>().unwrap(),
+            &StringArray::from(vec!["", "a", "", "b"])
+        );
+        assert_eq!(ctx.sparse_offsets, Some(vec![1, 3]));
+    }
+
+    #[tokio::test]
     async fn test_deserialize_tuple_zero_rows() {
         let inner_types = vec![(None, Type::Int32), (None, Type::String)];
         let rows = 0;
@@ -342,13 +368,7 @@ mod tests {
         let mut builder =
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result = deserialize(
             &inner_types,
             &mut builder,
@@ -402,13 +422,7 @@ mod tests {
             TypedBuilder::try_new(&Type::Tuple(inner_types.clone()), &data_type).unwrap();
 
         let mut row_buffer = Vec::new();
-        let mut ctx = ArrowFieldCtx {
-            row_buffer:                                        &mut row_buffer,
-            #[cfg(feature = "extended-types")]
-            dynamic_prefix:                                    None,
-            #[cfg(feature = "extended-types")]
-            variant_prefix:                                    None,
-        };
+        let mut ctx = ArrowFieldCtx::new(&mut row_buffer);
         let result = deserialize(
             &inner_types,
             &mut builder,
