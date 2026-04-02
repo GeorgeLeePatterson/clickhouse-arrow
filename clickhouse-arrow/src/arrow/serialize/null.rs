@@ -26,6 +26,9 @@ use crate::arrow::simd::expand_null_bitmap;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Result, Type};
 
+const STACK_NULL_MASK_CAPACITY: usize = 1024;
+const STACK_NULL_MASK_ZEROES: [u8; STACK_NULL_MASK_CAPACITY] = [0; STACK_NULL_MASK_CAPACITY];
+
 /// Serializes the nullability bitmap for an Arrow array to `ClickHouse`’s native format.
 ///
 /// Writes a bitmap where `1` indicates a null value and `0` indicates a non-null value. If the
@@ -55,12 +58,25 @@ pub(super) async fn serialize_nulls_async<W: ClickHouseWrite>(
         return Ok(());
     }
 
-    let mut null_mask = vec![0_u8; len];
     if let Some(null_buffer) = array.nulls() {
         let bitmap_bytes = null_buffer.validity();
-        expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+        if len <= STACK_NULL_MASK_CAPACITY {
+            let mut null_mask = [0_u8; STACK_NULL_MASK_CAPACITY];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask[..len], len);
+            writer.write_all(&null_mask[..len]).await?;
+        } else {
+            let mut null_mask = vec![0_u8; len];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+            writer.write_all(&null_mask).await?;
+        }
+    } else {
+        let mut remaining = len;
+        while remaining > 0 {
+            let chunk_len = remaining.min(STACK_NULL_MASK_CAPACITY);
+            writer.write_all(&STACK_NULL_MASK_ZEROES[..chunk_len]).await?;
+            remaining -= chunk_len;
+        }
     }
-    writer.write_all(&null_mask).await?;
 
     Ok(())
 }
@@ -79,12 +95,25 @@ pub(super) fn serialize_nulls<W: ClickHouseBytesWrite>(
         return;
     }
 
-    let mut null_mask = vec![0_u8; len];
     if let Some(null_buffer) = array.nulls() {
         let bitmap_bytes = null_buffer.validity();
-        expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+        if len <= STACK_NULL_MASK_CAPACITY {
+            let mut null_mask = [0_u8; STACK_NULL_MASK_CAPACITY];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask[..len], len);
+            writer.put_slice(&null_mask[..len]);
+        } else {
+            let mut null_mask = vec![0_u8; len];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+            writer.put_slice(&null_mask);
+        }
+    } else {
+        let mut remaining = len;
+        while remaining > 0 {
+            let chunk_len = remaining.min(STACK_NULL_MASK_CAPACITY);
+            writer.put_slice(&STACK_NULL_MASK_ZEROES[..chunk_len]);
+            remaining -= chunk_len;
+        }
     }
-    writer.put_slice(&null_mask);
 }
 
 #[cfg(test)]

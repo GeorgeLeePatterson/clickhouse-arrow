@@ -50,6 +50,8 @@ use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
 
+const STACK_OFFSET_CAPACITY: usize = 64;
+
 /// Extracts the inner `Field` from a `List`, `ListView`, `LargeList`, `LargeListView`, or
 /// `FixedSizeList` data type.
 ///
@@ -67,6 +69,166 @@ fn unwrap_array_data_type(dt: &DataType) -> Result<&DataType> {
         | DataType::LargeListView(f)
         | DataType::FixedSizeList(f, _) => Ok(f.data_type()),
         _ => Err(Error::ArrowSerialize(format!("Expected List or FixedSizeList, got {dt:?}"))),
+    }
+}
+
+async fn write_offsets_i32_async<W: ClickHouseWrite>(
+    writer: &mut W,
+    offsets: &[i32],
+) -> Result<()> {
+    let count = offsets.len().saturating_sub(1);
+    if count == 0 {
+        return Ok(());
+    }
+
+    if count <= STACK_OFFSET_CAPACITY {
+        let mut buffer = [0_u8; STACK_OFFSET_CAPACITY * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.write_all(&buffer[..count * 8]).await?;
+    } else {
+        let mut buffer = vec![0_u8; count * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.write_all(&buffer).await?;
+    }
+
+    Ok(())
+}
+
+async fn write_offsets_i64_async<W: ClickHouseWrite>(
+    writer: &mut W,
+    offsets: &[i64],
+) -> Result<()> {
+    let count = offsets.len().saturating_sub(1);
+    if count == 0 {
+        return Ok(());
+    }
+
+    if count <= STACK_OFFSET_CAPACITY {
+        let mut buffer = [0_u8; STACK_OFFSET_CAPACITY * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.write_all(&buffer[..count * 8]).await?;
+    } else {
+        let mut buffer = vec![0_u8; count * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.write_all(&buffer).await?;
+    }
+
+    Ok(())
+}
+
+fn write_offsets_i32<W: ClickHouseBytesWrite>(writer: &mut W, offsets: &[i32]) {
+    let count = offsets.len().saturating_sub(1);
+    if count == 0 {
+        return;
+    }
+
+    if count <= STACK_OFFSET_CAPACITY {
+        let mut buffer = [0_u8; STACK_OFFSET_CAPACITY * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.put_slice(&buffer[..count * 8]);
+    } else {
+        let mut buffer = vec![0_u8; count * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.put_slice(&buffer);
+    }
+}
+
+fn write_offsets_i64<W: ClickHouseBytesWrite>(writer: &mut W, offsets: &[i64]) {
+    let count = offsets.len().saturating_sub(1);
+    if count == 0 {
+        return;
+    }
+
+    if count <= STACK_OFFSET_CAPACITY {
+        let mut buffer = [0_u8; STACK_OFFSET_CAPACITY * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.put_slice(&buffer[..count * 8]);
+    } else {
+        let mut buffer = vec![0_u8; count * 8];
+        for (index, offset) in offsets[1..].iter().enumerate() {
+            #[expect(clippy::cast_sign_loss, reason = "Arrow list offsets are non-negative")]
+            let bytes = (*offset as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.put_slice(&buffer);
+    }
+}
+
+async fn write_fixed_offsets_async<W: ClickHouseWrite>(
+    writer: &mut W,
+    value_len: usize,
+    rows: usize,
+) -> Result<()> {
+    if rows == 0 {
+        return Ok(());
+    }
+
+    if rows <= STACK_OFFSET_CAPACITY {
+        let mut buffer = [0_u8; STACK_OFFSET_CAPACITY * 8];
+        for index in 0..rows {
+            let bytes = ((value_len * (index + 1)) as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.write_all(&buffer[..rows * 8]).await?;
+    } else {
+        let mut buffer = vec![0_u8; rows * 8];
+        for index in 0..rows {
+            let bytes = ((value_len * (index + 1)) as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.write_all(&buffer).await?;
+    }
+
+    Ok(())
+}
+
+fn write_fixed_offsets<W: ClickHouseBytesWrite>(writer: &mut W, value_len: usize, rows: usize) {
+    if rows == 0 {
+        return;
+    }
+
+    if rows <= STACK_OFFSET_CAPACITY {
+        let mut buffer = [0_u8; STACK_OFFSET_CAPACITY * 8];
+        for index in 0..rows {
+            let bytes = ((value_len * (index + 1)) as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.put_slice(&buffer[..rows * 8]);
+    } else {
+        let mut buffer = vec![0_u8; rows * 8];
+        for index in 0..rows {
+            let bytes = ((value_len * (index + 1)) as u64).to_le_bytes();
+            buffer[index * 8..(index + 1) * 8].copy_from_slice(&bytes);
+        }
+        writer.put_slice(&buffer);
     }
 }
 
@@ -100,23 +262,14 @@ pub(super) async fn serialize_with_inner_async<W: ClickHouseWrite>(
     data_type: &DataType,
     state: &mut SerializerState,
 ) -> Result<()> {
-    macro_rules! write_list_array {
+    macro_rules! write_list_array_i32 {
         ($( $array_ty:ty ),* $(,)?) => {{
             $(
             if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
                 let inner_dt = unwrap_array_data_type(data_type)?;
                 let values = array.values();
                 let offsets = array.value_offsets();
-
-                // Note: ClickHouse server accepts offsets starting from the second value
-                // (e.g., [2, 3, 5] for [0, 2, 3, 5]), inferring the first 0 based on row count.
-                //
-                // Including the first offset breaks functionality.
-                for offset in &offsets[1..] {
-                    #[expect(clippy::cast_sign_loss)]
-                    writer.write_u64_le(*offset as u64).await?;
-                }
-
+                write_offsets_i32_async(writer, offsets.as_ref()).await?;
                 // Write inner values
                 inner_type.serialize_async(writer, values, inner_dt, state).await?;
                 return Ok(());
@@ -125,8 +278,23 @@ pub(super) async fn serialize_with_inner_async<W: ClickHouseWrite>(
         }}
     }
 
-    // ListArray, ListViewArray, LargeListArray, LargeListViewArray
-    write_list_array!(ListArray, ListViewArray, LargeListArray, LargeListViewArray);
+    macro_rules! write_list_array_i64 {
+        ($( $array_ty:ty ),* $(,)?) => {{
+            $(
+            if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
+                let inner_dt = unwrap_array_data_type(data_type)?;
+                let values = array.values();
+                let offsets = array.value_offsets();
+                write_offsets_i64_async(writer, offsets.as_ref()).await?;
+                inner_type.serialize_async(writer, values, inner_dt, state).await?;
+                return Ok(());
+            }
+            )*
+        }}
+    }
+
+    write_list_array_i32!(ListArray, ListViewArray);
+    write_list_array_i64!(LargeListArray, LargeListViewArray);
 
     // FixedSizeListArray
     if let Some(array) = values.as_any().downcast_ref::<FixedSizeListArray>() {
@@ -135,15 +303,7 @@ pub(super) async fn serialize_with_inner_async<W: ClickHouseWrite>(
         #[expect(clippy::cast_sign_loss)]
         let value_len = array.value_length() as usize;
         let num_rows = array.len();
-
-        // Note: ClickHouse server accepts offsets starting from the second value
-        // (e.g., [2, 3, 5] for [0, 2, 3, 5]), inferring the first 0 based on row count.
-        //
-        // Including the first offset breaks functionality.
-        for i in 1..=num_rows {
-            writer.write_u64_le((value_len * i) as u64).await?;
-        }
-
+        write_fixed_offsets_async(writer, value_len, num_rows).await?;
         // Write inner values
         let values = array.values();
         inner_type.serialize_async(writer, values, inner_dt, state).await?;
@@ -174,24 +334,14 @@ pub(super) fn serialize_with_inner<W: ClickHouseBytesWrite>(
     data_type: &DataType,
     state: &mut SerializerState,
 ) -> Result<()> {
-    macro_rules! put_list_array {
+    macro_rules! put_list_array_i32 {
         ($( $array_ty:ty ),* $(,)?) => {{
             $(
             if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
-                // TODO: Should this fallback to a best effort conversion of type_hint -> arrow?
                 let inner_dt = unwrap_array_data_type(data_type)?;
                 let values = array.values();
                 let offsets = array.value_offsets();
-
-                // Note: ClickHouse server accepts offsets starting from the second value
-                // (e.g., [2, 3, 5] for [0, 2, 3, 5]), inferring the first 0 based on row count.
-                //
-                // Including the first offset breaks functionality.
-                for offset in &offsets[1..] {
-                    #[expect(clippy::cast_sign_loss)]
-                    writer.put_u64_le(*offset as u64);
-                }
-
+                write_offsets_i32(writer, offsets.as_ref());
                 // Write inner values
                 inner_type.serialize(writer, values, inner_dt, state)?;
                 return Ok(());
@@ -200,8 +350,23 @@ pub(super) fn serialize_with_inner<W: ClickHouseBytesWrite>(
         }}
     }
 
-    // ListArray, ListViewArray, LargeListArray, LargeListViewArray
-    put_list_array!(ListArray, ListViewArray, LargeListArray, LargeListViewArray);
+    macro_rules! put_list_array_i64 {
+        ($( $array_ty:ty ),* $(,)?) => {{
+            $(
+            if let Some(array) = values.as_any().downcast_ref::<$array_ty>() {
+                let inner_dt = unwrap_array_data_type(data_type)?;
+                let values = array.values();
+                let offsets = array.value_offsets();
+                write_offsets_i64(writer, offsets.as_ref());
+                inner_type.serialize(writer, values, inner_dt, state)?;
+                return Ok(());
+            }
+            )*
+        }}
+    }
+
+    put_list_array_i32!(ListArray, ListViewArray);
+    put_list_array_i64!(LargeListArray, LargeListViewArray);
 
     // FixedSizeListArray
     if let Some(array) = values.as_any().downcast_ref::<FixedSizeListArray>() {
@@ -210,15 +375,7 @@ pub(super) fn serialize_with_inner<W: ClickHouseBytesWrite>(
         #[expect(clippy::cast_sign_loss)]
         let value_len = array.value_length() as usize;
         let num_rows = array.len();
-
-        // Note: ClickHouse server accepts offsets starting from the second value
-        // (e.g., [2, 3, 5] for [0, 2, 3, 5]), inferring the first 0 based on row count.
-        //
-        // Including the first offset breaks functionality.
-        for i in 1..=num_rows {
-            writer.put_u64_le((value_len * i) as u64);
-        }
-
+        write_fixed_offsets(writer, value_len, num_rows);
         // Write inner values
         let values = array.values();
         inner_type.serialize(writer, values, inner_dt, state)?;

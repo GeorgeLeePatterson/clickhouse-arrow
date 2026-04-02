@@ -51,6 +51,7 @@
 ///   assert_eq!(writer, expected);
 /// }
 /// ```
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::*;
@@ -65,6 +66,25 @@ use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::native::types::low_cardinality::*;
 use crate::{Error, Result, Type};
+
+#[inline]
+fn dict_insert_value(
+    value: &[u8],
+    dict: &mut Vec<Vec<u8>>,
+    dict_index: &mut HashMap<Vec<u8>, i32>,
+) -> i32 {
+    if let Some(&index) = dict_index.get(value) {
+        index
+    } else {
+        #[expect(clippy::cast_possible_wrap, reason = "dictionary size must fit i32 keys")]
+        #[expect(clippy::cast_possible_truncation, reason = "dictionary size must fit i32 keys")]
+        let index = dict.len() as i32;
+        let owned = value.to_vec();
+        let _ = dict_index.insert(owned.clone(), index);
+        dict.push(owned);
+        index
+    }
+}
 
 /// Serializes an Arrow array to `ClickHouse`’s native format for `LowCardinality` types.
 ///
@@ -464,52 +484,53 @@ async fn write_string_values<W: ClickHouseWrite>(
     nullable: bool,
     state: &mut SerializerState,
 ) -> Result<()> {
-    // Helper functions for macro
-    fn bytes(v: &str) -> &[u8] { v.as_bytes() }
-    fn passthrough(v: &[u8]) -> &[u8] { v }
-
-    // Handle string-like array
     let mut dict = Vec::with_capacity(64.min(values.len()));
+    let mut dict_index = HashMap::with_capacity(64.min(values.len()));
     let mut keys = Vec::with_capacity(values.len());
     let nullable = values.null_count() > 0 || nullable;
 
-    // Pre-seed with an empty string, aka default value
     if nullable {
-        dict.push(b"" as &[u8]);
+        dict.push(Vec::new());
+        let _ = dict_index.insert(Vec::new(), 0);
     }
 
     macro_rules! handle_string_array {
-        ($array_ty:ty, $coerce:expr) => {{
+        ($array_ty:ty) => {{
             let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
             for i in 0..array.len() {
                 if array.is_null(i) {
-                    // TODO: Should a fallback be used here, shift the vec for instance?
-                    // Performance hit?
                     debug_assert!(nullable, "Null encountered in non-nullable array");
                     keys.push(0);
                 } else {
                     let value = array.value(i);
-                    let value = $coerce(value);
-                    let index = dict.iter().position(|v| *v == value).unwrap_or_else(|| {
-                        dict.push(value);
-                        dict.len() - 1
-                    });
+                    keys.push(dict_insert_value(value.as_ref(), &mut dict, &mut dict_index));
+                };
+            }
+        }};
+    }
 
-                    #[expect(clippy::cast_possible_wrap)]
-                    #[expect(clippy::cast_possible_truncation)]
-                    keys.push(index as i32);
+    macro_rules! handle_binary_array {
+        ($array_ty:ty) => {{
+            let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
+            for i in 0..array.len() {
+                if array.is_null(i) {
+                    debug_assert!(nullable, "Null encountered in non-nullable array");
+                    keys.push(0);
+                } else {
+                    let value = array.value(i);
+                    keys.push(dict_insert_value(value, &mut dict, &mut dict_index));
                 };
             }
         }};
     }
 
     match values.data_type() {
-        DataType::Utf8 => handle_string_array!(StringArray, bytes),
-        DataType::LargeUtf8 => handle_string_array!(LargeStringArray, bytes),
-        DataType::Utf8View => handle_string_array!(StringViewArray, bytes),
-        DataType::Binary => handle_string_array!(BinaryArray, passthrough),
-        DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
-        DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
+        DataType::Utf8 => handle_string_array!(StringArray),
+        DataType::LargeUtf8 => handle_string_array!(LargeStringArray),
+        DataType::Utf8View => handle_string_array!(StringViewArray),
+        DataType::Binary => handle_binary_array!(BinaryArray),
+        DataType::BinaryView => handle_binary_array!(BinaryViewArray),
+        DataType::LargeBinary => handle_binary_array!(LargeBinaryArray),
         dt => {
             return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
@@ -530,8 +551,6 @@ async fn write_string_values<W: ClickHouseWrite>(
     writer.write_u64_le(flags).await?;
     writer.write_u64_le(dict_size as u64).await?;
 
-    // Write dictionary values
-    // Binary is used to write the bytes directly, although I'm not sure there's any gains
     let values_array = Arc::new(BinaryArray::from_iter_values(dict)) as ArrayRef;
     Type::Binary.serialize_async(writer, &values_array, &DataType::Binary, state).await?;
 
@@ -558,52 +577,53 @@ fn put_string_values<W: ClickHouseBytesWrite>(
     nullable: bool,
     state: &mut SerializerState,
 ) -> Result<()> {
-    // Helper functions for macro
-    fn bytes(v: &str) -> &[u8] { v.as_bytes() }
-    fn passthrough(v: &[u8]) -> &[u8] { v }
-
-    // Handle string-like array
     let mut dict = Vec::with_capacity(64.min(values.len()));
+    let mut dict_index = HashMap::with_capacity(64.min(values.len()));
     let mut keys = Vec::with_capacity(values.len());
     let nullable = values.null_count() > 0 || nullable;
 
-    // Pre-seed with an empty string, aka default value
     if nullable {
-        dict.push(b"" as &[u8]);
+        dict.push(Vec::new());
+        let _ = dict_index.insert(Vec::new(), 0);
     }
 
     macro_rules! handle_string_array {
-        ($array_ty:ty, $coerce:expr) => {{
+        ($array_ty:ty) => {{
             let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
             for i in 0..array.len() {
                 if array.is_null(i) {
-                    // TODO: Should a fallback be used here, shift the vec for instance?
-                    // Performance hit?
                     debug_assert!(nullable, "Null encountered in non-nullable array");
                     keys.push(0);
                 } else {
                     let value = array.value(i);
-                    let value = $coerce(value);
-                    let index = dict.iter().position(|v| *v == value).unwrap_or_else(|| {
-                        dict.push(value);
-                        dict.len() - 1
-                    });
+                    keys.push(dict_insert_value(value.as_ref(), &mut dict, &mut dict_index));
+                };
+            }
+        }};
+    }
 
-                    #[expect(clippy::cast_possible_wrap)]
-                    #[expect(clippy::cast_possible_truncation)]
-                    keys.push(index as i32);
+    macro_rules! handle_binary_array {
+        ($array_ty:ty) => {{
+            let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
+            for i in 0..array.len() {
+                if array.is_null(i) {
+                    debug_assert!(nullable, "Null encountered in non-nullable array");
+                    keys.push(0);
+                } else {
+                    let value = array.value(i);
+                    keys.push(dict_insert_value(value, &mut dict, &mut dict_index));
                 };
             }
         }};
     }
 
     match values.data_type() {
-        DataType::Utf8 => handle_string_array!(StringArray, bytes),
-        DataType::LargeUtf8 => handle_string_array!(LargeStringArray, bytes),
-        DataType::Utf8View => handle_string_array!(StringViewArray, bytes),
-        DataType::Binary => handle_string_array!(BinaryArray, passthrough),
-        DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
-        DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
+        DataType::Utf8 => handle_string_array!(StringArray),
+        DataType::LargeUtf8 => handle_string_array!(LargeStringArray),
+        DataType::Utf8View => handle_string_array!(StringViewArray),
+        DataType::Binary => handle_binary_array!(BinaryArray),
+        DataType::BinaryView => handle_binary_array!(BinaryViewArray),
+        DataType::LargeBinary => handle_binary_array!(LargeBinaryArray),
         dt => {
             return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
@@ -624,8 +644,6 @@ fn put_string_values<W: ClickHouseBytesWrite>(
     writer.put_u64_le(flags);
     writer.put_u64_le(dict_size as u64);
 
-    // Write dictionary values
-    // Binary is used to write the bytes directly, although I'm not sure there's any gains
     let values_array = Arc::new(BinaryArray::from_iter_values(dict)) as ArrayRef;
     Type::Binary.serialize(writer, &values_array, &DataType::Binary, state)?;
 

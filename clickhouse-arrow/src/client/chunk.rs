@@ -9,6 +9,8 @@ use tracing::{debug, trace};
 
 use crate::io::{ClickHouseRead, ClickHouseWrite};
 
+const CHUNK_WRITE_BUFFER_CAPACITY: usize = 1024 * 1024;
+
 #[pin_project]
 #[derive(Clone, Debug)]
 pub(super) struct ChunkWriter<W: ClickHouseWrite> {
@@ -18,7 +20,9 @@ pub(super) struct ChunkWriter<W: ClickHouseWrite> {
 }
 
 impl<W: ClickHouseWrite> ChunkWriter<W> {
-    pub(super) fn new(inner: W) -> Self { Self { inner, buffer: Vec::new() } }
+    pub(super) fn new(inner: W) -> Self {
+        Self { inner, buffer: Vec::with_capacity(CHUNK_WRITE_BUFFER_CAPACITY) }
+    }
 
     pub(super) async fn finish_chunk(&mut self) -> io::Result<()> {
         let len = self.buffer.len();

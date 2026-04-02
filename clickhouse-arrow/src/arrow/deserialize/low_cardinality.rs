@@ -11,6 +11,8 @@ use crate::io::ClickHouseRead;
 use crate::native::types::low_cardinality::*;
 use crate::{Error, Result, Type};
 
+const STACK_DICTIONARY_NULL_MASK_CAPACITY: usize = 1024;
+
 /// Deserializes a `ClickHouse` `LowCardinality` column into an Arrow `DictionaryArray<Int32Type>`.
 ///
 /// The `LowCardinality` type in `ClickHouse` is a dictionary-encoded column that stores a
@@ -125,20 +127,27 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
 
     // Deserialize global dictionary or additional keys
     let dictionary = if needs_global_dictionary || needs_update_dictionary || has_additional_keys {
-        // If the inner type is nullable, then the first value deserialized will be a "default"
-        // value. Use the null mask to enforce this. The serializer does not write a null
-        let null_mask = if inner.is_nullable() {
-            let mut mask = vec![0_u8; dict_size];
-            mask[0] = 1;
-            mask
+        if inner.is_nullable() {
+            let mut stack_null_mask = [0_u8; STACK_DICTIONARY_NULL_MASK_CAPACITY];
+            let mut heap_null_mask = Vec::new();
+            let null_mask = if dict_size <= STACK_DICTIONARY_NULL_MASK_CAPACITY {
+                stack_null_mask[0] = 1;
+                &stack_null_mask[..dict_size]
+            } else {
+                heap_null_mask.resize(dict_size, 0);
+                heap_null_mask[0] = 1;
+                heap_null_mask.as_slice()
+            };
+            inner
+                .strip_null()
+                .deserialize_arrow(value_builder, reader, value_type, dict_size, null_mask, ctx)
+                .await?
         } else {
-            vec![]
-        };
-
-        inner
-            .strip_null()
-            .deserialize_arrow(value_builder, reader, value_type, dict_size, &null_mask, ctx)
-            .await?
+            inner
+                .strip_null()
+                .deserialize_arrow(value_builder, reader, value_type, dict_size, &[], ctx)
+                .await?
+        }
 
     // No dictionary found
     } else {
