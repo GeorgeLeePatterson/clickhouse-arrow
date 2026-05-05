@@ -6,6 +6,9 @@ DISABLE_CLEANUP := env('DISABLE_CLEANUP', '')
 # features := ["inner_pool", "pool", "serde", "derive", "cloud", "rust_decimal", "extended-types"]
 
 features := 'inner_pool pool serde derive cloud rust_decimal extended-types'
+coverage_ignore_regex := "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*"
+coverage_min_lines := "90"
+coverage_test_threads := "1"
 
 # List of Examples
 
@@ -23,6 +26,10 @@ test-extended:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F "test-utils extended-types" -- --nocapture --show-output
 
+test-all:
+    just -f {{ justfile() }} test
+    just -f {{ justfile() }} test-extended
+
 test-one test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils "{{ test_name }}" -- --nocapture --show-output
@@ -34,24 +41,44 @@ test-integration test_name:
 # --- COVERAGE ---
 
 coverage:
-    cargo llvm-cov --html \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-dir coverage -F test-utils --open
+    mkdir -p coverage
+    cargo llvm-cov clean --workspace
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F test-utils --no-report
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F "test-utils extended-types" --no-report
+    cargo llvm-cov report --html \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-dir coverage/html \
+     --fail-under-lines {{ coverage_min_lines }}
+
+coverage-default:
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --html \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-dir coverage/default -F test-utils --open
 
 coverage-extended:
-    cargo llvm-cov --html \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-dir coverage -F "test-utils extended-types" --open
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --html \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-dir coverage/extended -F "test-utils extended-types" --open
 
 coverage-json:
-    cargo llvm-cov --json \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-path coverage/cov.json -F test-utils
+    mkdir -p coverage
+    cargo llvm-cov clean --workspace
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F test-utils --no-report
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F "test-utils extended-types" --no-report
+    cargo llvm-cov report --json --summary-only \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-path coverage/cov.json \
+     --fail-under-lines {{ coverage_min_lines }}
 
 coverage-lcov:
-    cargo llvm-cov --lcov \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-path coverage/lcov.info -F test-utils
+    mkdir -p coverage
+    cargo llvm-cov clean --workspace
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F test-utils --no-report
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F "test-utils extended-types" --no-report
+    cargo llvm-cov report --lcov \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-path coverage/lcov.info \
+     --fail-under-lines {{ coverage_min_lines }}
 
 # --- DOCS ---
 docs:
@@ -184,12 +211,17 @@ fix:
 
 # --- MAINTENANCE ---
 
-# Run checks CI will
-checks:
+# Run checks CI will, excluding coverage so CI can parallelize test/lint and coverage jobs.
+checks-no-coverage:
     cargo +nightly fmt --check -- --config-path ./rustfmt.toml
     cargo +nightly clippy --all-features --all-targets
     cargo +stable clippy --all-features --all-targets -- -D warnings
-    just -f {{ justfile() }} test
+    just -f {{ justfile() }} test-all
+
+# Commit-readiness gate. This is the authoritative local truth.
+checks:
+    just -f {{ justfile() }} checks-no-coverage
+    just -f {{ justfile() }} coverage-json
 
 # Initialize development environment for maintainers
 init-dev:

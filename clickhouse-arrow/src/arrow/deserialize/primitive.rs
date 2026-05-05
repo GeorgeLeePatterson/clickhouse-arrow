@@ -668,6 +668,27 @@ mod tests {
         assert_eq!(array, &Int32Array::from(vec![Some(0), Some(7), Some(0), Some(0), None]));
     }
 
+    #[cfg(feature = "extended-types")]
+    #[tokio::test]
+    async fn test_deserialize_sparse_time_overflow_errors() {
+        let type_hint = Type::Time;
+        let rows = 1;
+        let input = u32::MAX.to_le_bytes().to_vec();
+        let mut reader = Cursor::new(input);
+        let data_type = DataType::Time32(TimeUnit::Second);
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+
+        let result =
+            deserialize_sparse_for_test(&type_hint, &mut builder, &mut reader, rows, &[], vec![0])
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::ArrowDeserialize(message))
+            if message.contains("failed to convert u32 to i32 during sparse Arrow deserialization")
+        ));
+    }
+
     /// Tests deserialization of `Int16` with non-nullable values.
     #[tokio::test]
     async fn test_deserialize_int16() {

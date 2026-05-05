@@ -1314,6 +1314,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_serialize_uuid_with_null() {
+        let column = Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                vec![
+                    Some(
+                        [
+                            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
+                            0x9a, 0xbc, 0xde, 0xf0,
+                        ]
+                        .as_ref(),
+                    ),
+                    None,
+                ]
+                .into_iter(),
+                16,
+            )
+            .unwrap(),
+        ) as ArrayRef;
+        let field = Field::new("uuid", DataType::FixedSizeBinary(16), true);
+        let mut writer = MockWriter::new();
+        serialize_async(&Type::Uuid, &mut writer, &column, field.data_type()).await.unwrap();
+        let expected = vec![
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // High bits
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // Low bits
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // null UUID
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
     async fn test_serialize_uuid_invalid() {
         let column = Arc::new(
             FixedSizeBinaryArray::try_from_iter(

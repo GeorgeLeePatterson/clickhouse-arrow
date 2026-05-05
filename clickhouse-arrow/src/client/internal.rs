@@ -489,8 +489,15 @@ impl<T: ClientFormat> InternalConn<T> {
             InsertState::Batch(data) => {
                 if !data.is_empty() {
                     for block in data {
-                        Writer::send_data::<T>(writer, block, qid, header, revision, self.metadata)
-                            .await?;
+                        Writer::send_data_no_flush::<T>(
+                            writer,
+                            block,
+                            qid,
+                            header,
+                            revision,
+                            self.metadata,
+                        )
+                        .await?;
                     }
                 }
                 self.send_delimiter(writer, qid).await?;

@@ -135,6 +135,20 @@ impl<W: ClickHouseWrite> Writer<W> {
         Ok(())
     }
 
+    pub(super) async fn send_data_no_flush<T: ClientFormat>(
+        writer: &mut W,
+        data: T::Data,
+        qid: Qid,
+        header: Option<&[(String, Type)]>,
+        revision: u64,
+        metadata: ClientMetadata,
+    ) -> Result<()> {
+        writer.write_var_uint(ClientPacketId::Data as u64).await?;
+        writer.write_string("").await?; // Table name
+        T::write(writer, data, qid, header, revision, metadata).await?;
+        Ok(())
+    }
+
     pub(super) async fn send_addendum(
         writer: &mut W,
         revision: u64,
@@ -180,9 +194,11 @@ impl<W: ClickHouseWrite> Writer<W> {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
     use bytes::{Buf, Bytes};
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncWrite, AsyncWriteExt};
     use uuid::Uuid;
 
     use super::*;
@@ -201,6 +217,35 @@ mod tests {
             client_id: 42,
             compression,
             arrow_options: super::super::ArrowOptions::default(),
+        }
+    }
+
+    #[derive(Default)]
+    struct FlushCountingWriter {
+        bytes:       Vec<u8>,
+        flush_count: usize,
+    }
+
+    impl AsyncWrite for FlushCountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.bytes.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            self.flush_count += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
     }
 
@@ -376,5 +421,41 @@ mod tests {
         .unwrap();
         old_writer.flush().await.unwrap();
         assert!(old_writer.into_inner().is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_data_no_flush_skips_flush() {
+        let block = Block {
+            info:         BlockInfo::default(),
+            rows:         0,
+            column_types: vec![],
+            column_data:  vec![],
+        };
+        let qid = Qid::from(Uuid::from_u128(0x8888));
+
+        let mut writer = FlushCountingWriter::default();
+        Writer::<FlushCountingWriter>::send_data_no_flush::<NativeFormat>(
+            &mut writer,
+            block.clone(),
+            qid,
+            None,
+            DBMS_TCP_PROTOCOL_VERSION,
+            metadata(CompressionMethod::None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(writer.flush_count, 0);
+
+        Writer::<FlushCountingWriter>::send_data::<NativeFormat>(
+            &mut writer,
+            block,
+            qid,
+            None,
+            DBMS_TCP_PROTOCOL_VERSION,
+            metadata(CompressionMethod::None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(writer.flush_count, 1);
     }
 }
