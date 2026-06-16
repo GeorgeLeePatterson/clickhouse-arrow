@@ -716,12 +716,9 @@ write_primitive_values!(write_date_values, scalar u16::default(), write_u16_le, 
         Ok::<_, Error>(v as u16) // Days since epoch
     })
 ]);
+// CH Date32 wire format is days-since-1970 (signed i32), same epoch as Arrow Date32.
 write_primitive_values!(write_date32_values, scalar i32::default(), write_i32_le, [
-    (Date32Array, |v: i32| {
-        const DAYS_1900_TO_1970: i32 = 25_567; // Days from 1900-01-01 to 1970-01-01
-        let adjusted = v + DAYS_1900_TO_1970;
-        Ok::<_, Error>(adjusted) // Days since 1900-01-01
-    })
+    (Date32Array, |v: i32| { Ok::<_, Error>(v) })
 ]);
 write_primitive_values!(write_datetime_values, scalar u32::default(), write_u32_le, [
     (TimestampSecondArray, |v: i64| {
@@ -771,12 +768,9 @@ put_primitive_values!(put_date_values, scalar u16::default(), put_u16_le, [
         Ok::<_, Error>(v as u16) // Days since epoch
     })
 ]);
+// CH Date32 wire format is days-since-1970 (signed i32), same epoch as Arrow Date32.
 put_primitive_values!(put_date32_values, scalar i32::default(), put_i32_le, [
-    (Date32Array, |v: i32| {
-        const DAYS_1900_TO_1970: i32 = 25_567; // Days from 1900-01-01 to 1970-01-01
-        let adjusted = v + DAYS_1900_TO_1970;
-        Ok::<_, Error>(adjusted) // Days since 1900-01-01
-    })
+    (Date32Array, |v: i32| { Ok::<_, Error>(v) })
 ]);
 put_primitive_values!(put_datetime_values, scalar u32::default(), put_u32_le, [
     (TimestampSecondArray, |v: i64| {

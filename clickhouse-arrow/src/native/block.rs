@@ -1,9 +1,10 @@
 use std::str::FromStr;
 
 use indexmap::IndexMap;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::block_info::BlockInfo;
+use super::kinds::{SerializationKind, read_serialization_kind};
 use super::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::deserialize::ClickHouseNativeDeserializer;
 use crate::formats::protocol_data::ProtocolData;
@@ -286,10 +287,16 @@ impl ProtocolData<Self, ()> for Block {
                 .await
                 .inspect_err(|e| error!("reading column type (name {name}): {e}"))?;
 
-            // TODO: implement
-            let mut _has_custom_serialization = false;
-            if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                _has_custom_serialization = reader.read_u8().await? != 0;
+            // The value-mode reader only knows how to drive dense column bodies.
+            // Sparse and the other special kinds would need a Value-domain
+            // materialiser; until that exists they're a protocol-level
+            // mismatch, not a silent zero-row result.
+            let kind = read_serialization_kind(reader, revision).await?;
+            if kind != SerializationKind::Default {
+                return Err(Error::Protocol(format!(
+                    "value-mode block reader does not support SerializationInfo kind {kind:?} \
+                     (column {name}); use the Arrow reader for sparse-aware decoding"
+                )));
             }
 
             let type_ = Type::from_str(&type_name).inspect_err(|error| {

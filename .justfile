@@ -18,6 +18,14 @@ test:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils -- --nocapture --show-output
 
+# Serial test runner (slower; avoids Docker container-start contention)
+test-serial:
+    # Disables both within-binary (--test-threads=1) and across-binary
+    # (--jobs 1) parallelism. Use when `just test` fails with
+    # WaitContainer(StartupTimeout) or Docker is under load.
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+     --jobs 1 -F test-utils -- --nocapture --show-output --test-threads=1
+
 test-one test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils "{{ test_name }}" -- --nocapture --show-output

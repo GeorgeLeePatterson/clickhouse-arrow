@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrow::array::{Array, new_empty_array};
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::builder::TypedBuilder;
 use super::deserialize::{ArrowDeserializerState, ClickHouseArrowDeserializer};
@@ -21,10 +21,12 @@ use crate::formats::{DeserializerState, SerializerState};
 use crate::geo::normalize_geo_type;
 use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::block_info::BlockInfo;
-use crate::native::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
+use crate::native::kinds::{
+    SerializationKind, read_serialization_kind, read_serialization_kind_sync,
+};
 use crate::prelude::*;
 use crate::serialize::ClickHouseNativeSerializer;
-use crate::{ArrowOptions, Result, Type};
+use crate::{ArrowOptions, Error, Result, Type};
 
 /// Implementation of `ProtocolData` for Arrow `RecordBatch`es.
 ///
@@ -235,11 +237,10 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                 trace!(?field, ?type_hint, ?options, "deserializing column {i}");
             }
 
-            let _has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                reader.read_u8().await? != 0
-            } else {
-                false
-            };
+            // Per-column SerializationInfo kind stack (gated on
+            // DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION). See
+            // crate::native::protocol for the dialect we declare.
+            let kind = read_serialization_kind(reader, revision).await?;
 
             let array = if rows > 0 {
                 let dt = field.data_type();
@@ -252,11 +253,40 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                 };
 
                 let row_buffer = &mut deser.buffer;
-                type_hint.deserialize_prefix_async(reader, &mut prefix_state).await?;
-                type_hint
-                    .deserialize_arrow_async(builder, reader, dt, rows, &[], row_buffer)
-                    .await
-                    .inspect_err(|error| error!(?error, ?field, "col {i} deserialize"))?
+                match kind {
+                    SerializationKind::Default => {
+                        type_hint.deserialize_prefix_async(reader, &mut prefix_state).await?;
+                        type_hint
+                            .deserialize_arrow_async(builder, reader, dt, rows, &[], row_buffer)
+                            .await
+                            .inspect_err(|error| {
+                                error!(?error, ?field, "col {i} deserialize");
+                            })?
+                    }
+                    SerializationKind::Sparse => {
+                        crate::arrow::deserialize::sparse::deserialize_async(
+                            &type_hint,
+                            reader,
+                            dt,
+                            field.is_nullable(),
+                            rows,
+                            &[],
+                            row_buffer,
+                            &mut prefix_state,
+                        )
+                        .await
+                        .inspect_err(|error| {
+                            error!(?error, ?field, "col {i} sparse deserialize");
+                        })?
+                    }
+                    other => {
+                        return Err(Error::Protocol(format!(
+                            "unsupported SerializationInfo kind for column {:?}: {:?}",
+                            field.name(),
+                            other,
+                        )));
+                    }
+                }
             } else {
                 new_empty_array(field.data_type())
             };
@@ -308,12 +338,7 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                 trace!(?field, ?type_hint, ?options, "deserializing column {i}");
             }
 
-            // TODO: Ignored - pass this to prefix deserialization
-            let _has_custom = if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                reader.try_get_u8()? != 0
-            } else {
-                false
-            };
+            let kind = read_serialization_kind_sync(reader, revision)?;
 
             let array = if rows > 0 {
                 let dt = field.data_type();
@@ -326,10 +351,32 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
                     builders.last_mut().unwrap()
                 };
 
-                type_hint.deserialize_prefix(reader)?;
-                type_hint
-                    .deserialize_arrow(builder, reader, dt, rows, &[], &mut deser.buffer)
-                    .inspect_err(|error| error!(?error, ?type_hint, ?field, "deserialize {i}"))?
+                match kind {
+                    SerializationKind::Default => {
+                        type_hint.deserialize_prefix(reader)?;
+                        type_hint
+                            .deserialize_arrow(builder, reader, dt, rows, &[], &mut deser.buffer)
+                            .inspect_err(|error| {
+                                error!(?error, ?type_hint, ?field, "deserialize {i}");
+                            })?
+                    }
+                    // Sparse on the sync path: the body wire format is the
+                    // same as async (offsets stream then nested values),
+                    // but the existing sync deserialize_prefix /
+                    // deserialize_arrow API doesn't compose for the
+                    // recursive nested call as cleanly. Sync clients
+                    // running against post-54465 servers should expect
+                    // this to surface; the async path is the primary
+                    // production target.
+                    other => {
+                        return Err(Error::Protocol(format!(
+                            "SerializationInfo kind {:?} on sync read path is not implemented \
+                             (column {:?}); switch to the async client for sparse-aware reads",
+                            other,
+                            field.name(),
+                        )));
+                    }
+                }
             } else {
                 new_empty_array(field.data_type())
             };
