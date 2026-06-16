@@ -75,6 +75,60 @@ pub(crate) async fn read_serialization_kind<R: ClickHouseRead>(
     })
 }
 
+#[cfg(test)]
+mod tests_async {
+    use std::io::Cursor;
+
+    use super::*;
+
+    const GATE: u64 = DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
+
+    async fn read(bytes: &[u8], revision: u64) -> Result<SerializationKind> {
+        let mut reader = Cursor::new(bytes.to_vec());
+        read_serialization_kind(&mut reader, revision).await
+    }
+
+    #[tokio::test]
+    async fn pre_gate_revision_is_default_and_reads_nothing() {
+        // Below the gate, no byte is consumed — pass an empty buffer to prove it.
+        assert_eq!(read(&[], GATE - 1).await.unwrap(), SerializationKind::Default);
+    }
+
+    #[tokio::test]
+    async fn has_custom_zero_is_default() {
+        assert_eq!(read(&[0], GATE).await.unwrap(), SerializationKind::Default);
+    }
+
+    #[tokio::test]
+    async fn each_predefined_kind() {
+        // has_custom=1, then the kind byte.
+        assert_eq!(read(&[1, 0], GATE).await.unwrap(), SerializationKind::Default);
+        assert_eq!(read(&[1, 1], GATE).await.unwrap(), SerializationKind::Sparse);
+        assert_eq!(read(&[1, 2], GATE).await.unwrap(), SerializationKind::Detached);
+        assert_eq!(read(&[1, 3], GATE).await.unwrap(), SerializationKind::DetachedOverSparse);
+        assert_eq!(read(&[1, 4], GATE).await.unwrap(), SerializationKind::Replicated);
+    }
+
+    #[tokio::test]
+    async fn combination_drains_stack_and_leaves_frame_aligned() {
+        // has_custom=1, kind=5 (COMBINATION), varint stack_len=3, then 3 kind
+        // bytes, then a sentinel that must remain unread.
+        let mut reader = Cursor::new(vec![1, 5, 3, 0, 1, 2, 0xAB]);
+        let kind = read_serialization_kind(&mut reader, GATE).await.unwrap();
+        assert_eq!(kind, SerializationKind::Combination);
+        // The next byte must be the sentinel — the 3-entry stack was consumed.
+        assert_eq!(reader.read_u8().await.unwrap(), 0xAB);
+    }
+
+    #[tokio::test]
+    async fn unknown_kind_is_protocol_error() {
+        let err = read(&[1, 6], GATE).await.unwrap_err();
+        assert!(
+            matches!(err, Error::Protocol(msg) if msg.contains("unknown SerializationInfo kind"))
+        );
+    }
+}
+
 /// Sync counterpart of [`read_serialization_kind`] for callers using
 /// the bytes-buffer reader path. Mirrors the async logic exactly. The
 /// sync block reader currently has no callers in the wider tree (every
@@ -112,4 +166,53 @@ pub(crate) fn read_serialization_kind_sync<R: ClickHouseBytesRead>(
             return Err(Error::Protocol(format!("unknown SerializationInfo kind: {other}")));
         }
     })
+}
+
+#[cfg(test)]
+mod tests_sync {
+    use super::*;
+
+    const GATE: u64 = DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
+
+    // `ClickHouseBytesRead` is implemented for any `bytes::Buf`; `&[u8]` is one.
+    fn read(mut bytes: &[u8], revision: u64) -> Result<SerializationKind> {
+        read_serialization_kind_sync(&mut bytes, revision)
+    }
+
+    #[test]
+    fn pre_gate_revision_is_default_and_reads_nothing() {
+        assert_eq!(read(&[], GATE - 1).unwrap(), SerializationKind::Default);
+    }
+
+    #[test]
+    fn has_custom_zero_is_default() {
+        assert_eq!(read(&[0], GATE).unwrap(), SerializationKind::Default);
+    }
+
+    #[test]
+    fn each_predefined_kind() {
+        assert_eq!(read(&[1, 0], GATE).unwrap(), SerializationKind::Default);
+        assert_eq!(read(&[1, 1], GATE).unwrap(), SerializationKind::Sparse);
+        assert_eq!(read(&[1, 2], GATE).unwrap(), SerializationKind::Detached);
+        assert_eq!(read(&[1, 3], GATE).unwrap(), SerializationKind::DetachedOverSparse);
+        assert_eq!(read(&[1, 4], GATE).unwrap(), SerializationKind::Replicated);
+    }
+
+    #[test]
+    fn combination_drains_stack_and_leaves_frame_aligned() {
+        // has_custom=1, kind=5, stack_len=3, 3 kind bytes, then a sentinel.
+        let mut buf: &[u8] = &[1, 5, 3, 0, 1, 2, 0xAB];
+        let kind = read_serialization_kind_sync(&mut buf, GATE).unwrap();
+        assert_eq!(kind, SerializationKind::Combination);
+        // The cursor advanced past the 3-entry stack; the sentinel remains.
+        assert_eq!(buf, &[0xAB]);
+    }
+
+    #[test]
+    fn unknown_kind_is_protocol_error() {
+        let err = read(&[1, 6], GATE).unwrap_err();
+        assert!(
+            matches!(err, Error::Protocol(msg) if msg.contains("unknown SerializationInfo kind"))
+        );
+    }
 }

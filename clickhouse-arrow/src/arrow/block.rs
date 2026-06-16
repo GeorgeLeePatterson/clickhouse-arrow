@@ -530,6 +530,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_deserialize_rejects_unsupported_kind() {
+        // A column header that declares has_custom=1 and kind=2 (Detached) —
+        // a kind the arrow reader does not support. It must be rejected with
+        // Error::Protocol, not silently mis-framed.
+        let mut buffer = Vec::new();
+        BlockInfo::default().write_async(&mut buffer).await.unwrap();
+        buffer.write_var_uint(1).await.unwrap(); // Columns
+        buffer.write_var_uint(1).await.unwrap(); // Rows
+        buffer.write_string("v").await.unwrap();
+        buffer.write_string("Int32").await.unwrap();
+        buffer.write_u8(1).await.unwrap(); // has_custom = 1
+        buffer.write_u8(2).await.unwrap(); // kind = 2 (Detached)
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(buffer);
+        let result = RecordBatch::read_async(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            ArrowOptions::default(),
+            &mut state,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(m)) if m.contains("unsupported SerializationInfo kind")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_sparse_all_default_column() {
+        // A single-row Int32 column serialized Sparse where the only row is
+        // the default (0). The SparseOffsets stream is just the terminator
+        // (END_OF_GRANULE_FLAG | group_size=1 trailing default), and there are
+        // zero non-default values. Exercises the Sparse dispatch + materialize
+        // path end-to-end through the block reader.
+        const END_OF_GRANULE_FLAG: u64 = 1u64 << 62;
+
+        let mut buffer = Vec::new();
+        BlockInfo::default().write_async(&mut buffer).await.unwrap();
+        buffer.write_var_uint(1).await.unwrap(); // Columns
+        buffer.write_var_uint(1).await.unwrap(); // Rows
+        buffer.write_string("v").await.unwrap();
+        buffer.write_string("Int32").await.unwrap();
+        buffer.write_u8(1).await.unwrap(); // has_custom = 1
+        buffer.write_u8(1).await.unwrap(); // kind = 1 (Sparse)
+        // SparseOffsets: one flagged terminator = "1 trailing default, no value".
+        buffer.write_var_uint(END_OF_GRANULE_FLAG | 1).await.unwrap();
+        // SparseElements: zero non-default Int32 values follow.
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(buffer);
+        let batch = RecordBatch::read_async(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            ArrowOptions::default(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 1);
+        let col = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(col.null_count(), 0);
+        assert_eq!(col.value(0), 0, "the single sparse-default row materializes as 0");
+    }
+
+    #[tokio::test]
     async fn test_deserialize_malformed_input() {
         let mut buffer = Vec::new();
         BlockInfo::default().write_async(&mut buffer).await.unwrap(); // BlockInfo
@@ -1707,6 +1775,34 @@ mod tests_sync {
             result,
             Err(Error::TypeParseError(m))
             if &m == "invalid type name: 'InvalidType'"
+        ));
+    }
+
+    #[test]
+    fn test_deserialize_sync_rejects_non_default_kind() {
+        // The sync arrow read path has no sparse-aware decoder, so any
+        // non-Default kind (here kind=1, Sparse) must surface a protocol error
+        // rather than mis-frame the dense body.
+        let mut buffer = Vec::new();
+        BlockInfo::default().write(&mut buffer).unwrap();
+        buffer.put_var_uint(1).unwrap(); // Columns
+        buffer.put_var_uint(1).unwrap(); // Rows
+        buffer.put_string("v").unwrap();
+        buffer.put_string("Int32").unwrap();
+        buffer.put_u8(1); // has_custom = 1
+        buffer.put_u8(1); // kind = 1 (Sparse)
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(buffer);
+        let result = RecordBatch::read(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            ArrowOptions::default(),
+            &mut state,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(m)) if m.contains("on sync read path is not implemented")
         ));
     }
 

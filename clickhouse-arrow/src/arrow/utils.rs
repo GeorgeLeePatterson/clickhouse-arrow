@@ -1270,6 +1270,89 @@ mod tests {
         }
     }
 
+    // --- array_to_values type_hint branches: IPv4/6 + wide ints -----------
+    //
+    // These FixedSizeBinary branches only fire when the matching `type_hint`
+    // is supplied; the deserializer has already normalised the bytes to the
+    // form each `Value` variant expects.
+
+    #[test]
+    fn test_array_to_values_ipv4() {
+        let a = std::net::Ipv4Addr::LOCALHOST.octets();
+        let b = std::net::Ipv4Addr::new(192, 168, 1, 42).octets();
+        let array =
+            FixedSizeBinaryArray::try_from_iter([a.as_slice(), b.as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(4), Some(&Type::Ipv4)).unwrap();
+        assert_eq!(result, vec![
+            Value::Ipv4(Ipv4(std::net::Ipv4Addr::LOCALHOST)),
+            Value::Ipv4(Ipv4(std::net::Ipv4Addr::new(192, 168, 1, 42))),
+        ]);
+    }
+
+    #[test]
+    fn test_array_to_values_ipv6() {
+        let addr = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let array =
+            FixedSizeBinaryArray::try_from_iter([addr.octets().as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(16), Some(&Type::Ipv6)).unwrap();
+        assert_eq!(result, vec![Value::Ipv6(Ipv6(addr))]);
+    }
+
+    #[test]
+    fn test_array_to_values_int128() {
+        let vals = [i128::MIN, 0, i128::MAX];
+        let bytes: Vec<[u8; 16]> = vals.iter().map(|v| v.to_le_bytes()).collect();
+        let array =
+            FixedSizeBinaryArray::try_from_iter(bytes.iter().map(<[u8; 16]>::as_slice)).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(16), Some(&Type::Int128)).unwrap();
+        assert_eq!(result, vec![
+            Value::Int128(i128::MIN),
+            Value::Int128(0),
+            Value::Int128(i128::MAX),
+        ]);
+    }
+
+    #[test]
+    fn test_array_to_values_uint128() {
+        let vals = [0_u128, u128::MAX];
+        let bytes: Vec<[u8; 16]> = vals.iter().map(|v| v.to_le_bytes()).collect();
+        let array =
+            FixedSizeBinaryArray::try_from_iter(bytes.iter().map(<[u8; 16]>::as_slice)).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(16), Some(&Type::UInt128)).unwrap();
+        assert_eq!(result, vec![Value::UInt128(0), Value::UInt128(u128::MAX)]);
+    }
+
+    #[test]
+    fn test_array_to_values_int256() {
+        // The 32 wire bytes are stored verbatim into crate::i256.
+        let raw = [7_u8; 32];
+        let array = FixedSizeBinaryArray::try_from_iter([raw.as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(32), Some(&Type::Int256)).unwrap();
+        assert_eq!(result, vec![Value::Int256(crate::i256(raw))]);
+    }
+
+    #[test]
+    fn test_array_to_values_uint256() {
+        let raw = [9_u8; 32];
+        let array = FixedSizeBinaryArray::try_from_iter([raw.as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(32), Some(&Type::UInt256)).unwrap();
+        assert_eq!(result, vec![Value::UInt256(crate::u256(raw))]);
+    }
+
+    #[test]
+    fn test_array_to_values_fixed_size_binary_no_hint_is_string() {
+        // No matching type_hint -> the catch-all wraps raw bytes as String.
+        let array = FixedSizeBinaryArray::try_from_iter([b"abcd".as_slice()].into_iter()).unwrap();
+        let result = array_to_values(&array, &DataType::FixedSizeBinary(4), None).unwrap();
+        assert_eq!(result, vec![Value::String(b"abcd".to_vec())]);
+    }
+
     #[test]
     fn test_decimal256_array_error() {
         let array = StringArray::from(vec![""]);
