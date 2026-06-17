@@ -45,7 +45,7 @@ impl Serializer for TupleSerializer {
                 columns[i].push(value);
             }
         }
-        for (inner_type, column) in inner_types.iter().zip(columns.into_iter()) {
+        for (inner_type, column) in inner_types.iter().zip(columns) {
             inner_type.serialize_column(column, writer, state).await?;
         }
         Ok(())
@@ -71,7 +71,7 @@ impl Serializer for TupleSerializer {
                 columns[i].push(value);
             }
         }
-        for (inner_type, column) in inner_types.iter().zip(columns.into_iter()) {
+        for (inner_type, column) in inner_types.iter().zip(columns) {
             inner_type.serialize_column_sync(column, writer, state)?;
         }
         Ok(())

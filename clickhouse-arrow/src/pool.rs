@@ -254,8 +254,8 @@ impl ExponentialBackoff {
         ExponentialBackoff {
             current_interval: Duration::from_millis(10), // Start with 100ms
             factor:           2.0,
-            max_interval:     Duration::from_secs(60),
-            max_elapsed_time: Some(Duration::from_secs(900)), // 15 minutes
+            max_interval:     Duration::from_mins(1),
+            max_elapsed_time: Some(Duration::from_mins(15)), // 15 minutes
             attempts:         0,
         }
     }

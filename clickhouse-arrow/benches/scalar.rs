@@ -29,7 +29,7 @@ pub(crate) fn query_rs_scalar(
     group: &mut BenchmarkGroup<'_, WallTime>,
     rt: &Runtime,
 ) {
-    let _ = group.sample_size(10).measurement_time(Duration::from_secs(60)).bench_with_input(
+    let _ = group.sample_size(10).measurement_time(Duration::from_mins(1)).bench_with_input(
         BenchmarkId::new("clickhouse_rs", rows),
         &(query, client),
         |b, (query, client)| {
@@ -49,7 +49,7 @@ fn query_arrow_native(
     group: &mut BenchmarkGroup<'_, WallTime>,
     rt: &Runtime,
 ) {
-    let _ = group.sample_size(10).measurement_time(Duration::from_secs(60)).bench_with_input(
+    let _ = group.sample_size(10).measurement_time(Duration::from_mins(1)).bench_with_input(
         BenchmarkId::new("clickhouse_arrow", rows),
         &(query, client),
         |b, (query, client)| {
