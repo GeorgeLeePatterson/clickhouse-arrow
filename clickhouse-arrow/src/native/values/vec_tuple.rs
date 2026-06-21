@@ -33,7 +33,7 @@ impl<T: FromSql> FromSql for VecTuple<T> {
             )));
         }
         let mut out = Vec::with_capacity(values.len());
-        for (type_, value) in subtype.iter().zip(values.into_iter()) {
+        for (type_, value) in subtype.iter().zip(values) {
             out.push(T::from_sql(type_, value)?);
         }
         Ok(VecTuple(out))

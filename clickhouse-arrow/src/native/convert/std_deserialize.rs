@@ -218,7 +218,7 @@ impl<T: FromSql + Hash + Eq, Y: FromSql, S: ::std::hash::BuildHasher + Default> 
         match value {
             Value::Map(x, y) => {
                 let mut out = HashMap::default();
-                for (x, y) in x.into_iter().zip(y.into_iter()) {
+                for (x, y) in x.into_iter().zip(y) {
                     drop(out.insert(T::from_sql(x_type, x)?, Y::from_sql(y_type, y)?));
                 }
                 Ok(out)
@@ -239,7 +239,7 @@ impl<T: FromSql + Ord, Y: FromSql> FromSql for BTreeMap<T, Y> {
         match value {
             Value::Map(x, y) => {
                 let mut out = BTreeMap::new();
-                for (x, y) in x.into_iter().zip(y.into_iter()) {
+                for (x, y) in x.into_iter().zip(y) {
                     drop(out.insert(T::from_sql(x_type, x)?, Y::from_sql(y_type, y)?));
                 }
                 Ok(out)
@@ -262,7 +262,7 @@ impl<T: FromSql + Hash + Eq, Y: FromSql, S: ::std::hash::BuildHasher + Default> 
         match value {
             Value::Map(x, y) => {
                 let mut out = IndexMap::<T, Y, S>::with_capacity_and_hasher(x.len(), S::default());
-                for (x, y) in x.into_iter().zip(y.into_iter()) {
+                for (x, y) in x.into_iter().zip(y) {
                     drop(out.insert(T::from_sql(x_type, x)?, Y::from_sql(y_type, y)?));
                 }
                 Ok(out)

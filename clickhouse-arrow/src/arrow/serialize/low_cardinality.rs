@@ -511,7 +511,7 @@ async fn write_string_values<W: ClickHouseWrite>(
         DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
         DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
         dt => {
-            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}",)));
+            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
     }
 
@@ -605,7 +605,7 @@ fn put_string_values<W: ClickHouseBytesWrite>(
         DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
         DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
         dt => {
-            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}",)));
+            return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
     }
 

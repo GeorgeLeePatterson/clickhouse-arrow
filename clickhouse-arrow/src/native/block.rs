@@ -1,9 +1,10 @@
 use std::str::FromStr;
 
 use indexmap::IndexMap;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::block_info::BlockInfo;
+use super::kinds::{SerializationKind, read_serialization_kind};
 use super::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::deserialize::ClickHouseNativeDeserializer;
 use crate::formats::protocol_data::ProtocolData;
@@ -286,10 +287,16 @@ impl ProtocolData<Self, ()> for Block {
                 .await
                 .inspect_err(|e| error!("reading column type (name {name}): {e}"))?;
 
-            // TODO: implement
-            let mut _has_custom_serialization = false;
-            if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                _has_custom_serialization = reader.read_u8().await? != 0;
+            // The value-mode reader only knows how to drive dense column bodies.
+            // Sparse and the other special kinds would need a Value-domain
+            // materialiser; until that exists they're a protocol-level
+            // mismatch, not a silent zero-row result.
+            let kind = read_serialization_kind(reader, revision).await?;
+            if kind != SerializationKind::Default {
+                return Err(Error::Protocol(format!(
+                    "value-mode block reader does not support SerializationInfo kind {kind:?} \
+                     (column {name}); use the Arrow reader for sparse-aware decoding"
+                )));
             }
 
             let type_ = Type::from_str(&type_name).inspect_err(|error| {
@@ -374,5 +381,43 @@ impl ProtocolData<Self, ()> for Block {
         }
 
         Ok(block)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+    use crate::io::ClickHouseWrite;
+
+    #[tokio::test]
+    async fn test_value_reader_rejects_non_default_kind() {
+        // The value-mode (native) reader has no Value-domain materialiser for
+        // sparse, so any non-Default kind must be a loud protocol error rather
+        // than a silent mis-frame. Craft a 1-column/1-row block whose column
+        // declares has_custom=1, kind=1 (Sparse).
+        let revision = DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
+
+        let mut buffer = Vec::new();
+        BlockInfo::default().write_async(&mut buffer).await.unwrap();
+        buffer.write_var_uint(1).await.unwrap(); // Columns
+        buffer.write_var_uint(1).await.unwrap(); // Rows
+        buffer.write_string("v").await.unwrap();
+        buffer.write_string("Int32").await.unwrap();
+        buffer.write_u8(1).await.unwrap(); // has_custom = 1
+        buffer.write_u8(1).await.unwrap(); // kind = 1 (Sparse)
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(buffer);
+        let result =
+            <Block as ProtocolData<Block, ()>>::read_async(&mut reader, revision, (), &mut state)
+                .await;
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(m)) if m.contains("value-mode block reader does not support")
+        ));
     }
 }

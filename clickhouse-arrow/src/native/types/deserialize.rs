@@ -138,9 +138,6 @@ impl ClickHouseNativeDeserializer for Type {
 // String => Type Deserialization
 // ---
 
-// For Date32: Days from 1900-01-01 to 1970-01-01
-pub(crate) const DAYS_1900_TO_1970: i32 = 25_567;
-
 trait EnumValueType: FromStr + std::fmt::Debug {}
 impl EnumValueType for i8 {}
 impl EnumValueType for i16 {}

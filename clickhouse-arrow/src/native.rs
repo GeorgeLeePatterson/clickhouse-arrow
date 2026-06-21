@@ -4,6 +4,7 @@ pub mod block_info;
 pub(crate) mod client_info;
 pub mod convert;
 pub mod error_codes;
+pub(crate) mod kinds;
 pub mod progress;
 pub(crate) mod protocol;
 pub mod types;

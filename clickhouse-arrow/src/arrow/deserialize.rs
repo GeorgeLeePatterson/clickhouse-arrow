@@ -17,6 +17,7 @@ mod low_cardinality;
 mod map;
 mod null;
 mod primitive;
+pub(crate) mod sparse;
 mod tuple;
 
 use std::sync::Arc;
@@ -459,7 +460,7 @@ impl ClickHouseArrowDeserializer for Type {
                     Type::Ipv4 => i => { opt_value!(ok => b, i, nulls, binary!(Ipv4 => reader)) },
                     Type::Ipv6 => i => { opt_value!(ok => b, i, nulls, binary!(Ipv6 => reader)) },
                     Type::Uuid => i => {
-                        opt_value!(ok => b, i, nulls, binary!(Fixed(16) => reader))
+                        opt_value!(ok => b, i, nulls, binary!(Uuid => reader))
                     },
                     // Special numeric types that need to be read as bytes
                     Type::Int128 | Type::UInt128 => i => {

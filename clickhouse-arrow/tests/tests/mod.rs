@@ -1,5 +1,6 @@
 pub mod arrow;
 pub mod compat;
+pub mod cross_client;
 pub mod native;
 pub mod params;
 
