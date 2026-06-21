@@ -324,9 +324,9 @@ fn roundtrip_2array() {
 #[test]
 fn roundtrip_tuple() {
     let fixed = (5u32, 7u16);
-    assert_eq!(fixed, roundtrip(fixed, &Type::Tuple(vec![Type::UInt32, Type::UInt16])));
+    assert_eq!(fixed, roundtrip(fixed, &Type::tuple_anon(vec![Type::UInt32, Type::UInt16])));
     let fixed = (1_231_123_u32, 7123u16);
-    assert_eq!(fixed, roundtrip(fixed, &Type::Tuple(vec![Type::UInt32, Type::UInt16])));
+    assert_eq!(fixed, roundtrip(fixed, &Type::tuple_anon(vec![Type::UInt32, Type::UInt16])));
 }
 
 #[test]
@@ -336,7 +336,10 @@ fn roundtrip_2tuple() {
         fixed,
         roundtrip(
             fixed,
-            &Type::Tuple(vec![Type::UInt32, Type::Tuple(vec![Type::UInt32, Type::UInt16])])
+            &Type::tuple_anon(vec![
+                Type::UInt32,
+                Type::tuple_anon(vec![Type::UInt32, Type::UInt16])
+            ])
         )
     );
     let fixed = (1_231_123_u32, (5u32, 7u16));
@@ -344,7 +347,10 @@ fn roundtrip_2tuple() {
         fixed,
         roundtrip(
             fixed,
-            &Type::Tuple(vec![Type::UInt32, Type::Tuple(vec![Type::UInt32, Type::UInt16])])
+            &Type::tuple_anon(vec![
+                Type::UInt32,
+                Type::tuple_anon(vec![Type::UInt32, Type::UInt16])
+            ])
         )
     );
 }
@@ -356,7 +362,7 @@ fn roundtrip_array_tuple() {
         fixed,
         roundtrip(
             fixed.clone(),
-            &Type::Array(Box::new(Type::Tuple(vec![Type::UInt32, Type::UInt16])))
+            &Type::Array(Box::new(Type::tuple_anon(vec![Type::UInt32, Type::UInt16])))
         )
     );
     let fixed: Vec<(u32, u16)> = vec![];
@@ -364,7 +370,7 @@ fn roundtrip_array_tuple() {
         fixed,
         roundtrip(
             fixed.clone(),
-            &Type::Array(Box::new(Type::Tuple(vec![Type::UInt32, Type::UInt16])))
+            &Type::Array(Box::new(Type::tuple_anon(vec![Type::UInt32, Type::UInt16])))
         )
     );
     let fixed = vec![(5u32, 7u16), (1_231_123_u32, 7123u16)];
@@ -372,7 +378,7 @@ fn roundtrip_array_tuple() {
         fixed,
         roundtrip(
             fixed.clone(),
-            &Type::Array(Box::new(Type::Tuple(vec![Type::UInt32, Type::UInt16])))
+            &Type::Array(Box::new(Type::tuple_anon(vec![Type::UInt32, Type::UInt16])))
         )
     );
 }
@@ -384,7 +390,7 @@ fn roundtrip_tuple_array() {
         fixed,
         roundtrip(
             fixed.clone(),
-            &Type::Tuple(vec![
+            &Type::tuple_anon(vec![
                 Type::Array(Box::new(Type::UInt32)),
                 Type::Array(Box::new(Type::UInt16))
             ])
@@ -395,7 +401,7 @@ fn roundtrip_tuple_array() {
         fixed,
         roundtrip(
             fixed.clone(),
-            &Type::Tuple(vec![
+            &Type::tuple_anon(vec![
                 Type::Array(Box::new(Type::UInt32)),
                 Type::Array(Box::new(Type::UInt16))
             ])
@@ -406,7 +412,7 @@ fn roundtrip_tuple_array() {
         fixed,
         roundtrip(
             fixed.clone(),
-            &Type::Tuple(vec![
+            &Type::tuple_anon(vec![
                 Type::Array(Box::new(Type::UInt32)),
                 Type::Array(Box::new(Type::UInt16))
             ])
@@ -518,7 +524,7 @@ fn test_value_methods() {
         Type::Array(Box::new(Type::String)),
         Type::Enum8(vec![(String::new(), 0)]),
         Type::Enum16(vec![(String::new(), 0)]),
-        Type::Tuple(vec![Type::String]),
+        Type::tuple_anon(vec![Type::String]),
         Type::Map(Box::new(Type::String), Box::new(Type::String)),
         Type::Ipv4,
         Type::Ipv6,
@@ -781,7 +787,7 @@ fn test_value_guess_type_comprehensive() {
 
     // Test tuple type inference
     let tuple = Value::Tuple(vec![Value::Int32(1), Value::String(b"test".to_vec())]);
-    assert_eq!(tuple.guess_type(), Type::Tuple(vec![Type::Int32, Type::String]));
+    assert_eq!(tuple.guess_type(), Type::tuple_anon(vec![Type::Int32, Type::String]));
 
     // Test map type inference
     let map = Value::Map(vec![Value::String(b"key".to_vec())], vec![Value::Int32(42)]);

@@ -22,7 +22,7 @@ impl ToSql for Value {
 }
 
 pub fn unexpected_type(type_: &Type) -> Error {
-    Error::DeserializeError(format!("unexpected type: {type_}"))
+    Error::Deserialize(format!("unexpected type: {type_}"))
 }
 
 /// A type that can be converted from a raw `ClickHouse` SQL value.
@@ -117,7 +117,7 @@ mod tests {
         let error = unexpected_type(&type_);
 
         match error {
-            Error::DeserializeError(msg) => {
+            Error::Deserialize(msg) => {
                 assert!(msg.contains("unexpected type"));
                 assert!(msg.contains("Int32"));
             }
@@ -132,7 +132,7 @@ mod tests {
 
         for type_ in types {
             let error = unexpected_type(&type_);
-            assert!(matches!(error, Error::DeserializeError(_)));
+            assert!(matches!(error, Error::Deserialize(_)));
         }
     }
 

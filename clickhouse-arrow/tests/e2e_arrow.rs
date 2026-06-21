@@ -77,3 +77,48 @@ e2e_test!(
 // Test named tuple field parsing (issue #85)
 #[cfg(feature = "test-utils")]
 e2e_test!(e2e_arrow_named_tuple, tests::arrow::test_named_tuple_schema, TRACING_DIRECTIVES, None);
+
+// Test Dynamic/Variant extended roundtrip paths
+#[cfg(all(feature = "test-utils", feature = "extended-types"))]
+e2e_test!(
+    e2e_arrow_extended_dynamic_only,
+    tests::arrow::test_round_trip_extended_dynamic_only,
+    TRACING_DIRECTIVES,
+    None
+);
+
+// Test Dynamic/Variant extended roundtrip paths
+#[cfg(all(feature = "test-utils", feature = "extended-types"))]
+e2e_test!(
+    e2e_arrow_extended_dynamic_variant,
+    tests::arrow::test_round_trip_extended_dynamic_variant,
+    TRACING_DIRECTIVES,
+    None
+);
+
+// Test Time/Time64 extended roundtrip paths
+#[cfg(all(feature = "test-utils", feature = "extended-types"))]
+e2e_test!(
+    e2e_arrow_extended_time_types,
+    tests::arrow::test_round_trip_extended_time_types,
+    TRACING_DIRECTIVES,
+    None
+);
+
+// Test Nested roundtrip with flatten_nested=false (non-default explicit path)
+#[cfg(all(feature = "test-utils", feature = "extended-types"))]
+e2e_test!(
+    e2e_arrow_extended_nested_unflattened,
+    tests::arrow::test_round_trip_extended_nested_unflattened,
+    TRACING_DIRECTIVES,
+    None
+);
+
+// Test Struct schema conversions to named Tuple + Nested with default flatten_nested=1 behavior
+#[cfg(all(feature = "test-utils", feature = "extended-types"))]
+e2e_test!(
+    e2e_arrow_extended_struct_schema_conversions,
+    tests::arrow::test_round_trip_extended_struct_schema_conversions,
+    TRACING_DIRECTIVES,
+    None
+);

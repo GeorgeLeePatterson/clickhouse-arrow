@@ -5,6 +5,16 @@ use crate::{Result, Value};
 pub(crate) struct PointSerializer;
 
 impl Serializer for PointSerializer {
+    fn write_prefix_sync(
+        _type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        for _ in 0..2 {
+            Type::Float64.serialize_prefix(writer, state);
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         _type_: &Type,
         writer: &mut W,
@@ -66,7 +76,7 @@ macro_rules! array_ser {
                 fn value_len(value: &Value) -> Result<usize> {
                     match value {
                         Value::$name(array) => Ok(array.0.len()),
-                        _ => Err(crate::errors::Error::SerializeError(format!(
+                        _ => Err(crate::errors::Error::serialize(format!(
                             "Expected Value::{}",
                             stringify!($name)
                         )))
@@ -78,7 +88,7 @@ macro_rules! array_ser {
                         // to give strong types to the user inside the containers rather than
                         // [Value]s.
                         Value::$name(array) => Ok(array.0.into_iter().map(Value::$item).collect()),
-                        _ => Err(crate::errors::Error::SerializeError(format!(
+                        _ => Err(crate::errors::Error::serialize(format!(
                             "Expected Value::{}",
                             stringify!($name)
                         )))

@@ -31,8 +31,8 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
     type Ser = ();
 
     fn finish_deser(state: &mut DeserializerState<Self::Deser>) {
-        state.deserializer().builders.clear();
-        state.deserializer().buffer.clear();
+        state.format_state().builders.clear();
+        state.format_state().buffer.clear();
     }
 
     async fn write<W: ClickHouseWrite>(
@@ -70,10 +70,10 @@ impl super::sealed::ClientFormatImpl<RecordBatch> for ArrowFormat {
     ) -> Result<Option<RecordBatch>> {
         let arrow_options = metadata.arrow_options;
         if let CompressionMethod::None = metadata.compression {
-            RecordBatch::read_async(reader, revision, arrow_options, state).await
+            RecordBatch::read(reader, revision, arrow_options, state).await
         } else {
             let mut decompressor = DecompressionReader::new(metadata.compression, reader).await?;
-            RecordBatch::read_async(&mut decompressor, revision, arrow_options, state).await
+            RecordBatch::read(&mut decompressor, revision, arrow_options, state).await
         }
         .inspect_err(|error| error!(?error, "deserializing arrow record batch"))
         .map(RecordBatch::into_option)

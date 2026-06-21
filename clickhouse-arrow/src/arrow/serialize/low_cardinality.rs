@@ -51,6 +51,7 @@
 ///   assert_eq!(writer, expected);
 /// }
 /// ```
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::*;
@@ -65,6 +66,25 @@ use crate::formats::SerializerState;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::native::types::low_cardinality::*;
 use crate::{Error, Result, Type};
+
+#[inline]
+fn dict_insert_value(
+    value: &[u8],
+    dict: &mut Vec<Vec<u8>>,
+    dict_index: &mut HashMap<Vec<u8>, i32>,
+) -> i32 {
+    if let Some(&index) = dict_index.get(value) {
+        index
+    } else {
+        #[expect(clippy::cast_possible_wrap, reason = "dictionary size must fit i32 keys")]
+        #[expect(clippy::cast_possible_truncation, reason = "dictionary size must fit i32 keys")]
+        let index = dict.len() as i32;
+        let owned = value.to_vec();
+        let _ = dict_index.insert(owned.clone(), index);
+        dict.push(owned);
+        index
+    }
+}
 
 /// Serializes an Arrow array to `ClickHouse`’s native format for `LowCardinality` types.
 ///
@@ -464,52 +484,53 @@ async fn write_string_values<W: ClickHouseWrite>(
     nullable: bool,
     state: &mut SerializerState,
 ) -> Result<()> {
-    // Helper functions for macro
-    fn bytes(v: &str) -> &[u8] { v.as_bytes() }
-    fn passthrough(v: &[u8]) -> &[u8] { v }
-
-    // Handle string-like array
     let mut dict = Vec::with_capacity(64.min(values.len()));
+    let mut dict_index = HashMap::with_capacity(64.min(values.len()));
     let mut keys = Vec::with_capacity(values.len());
     let nullable = values.null_count() > 0 || nullable;
 
-    // Pre-seed with an empty string, aka default value
     if nullable {
-        dict.push(b"" as &[u8]);
+        dict.push(Vec::new());
+        let _ = dict_index.insert(Vec::new(), 0);
     }
 
     macro_rules! handle_string_array {
-        ($array_ty:ty, $coerce:expr) => {{
+        ($array_ty:ty) => {{
             let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
             for i in 0..array.len() {
                 if array.is_null(i) {
-                    // TODO: Should a fallback be used here, shift the vec for instance?
-                    // Performance hit?
                     debug_assert!(nullable, "Null encountered in non-nullable array");
                     keys.push(0);
                 } else {
                     let value = array.value(i);
-                    let value = $coerce(value);
-                    let index = dict.iter().position(|v| *v == value).unwrap_or_else(|| {
-                        dict.push(value);
-                        dict.len() - 1
-                    });
+                    keys.push(dict_insert_value(value.as_ref(), &mut dict, &mut dict_index));
+                };
+            }
+        }};
+    }
 
-                    #[expect(clippy::cast_possible_wrap)]
-                    #[expect(clippy::cast_possible_truncation)]
-                    keys.push(index as i32);
+    macro_rules! handle_binary_array {
+        ($array_ty:ty) => {{
+            let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
+            for i in 0..array.len() {
+                if array.is_null(i) {
+                    debug_assert!(nullable, "Null encountered in non-nullable array");
+                    keys.push(0);
+                } else {
+                    let value = array.value(i);
+                    keys.push(dict_insert_value(value, &mut dict, &mut dict_index));
                 };
             }
         }};
     }
 
     match values.data_type() {
-        DataType::Utf8 => handle_string_array!(StringArray, bytes),
-        DataType::LargeUtf8 => handle_string_array!(LargeStringArray, bytes),
-        DataType::Utf8View => handle_string_array!(StringViewArray, bytes),
-        DataType::Binary => handle_string_array!(BinaryArray, passthrough),
-        DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
-        DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
+        DataType::Utf8 => handle_string_array!(StringArray),
+        DataType::LargeUtf8 => handle_string_array!(LargeStringArray),
+        DataType::Utf8View => handle_string_array!(StringViewArray),
+        DataType::Binary => handle_binary_array!(BinaryArray),
+        DataType::BinaryView => handle_binary_array!(BinaryViewArray),
+        DataType::LargeBinary => handle_binary_array!(LargeBinaryArray),
         dt => {
             return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
@@ -530,8 +551,6 @@ async fn write_string_values<W: ClickHouseWrite>(
     writer.write_u64_le(flags).await?;
     writer.write_u64_le(dict_size as u64).await?;
 
-    // Write dictionary values
-    // Binary is used to write the bytes directly, although I'm not sure there's any gains
     let values_array = Arc::new(BinaryArray::from_iter_values(dict)) as ArrayRef;
     Type::Binary.serialize_async(writer, &values_array, &DataType::Binary, state).await?;
 
@@ -558,52 +577,53 @@ fn put_string_values<W: ClickHouseBytesWrite>(
     nullable: bool,
     state: &mut SerializerState,
 ) -> Result<()> {
-    // Helper functions for macro
-    fn bytes(v: &str) -> &[u8] { v.as_bytes() }
-    fn passthrough(v: &[u8]) -> &[u8] { v }
-
-    // Handle string-like array
     let mut dict = Vec::with_capacity(64.min(values.len()));
+    let mut dict_index = HashMap::with_capacity(64.min(values.len()));
     let mut keys = Vec::with_capacity(values.len());
     let nullable = values.null_count() > 0 || nullable;
 
-    // Pre-seed with an empty string, aka default value
     if nullable {
-        dict.push(b"" as &[u8]);
+        dict.push(Vec::new());
+        let _ = dict_index.insert(Vec::new(), 0);
     }
 
     macro_rules! handle_string_array {
-        ($array_ty:ty, $coerce:expr) => {{
+        ($array_ty:ty) => {{
             let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
             for i in 0..array.len() {
                 if array.is_null(i) {
-                    // TODO: Should a fallback be used here, shift the vec for instance?
-                    // Performance hit?
                     debug_assert!(nullable, "Null encountered in non-nullable array");
                     keys.push(0);
                 } else {
                     let value = array.value(i);
-                    let value = $coerce(value);
-                    let index = dict.iter().position(|v| *v == value).unwrap_or_else(|| {
-                        dict.push(value);
-                        dict.len() - 1
-                    });
+                    keys.push(dict_insert_value(value.as_ref(), &mut dict, &mut dict_index));
+                };
+            }
+        }};
+    }
 
-                    #[expect(clippy::cast_possible_wrap)]
-                    #[expect(clippy::cast_possible_truncation)]
-                    keys.push(index as i32);
+    macro_rules! handle_binary_array {
+        ($array_ty:ty) => {{
+            let array = values.as_any().downcast_ref::<$array_ty>().expect("Verified below");
+            for i in 0..array.len() {
+                if array.is_null(i) {
+                    debug_assert!(nullable, "Null encountered in non-nullable array");
+                    keys.push(0);
+                } else {
+                    let value = array.value(i);
+                    keys.push(dict_insert_value(value, &mut dict, &mut dict_index));
                 };
             }
         }};
     }
 
     match values.data_type() {
-        DataType::Utf8 => handle_string_array!(StringArray, bytes),
-        DataType::LargeUtf8 => handle_string_array!(LargeStringArray, bytes),
-        DataType::Utf8View => handle_string_array!(StringViewArray, bytes),
-        DataType::Binary => handle_string_array!(BinaryArray, passthrough),
-        DataType::BinaryView => handle_string_array!(BinaryViewArray, passthrough),
-        DataType::LargeBinary => handle_string_array!(LargeBinaryArray, passthrough),
+        DataType::Utf8 => handle_string_array!(StringArray),
+        DataType::LargeUtf8 => handle_string_array!(LargeStringArray),
+        DataType::Utf8View => handle_string_array!(StringViewArray),
+        DataType::Binary => handle_binary_array!(BinaryArray),
+        DataType::BinaryView => handle_binary_array!(BinaryViewArray),
+        DataType::LargeBinary => handle_binary_array!(LargeBinaryArray),
         dt => {
             return Err(Error::ArrowSerialize(format!("Expected string-like array, got {dt}")));
         }
@@ -624,8 +644,6 @@ fn put_string_values<W: ClickHouseBytesWrite>(
     writer.put_u64_le(flags);
     writer.put_u64_le(dict_size as u64);
 
-    // Write dictionary values
-    // Binary is used to write the bytes directly, although I'm not sure there's any gains
     let values_array = Arc::new(BinaryArray::from_iter_values(dict)) as ArrayRef;
     Type::Binary.serialize(writer, &values_array, &DataType::Binary, state)?;
 
@@ -1088,28 +1106,13 @@ mod tests {
             if msg.contains("Unsupported data type")
         ));
     }
-}
-
-#[cfg(test)]
-mod tests_sync {
-    use std::sync::Arc;
-
-    use arrow::array::*;
-    use arrow::datatypes::*;
-
-    use super::*;
-    use crate::ArrowOptions;
-
-    type MockWriter = Vec<u8>;
 
     // ---
     // SYNC TESTS
     // ---
 
-    /// Helper function individual type serializers
-    #[expect(clippy::needless_pass_by_value)]
-    pub(crate) fn test_type_serializer_sync(
-        expected: Vec<u8>,
+    fn test_type_serializer_sync(
+        expected: &[u8],
         type_: &Type,
         data_type: &DataType,
         array: &ArrayRef,
@@ -1118,7 +1121,7 @@ mod tests_sync {
         let mut state = SerializerState::default()
             .with_arrow_options(ArrowOptions::default().with_strings_as_strings(true));
         serialize(type_, &mut writer, array, data_type, &mut state).unwrap();
-        assert_eq!(*writer, expected);
+        assert_eq!(writer, expected);
     }
 
     #[test]
@@ -1139,175 +1142,7 @@ mod tests_sync {
             0, 1, 0, // Keys: [0, 1, 0]
         ];
         test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::String)),
-            array.data_type(),
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_dictionary_empty_sync() {
-        let array = Arc::new(
-            DictionaryArray::<Int8Type>::try_new(
-                Int8Array::from(Vec::<i8>::new()),
-                Arc::new(StringArray::from(vec!["a", "b"])),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let expected = vec![];
-        test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::String)),
-            array.data_type(),
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_dictionary_other_keys_sync() {
-        let strs = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
-        let arrays = vec![
-            Arc::new(
-                DictionaryArray::<Int64Type>::try_new(
-                    Int64Array::from(vec![0, 1, 0]),
-                    Arc::clone(&strs),
-                )
-                .unwrap(),
-            ) as ArrayRef,
-            Arc::new(
-                DictionaryArray::<UInt8Type>::try_new(
-                    UInt8Array::from(vec![0, 1, 0]),
-                    Arc::clone(&strs),
-                )
-                .unwrap(),
-            ) as ArrayRef,
-            Arc::new(
-                DictionaryArray::<UInt16Type>::try_new(
-                    UInt16Array::from(vec![0, 1, 0]),
-                    Arc::clone(&strs),
-                )
-                .unwrap(),
-            ) as ArrayRef,
-            Arc::new(
-                DictionaryArray::<UInt32Type>::try_new(
-                    UInt32Array::from(vec![0, 1, 0]),
-                    Arc::clone(&strs),
-                )
-                .unwrap(),
-            ) as ArrayRef,
-            Arc::new(
-                DictionaryArray::<UInt64Type>::try_new(
-                    UInt64Array::from(vec![0, 1, 0]),
-                    Arc::clone(&strs),
-                )
-                .unwrap(),
-            ) as ArrayRef,
-        ];
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', // Dict: "a" (var_uint length)
-            1, b'b', // Dict: "b" (var_uint length)
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Keys: [0, 1, 0]
-        ];
-
-        for array in arrays {
-            test_type_serializer_sync(
-                expected.clone(),
-                &Type::LowCardinality(Box::new(Type::String)),
-                array.data_type(),
-                &array,
-            );
-        }
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_dictionary_nullable_sync() {
-        let array = Arc::new(
-            DictionaryArray::<Int32Type>::try_new(
-                Int32Array::from(vec![Some(0), Some(3), Some(1), None, Some(2)]),
-                Arc::new(StringArray::from(vec!["active", "inactive", "pending", "absent"])),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        // Serialized values are prepended and keys are shifted to account for nulls
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            5, 0, 0, 0, 0, 0, 0, 0, // Dict size: 4
-            0, // Prepended Null value
-            // Dictionary values: ["active", "inactive", "pending", "absent"]
-            6, b'a', b'c', b't', b'i', b'v', b'e', // "active"
-            8, b'i', b'n', b'a', b'c', b't', b'i', b'v', b'e', // "inactive"
-            7, b'p', b'e', b'n', b'd', b'i', b'n', b'g', // "pending"
-            6, b'a', b'b', b's', b'e', b'n', b't', // "absent"
-            5, 0, 0, 0, 0, 0, 0, 0, // Key count: 5
-            1, 4, 2, 0, 3, // Keys: [1, 4, 2, 0, 3]
-        ];
-        test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::Nullable(Box::new(Type::String)))),
-            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_dictionary_nullable_accounted_for_sync() {
-        let array = Arc::new(
-            DictionaryArray::<Int32Type>::try_new(
-                Int32Array::from(vec![Some(0), Some(3), Some(1), None, Some(2)]),
-                Arc::new(StringArray::from(vec![
-                    Some("active"),
-                    None,
-                    Some("inactive"),
-                    Some("pending"),
-                    Some("absent"),
-                ])),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        // Serialized values are prepended and keys are shifted to account for nulls
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            5, 0, 0, 0, 0, 0, 0, 0, // Dict size: 4
-            // Dictionary values: ["active", "inactive", "pending", "absent"]
-            6, b'a', b'c', b't', b'i', b'v', b'e', // "active"
-            0,    // Null value
-            8, b'i', b'n', b'a', b'c', b't', b'i', b'v', b'e', // "inactive"
-            7, b'p', b'e', b'n', b'd', b'i', b'n', b'g', // "pending"
-            6, b'a', b'b', b's', b'e', b'n', b't', // "absent"
-            5, 0, 0, 0, 0, 0, 0, 0, // Key count: 5
-            0, 3, 1, 0, 2, // Keys: [0, 3, 1, 0, 2]
-        ];
-        test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::Nullable(Box::new(Type::String)))),
-            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_dictionary_invalid_sync() {
-        let array = Arc::new(
-            DictionaryArray::<Int8Type>::try_new(
-                Int8Array::from(vec![0, 1, 0]),
-                Arc::new(StringArray::from(vec!["a", "b"])),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', // Dict: "a" (var_uint length)
-            1, b'b', // Dict: "b" (var_uint length)
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Keys: [0, 1, 0]
-        ];
-        test_type_serializer_sync(
-            expected,
+            &expected,
             &Type::LowCardinality(Box::new(Type::String)),
             array.data_type(),
             &array,
@@ -1326,136 +1161,60 @@ mod tests_sync {
             0, 1, 0, // Keys: [0, 1, 0]
         ];
         test_type_serializer_sync(
-            expected,
+            &expected,
             &Type::LowCardinality(Box::new(Type::String)),
             &DataType::Utf8,
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_large_string_sync() {
-        let array = Arc::new(LargeStringArray::from(vec!["a", "b", "a"])) as ArrayRef;
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', // Dict: "a" (var_uint length)
-            1, b'b', // Dict: "b" (var_uint length)
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Keys: [0, 1, 0]
-        ];
-        test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::String)),
-            &DataType::LargeUtf8,
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_view_string_sync() {
-        let array = Arc::new(StringViewArray::from(vec!["a", "b", "a"])) as ArrayRef;
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', // Dict: "a" (var_uint length)
-            1, b'b', // Dict: "b" (var_uint length)
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Keys: [0, 1, 0]
-        ];
-        test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::String)),
-            &DataType::Utf8View,
             &array,
         );
     }
 
     #[test]
     fn test_serialize_low_cardinality_nullable_variations_sync() {
-        fn run_test(type_: &Type, dt: &DataType, array: &ArrayRef) {
-            let expected = vec![
-                0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-                2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-                0, // Dict: "" (var_uint length)
-                1, b'a', // Dict: "a" (var_uint length)
-                3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-                1, 0, 1, // Keys: [1, 0, 1]
-            ];
-            test_type_serializer_sync(expected, type_, dt, array);
-        }
-
-        let tests = [
+        let expected = vec![
+            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
+            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
+            0, // Dict: "" (var_uint length)
+            1, b'a', // Dict: "a" (var_uint length)
+            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
+            1, 0, 1, // Keys: [1, 0, 1]
+        ];
+        let cases = [
             (
-                Type::LowCardinality(Box::new(Type::String)),
                 &DataType::Utf8,
                 Arc::new(StringArray::from(vec![Some("a"), None, Some("a")])) as ArrayRef,
             ),
             (
-                Type::LowCardinality(Box::new(Type::String)),
                 &DataType::Utf8View,
                 Arc::new(StringViewArray::from(vec![Some("a"), None, Some("a")])) as ArrayRef,
             ),
             (
-                Type::LowCardinality(Box::new(Type::String)),
                 &DataType::LargeUtf8,
                 Arc::new(LargeStringArray::from(vec![Some("a"), None, Some("a")])) as ArrayRef,
             ),
             (
-                Type::LowCardinality(Box::new(Type::String)),
                 &DataType::Binary,
                 Arc::new(BinaryArray::from_opt_vec(vec![Some(b"a"), None, Some(b"a")])) as ArrayRef,
             ),
             (
-                Type::LowCardinality(Box::new(Type::String)),
                 &DataType::BinaryView,
                 Arc::new(BinaryViewArray::from(vec![Some(b"a" as &[u8]), None, Some(b"a")]))
                     as ArrayRef,
             ),
             (
-                Type::LowCardinality(Box::new(Type::String)),
                 &DataType::LargeBinary,
                 Arc::new(LargeBinaryArray::from_opt_vec(vec![Some(b"a"), None, Some(b"a")]))
                     as ArrayRef,
             ),
         ];
 
-        for (t, f, a) in &tests {
-            run_test(t, f, a);
+        for (dt, array) in &cases {
+            test_type_serializer_sync(
+                &expected,
+                &Type::LowCardinality(Box::new(Type::String)),
+                dt,
+                array,
+            );
         }
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_empty_sync() {
-        let array = Arc::new(StringArray::from(Vec::<&str>::new())) as ArrayRef;
-        test_type_serializer_sync(
-            vec![],
-            &Type::LowCardinality(Box::new(Type::String)),
-            &DataType::Utf8,
-            &array,
-        );
-    }
-
-    #[test]
-    fn test_serialize_low_cardinality_invalid_string_sync() {
-        let array = Arc::new(TimestampSecondArray::from(vec![0_i64])) as ArrayRef;
-        let mut values = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags: UInt8 | HasAdditionalKeysBit
-            2, 0, 0, 0, 0, 0, 0, 0, // Dict size: 2
-            1, b'a', // Dict: "a" (var_uint length)
-            1, b'b', // Dict: "b" (var_uint length)
-            3, 0, 0, 0, 0, 0, 0, 0, // Key count: 3
-            0, 1, 0, // Keys: [0, 1, 0]
-        ];
-        let result = serialize(
-            &Type::LowCardinality(Box::new(Type::String)),
-            &mut values,
-            &array,
-            &DataType::Utf8,
-            &mut SerializerState::default(),
-        );
-        eprintln!("Result: {result:?}");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -1477,34 +1236,6 @@ mod tests_sync {
     }
 
     #[test]
-    fn test_low_cardinality_nullable_sync() {
-        let array = Arc::new(
-            DictionaryArray::<Int32Type>::try_new(
-                Int32Array::from(vec![Some(0), Some(3), Some(1), None, Some(2)]),
-                Arc::new(StringArray::from(vec!["active", "inactive", "pending", "absent"])),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let expected = vec![
-            0, 2, 0, 0, 0, 0, 0, 0, // Flags
-            5, 0, 0, 0, 0, 0, 0, 0, // Dict length
-            0, // Null value
-            6, 97, 99, 116, 105, 118, 101, // Dict value
-            8, 105, 110, 97, 99, 116, 105, 118, 101, // Dict value
-            7, 112, 101, 110, 100, 105, 110, 103, // Dict value
-            6, 97, 98, 115, 101, 110, 116, // Dict value
-            5, 0, 0, 0, 0, 0, 0, 0, // Key length (# of rows)
-            1, 4, 2, 0, 3, // Key indices
-        ];
-        test_type_serializer_sync(
-            expected,
-            &Type::LowCardinality(Box::new(Type::Nullable(Box::new(Type::String)))),
-            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            &array,
-        );
-    }
-
-    #[test]
     fn test_serialize_low_cardinality_wrong_type_sync() {
         let array = Arc::new(Int8Array::from(vec![1, 2, 1])) as ArrayRef;
         let mut writer = MockWriter::new();
@@ -1512,8 +1243,7 @@ mod tests_sync {
         let result = serialize(&Type::String, &mut writer, &array, &DataType::Int8, &mut state);
         assert!(matches!(
             result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("Unsupported data type")
+            Err(Error::ArrowSerialize(msg)) if msg.contains("Unsupported data type")
         ));
     }
 }

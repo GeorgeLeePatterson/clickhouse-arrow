@@ -1,14 +1,23 @@
+#[cfg(feature = "extended-types")]
+pub(crate) mod aggregate_function;
 pub(crate) mod array;
+#[cfg(feature = "extended-types")]
+pub(crate) mod dynamic;
 pub(crate) mod geo;
 pub(crate) mod low_cardinality;
 pub(crate) mod map;
+#[cfg(feature = "extended-types")]
+pub(crate) mod nested;
 pub(crate) mod nullable;
 pub(crate) mod object;
+#[cfg(feature = "extended-types")]
+pub(crate) mod qbit;
 pub(crate) mod sized;
 pub(crate) mod string;
 pub(crate) mod tuple;
+#[cfg(feature = "extended-types")]
+pub(crate) mod variant;
 
-use super::low_cardinality::LOW_CARDINALITY_VERSION;
 use super::*;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 
@@ -64,6 +73,10 @@ impl ClickHouseNativeSerializer for Type {
                 | Type::Enum16(_) => {
                     sized::SizedSerializer::write_prefix(self, writer, state).await?;
                 }
+                #[cfg(feature = "extended-types")]
+                Type::BFloat16 | Type::Time | Type::Time64(_) => {
+                    sized::SizedSerializer::write_prefix(self, writer, state).await?;
+                }
 
                 Type::String
                 | Type::FixedSizedString(_)
@@ -89,6 +102,30 @@ impl ClickHouseNativeSerializer for Type {
                         .await?;
                 }
                 Type::Object => object::ObjectSerializer::write_prefix(self, writer, state).await?,
+                #[cfg(feature = "extended-types")]
+                Type::Nested(_) => {
+                    nested::NestedSerializer::write_prefix(self, writer, state).await?;
+                }
+                Type::Nothing => {}
+                #[cfg(feature = "extended-types")]
+                Type::QBit { .. } => {
+                    qbit::QBitSerializer::write_prefix(self, writer, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::Variant(_) => {
+                    variant::VariantSerializer::write_prefix(self, writer, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::Dynamic { .. } => {
+                    dynamic::DynamicSerializer::write_prefix(self, writer, state).await?;
+                }
+                #[cfg(feature = "extended-types")]
+                Type::SimpleAggregateFunction { .. } | Type::AggregateFunction { .. } => {
+                    aggregate_function::AggregateFunctionSerializer::write_prefix(
+                        self, writer, state,
+                    )
+                    .await?;
+                }
             }
             Ok(())
         }
@@ -100,31 +137,40 @@ impl ClickHouseNativeSerializer for Type {
         writer: &mut W,
         state: &mut SerializerState,
     ) {
-        let type_ = match self {
-            Type::Nullable(inner) | Type::Array(inner) => inner,
-            Type::Map(key, value) => &super::map::normalize_map_type(key, value),
-            Type::Tuple(inner) => {
-                for item in inner {
-                    item.serialize_prefix(writer, state);
-                }
-                return;
+        match self {
+            Type::Array(_) => array::ArraySerializer::write_prefix_sync(self, writer, state),
+            Type::Nullable(_) => {
+                nullable::NullableSerializer::write_prefix_sync(self, writer, state);
             }
-            Type::Point => {
-                for _ in 0..2 {
-                    Type::Float64.serialize_prefix(writer, state);
-                }
-                return;
+            Type::Map(_, _) => map::MapSerializer::write_prefix_sync(self, writer, state),
+            Type::Tuple(_) => tuple::TupleSerializer::write_prefix_sync(self, writer, state),
+            #[cfg(feature = "extended-types")]
+            Type::Nested(_) => nested::NestedSerializer::write_prefix_sync(self, writer, state),
+            Type::Point => geo::PointSerializer::write_prefix_sync(self, writer, state),
+            Type::Ring => geo::RingSerializer::write_prefix_sync(self, writer, state),
+            Type::Polygon => geo::PolygonSerializer::write_prefix_sync(self, writer, state),
+            Type::MultiPolygon => {
+                geo::MultiPolygonSerializer::write_prefix_sync(self, writer, state);
             }
             Type::LowCardinality(_) => {
-                writer.put_u64_le(LOW_CARDINALITY_VERSION);
-                return;
+                low_cardinality::LowCardinalitySerializer::write_prefix_sync(self, writer, state);
             }
-            Type::Object => {
-                writer.put_i8(1);
-                return;
+            Type::Object => object::ObjectSerializer::write_prefix_sync(self, writer, state),
+            #[cfg(feature = "extended-types")]
+            Type::QBit { .. } => qbit::QBitSerializer::write_prefix_sync(self, writer, state),
+            #[cfg(feature = "extended-types")]
+            Type::Variant(_) => variant::VariantSerializer::write_prefix_sync(self, writer, state),
+            #[cfg(feature = "extended-types")]
+            Type::Dynamic { .. } => {
+                dynamic::DynamicSerializer::write_prefix_sync(self, writer, state);
             }
-            _ => return,
-        };
-        type_.serialize_prefix(writer, state);
+            #[cfg(feature = "extended-types")]
+            Type::SimpleAggregateFunction { .. } | Type::AggregateFunction { .. } => {
+                aggregate_function::AggregateFunctionSerializer::write_prefix_sync(
+                    self, writer, state,
+                );
+            }
+            _ => {}
+        }
     }
 }

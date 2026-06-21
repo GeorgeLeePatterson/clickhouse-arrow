@@ -304,7 +304,9 @@ pub fn array_to_values(
                 .downcast_ref::<Decimal128Array>()
                 .ok_or_else(|| Error::ArrowDeserialize("Expected Decimal128Array".to_string()))?;
             let s: usize = match type_hint {
-                Some(Type::Decimal32(s) | Type::Decimal64(s) | Type::Decimal128(s)) => *s,
+                Some(Type::Decimal32(s) | Type::Decimal64(s) | Type::Decimal128(s)) => {
+                    usize::from(*s)
+                }
                 _ => arrow_scale_to_usize(*scale),
             };
             let narrow = match type_hint {
@@ -340,7 +342,7 @@ pub fn array_to_values(
                 .downcast_ref::<Decimal256Array>()
                 .ok_or_else(|| Error::ArrowDeserialize("Expected Decimal256Array".to_string()))?;
             let s: usize = match type_hint {
-                Some(Type::Decimal256(s)) => *s,
+                Some(Type::Decimal256(s)) => usize::from(*s),
                 _ => arrow_scale_to_usize(*scale),
             };
             map_or_null(

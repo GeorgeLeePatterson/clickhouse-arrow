@@ -280,8 +280,7 @@ impl FromSql for serde_json::Value {
         }
         match value {
             Value::Object(x) => {
-                Ok(serde_json::from_slice(&x)
-                    .map_err(|e| Error::DeserializeError(e.to_string()))?)
+                Ok(serde_json::from_slice(&x).map_err(|e| Error::Deserialize(e.to_string()))?)
             }
             _ => Err(unexpected_type(type_)),
         }
@@ -310,7 +309,7 @@ impl<T: FromSql + Default + Copy, const N: usize> FromSql for [T; N] {
         match value {
             Value::Array(x) => {
                 if x.len() != N {
-                    return Err(Error::DeserializeError(format!(
+                    return Err(Error::Deserialize(format!(
                         "invalid length for array: {} expected {}",
                         x.len(),
                         N
@@ -344,15 +343,23 @@ macro_rules! tuple_impls {
                     };
                     let Value::Tuple(values) = value else { return Err(unexpected_type(type_)) };
                     if values.len() != subtype.len() {
-                        return Err(Error::DeserializeError(format!("unexpected type: mismatch tuple length expected {}, got {}", subtype.len(), values.len())));
+                        return Err(Error::deserialize(format!(
+                            "unexpected type: mismatch tuple length expected {}, got {}",
+                            subtype.len(),
+                            values.len()
+                        )));
                     }
                     if values.len() != $len {
-                        return Err(Error::DeserializeError(format!("unexpected type: mismatch tuple length expected {}, got {}", $len, values.len())));
+                        return Err(Error::deserialize(format!(
+                            "unexpected type: mismatch tuple length expected {}, got {}",
+                            $len,
+                            values.len()
+                        )));
                     }
                     let mut deque = ::std::collections::VecDeque::from(values);
                     Ok((
                         $(
-                            $name::from_sql(subtype[$n].strip_low_cardinality(), deque.pop_front().unwrap())?,
+                            $name::from_sql(subtype[$n].1.strip_low_cardinality(), deque.pop_front().unwrap())?,
                         )+
                     ))
                 }

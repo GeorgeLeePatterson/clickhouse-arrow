@@ -125,7 +125,7 @@ impl<T: ClientFormat> InternalConn<T> {
         // `inner_pool` it's helpful to distinguish.
         let conn_id = CONN_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let cid = Box::leak(format!("{}.{conn_id}", metadata.client_id).into_boxed_str());
-        let state = DeserializerState::default().with_arrow_options(metadata.arrow_options);
+        let state = DeserializerState::default();
         InternalConn {
             cid,
             server_hello,
@@ -404,6 +404,7 @@ impl<T: ClientFormat> InternalConn<T> {
         cid: &'static str,
     ) -> Result<()> {
         let mut state = DeserializerState::default();
+        let client_id = metadata.client_id;
         let packet = Reader::receive_packet::<T>(reader, revision, metadata, &mut state)
             .await
             .inspect_err(|error| error!(?error, { ATT_CON } = cid, "Failed pong"))?;
@@ -412,7 +413,7 @@ impl<T: ClientFormat> InternalConn<T> {
             return Err(Error::Protocol("Expected Pong".to_string()));
         }
 
-        trace!({ ATT_CON } = metadata.client_id, "Pong received");
+        trace!({ ATT_CON } = client_id, "Pong received");
 
         Ok(())
     }
@@ -488,8 +489,15 @@ impl<T: ClientFormat> InternalConn<T> {
             InsertState::Batch(data) => {
                 if !data.is_empty() {
                     for block in data {
-                        Writer::send_data::<T>(writer, block, qid, header, revision, self.metadata)
-                            .await?;
+                        Writer::send_data_no_flush::<T>(
+                            writer,
+                            block,
+                            qid,
+                            header,
+                            revision,
+                            self.metadata,
+                        )
+                        .await?;
                     }
                 }
                 self.send_delimiter(writer, qid).await?;

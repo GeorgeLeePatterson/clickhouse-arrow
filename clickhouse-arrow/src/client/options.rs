@@ -717,3 +717,159 @@ pub struct CloudOptions {
     #[cfg_attr(feature = "serde", serde(default))]
     pub wakeup:  bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_options_builder_sets_all_core_fields() {
+        let options = ClientOptions::new()
+            .with_username("alice")
+            .with_password("secret")
+            .with_default_database("analytics")
+            .with_domain("db.example.com")
+            .with_ipv4_only(true)
+            .with_cafile("/tmp/ca.pem")
+            .with_use_tls(true)
+            .with_compression(CompressionMethod::ZSTD)
+            .with_extension(
+                Extension::default()
+                    .with_arrow(ArrowOptions::strict())
+                    .with_chunked_send_mode(ChunkedProtocolMode::Chunked)
+                    .with_chunked_recv_mode(ChunkedProtocolMode::NotChunkedOptional),
+            );
+
+        assert_eq!(options.username, "alice");
+        assert_eq!(options.password.get(), "secret");
+        assert_eq!(options.default_database, "analytics");
+        assert_eq!(options.domain.as_deref(), Some("db.example.com"));
+        assert!(options.ipv4_only);
+        assert_eq!(options.cafile, Some(PathBuf::from("/tmp/ca.pem")));
+        assert!(options.use_tls);
+        assert_eq!(options.compression, CompressionMethod::ZSTD);
+        assert_eq!(options.ext.chunked_send, ChunkedProtocolMode::Chunked);
+        assert_eq!(options.ext.chunked_recv, ChunkedProtocolMode::NotChunkedOptional);
+        assert_eq!(options.ext.arrow, Some(ArrowOptions::strict()));
+    }
+
+    #[test]
+    fn client_options_extend_updates_existing_extension() {
+        let options = ClientOptions::new().extend(|ext| {
+            ext.with_set_arrow(|arrow| arrow.with_strings_as_strings(true))
+                .with_chunked_send_mode(ChunkedProtocolMode::ChunkedOptional)
+        });
+
+        let arrow = options.ext.arrow.expect("arrow options should be set");
+        assert!(arrow.strings_as_strings);
+        assert_eq!(options.ext.chunked_send, ChunkedProtocolMode::ChunkedOptional);
+    }
+
+    #[test]
+    fn arrow_options_defaults_and_strict_modes() {
+        let defaults = ArrowOptions::default();
+        assert!(!defaults.strings_as_strings);
+        assert!(!defaults.use_date32_for_date);
+        assert!(!defaults.strict_schema);
+        assert!(!defaults.disable_strict_schema_ddl);
+        assert!(defaults.nullable_array_default_empty);
+
+        let strict = ArrowOptions::strict();
+        assert!(!strict.strings_as_strings);
+        assert!(!strict.use_date32_for_date);
+        assert!(strict.strict_schema);
+        assert!(!strict.disable_strict_schema_ddl);
+        assert!(!strict.nullable_array_default_empty);
+
+        let strict_ddl = ArrowOptions::new()
+            .with_strings_as_strings(true)
+            .with_use_date32_for_date(true)
+            .into_strict_ddl();
+        assert!(strict_ddl.strict_schema);
+        assert!(!strict_ddl.nullable_array_default_empty);
+        assert!(strict_ddl.strings_as_strings);
+        assert!(strict_ddl.use_date32_for_date);
+
+        let passthrough = ArrowOptions::new()
+            .with_disable_strict_schema_ddl(true)
+            .with_nullable_array_default_empty(true)
+            .into_strict_ddl();
+        assert!(!passthrough.strict_schema);
+        assert!(passthrough.disable_strict_schema_ddl);
+        assert!(passthrough.nullable_array_default_empty);
+    }
+
+    #[test]
+    fn arrow_options_setting_dispatch_and_iter_construction() {
+        let configured = ArrowOptions::new()
+            .with_setting("strings_as_strings", true)
+            .with_setting("use_date32_for_date", true)
+            .with_setting("strict_schema", true)
+            .with_setting("disable_strict_schema_ddl", true)
+            .with_setting("nullable_array_default_empty", false);
+
+        assert!(configured.strings_as_strings);
+        assert!(configured.use_date32_for_date);
+        assert!(configured.strict_schema);
+        assert!(configured.disable_strict_schema_ddl);
+        assert!(!configured.nullable_array_default_empty);
+
+        // Unknown keys should be ignored.
+        let unchanged = configured.with_setting("not_a_real_option", true);
+        assert_eq!(configured, unchanged);
+
+        let kv = [
+            ("strings_as_strings", true),
+            ("use_date32_for_date", true),
+            ("strict_schema", false),
+            ("nullable_array_default_empty", false),
+        ];
+
+        let from_iter_ref: ArrowOptions = kv.into_iter().collect();
+        assert!(from_iter_ref.strings_as_strings);
+        assert!(from_iter_ref.use_date32_for_date);
+        assert!(!from_iter_ref.strict_schema);
+        assert!(!from_iter_ref.nullable_array_default_empty);
+
+        let from_iter_owned = ArrowOptions::from_iter(vec![
+            ("strings_as_strings", false),
+            ("disable_strict_schema_ddl", true),
+        ]);
+        assert!(!from_iter_owned.strings_as_strings);
+        assert!(from_iter_owned.disable_strict_schema_ddl);
+    }
+
+    #[test]
+    fn extension_with_set_arrow_initializes_from_default() {
+        let ext = Extension::default().with_set_arrow(|arrow| {
+            arrow
+                .with_strings_as_strings(true)
+                .with_use_date32_for_date(true)
+                .with_strict_schema(true)
+                .with_disable_strict_schema_ddl(true)
+                .with_nullable_array_default_empty(false)
+        });
+
+        let arrow = ext.arrow.expect("arrow options should exist");
+        assert!(arrow.strings_as_strings);
+        assert!(arrow.use_date32_for_date);
+        assert!(arrow.strict_schema);
+        assert!(arrow.disable_strict_schema_ddl);
+        assert!(!arrow.nullable_array_default_empty);
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn extension_with_cloud_sets_cloud_options() {
+        let cloud = CloudOptions { timeout: Some(30), wakeup: true };
+        let ext = Extension::default().with_cloud(cloud);
+        assert_eq!(ext.cloud, cloud);
+    }
+
+    #[cfg(feature = "inner_pool")]
+    #[test]
+    fn extension_with_fast_mode_size_sets_value() {
+        let ext = Extension::default().with_fast_mode_size(4);
+        assert_eq!(ext.fast_mode_size, Some(4));
+    }
+}

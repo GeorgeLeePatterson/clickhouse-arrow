@@ -37,7 +37,9 @@ pub use self::response::*;
 pub use self::tcp::Destination;
 use crate::arrow::utils::batch_to_rows;
 use crate::constants::*;
+use crate::explain::{ExplainFormat, ExplainResult, QueryOptions, explain_result_from_batches};
 use crate::formats::{ClientFormat, NativeFormat};
+use crate::limits::{LimitedResponse, QueryLimits};
 use crate::native::block::Block;
 use crate::native::protocol::{CompressionMethod, ProfileEvent};
 use crate::prelude::*;
@@ -443,6 +445,7 @@ impl<T: ClientFormat> Client<T> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let (header_tx, header_rx) = oneshot::channel();
         let connection = self.conn().await?;
 
         // Send query
@@ -454,7 +457,7 @@ impl<T: ClientFormat> Client<T> {
                     settings: self.settings.clone(),
                     params: None,
                     response: tx,
-                    header: None,
+                    header: Some(header_tx),
                 },
                 qid,
                 false,
@@ -466,6 +469,11 @@ impl<T: ClientFormat> Client<T> {
             .await
             .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
             .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
+        drop(
+            header_rx.await.map_err(|_| {
+                Error::Protocol(format!("Failed to receive header for query {qid}"))
+            })?,
+        );
 
         // Send data
         let (tx, rx) = oneshot::channel();
@@ -549,6 +557,7 @@ impl<T: ClientFormat> Client<T> {
 
         // Create metadata channel
         let (tx, rx) = oneshot::channel();
+        let (header_tx, header_rx) = oneshot::channel();
         let connection = self.conn().await?;
 
         #[cfg_attr(not(feature = "inner_pool"), expect(unused_variables))]
@@ -559,7 +568,7 @@ impl<T: ClientFormat> Client<T> {
                     settings: self.settings.clone(),
                     params: None,
                     response: tx,
-                    header: None,
+                    header: Some(header_tx),
                 },
                 qid,
                 false,
@@ -571,6 +580,11 @@ impl<T: ClientFormat> Client<T> {
             .await
             .map_err(|_| Error::Protocol(format!("Failed to receive response for query {qid}")))?
             .inspect_err(|error| error!(?error, { ATT_QID } = %qid, "Error receiving header"))?;
+        drop(
+            header_rx.await.map_err(|_| {
+                Error::Protocol(format!("Failed to receive header for query {qid}"))
+            })?,
+        );
 
         // Send data
         let (tx, rx) = oneshot::channel();
@@ -1541,6 +1555,140 @@ impl Client<ArrowFormat> {
         Ok(ClickHouseResponse::new(Box::pin(self.query_raw(query, params, qid).await?)))
     }
 
+    /// Executes a query with result limits.
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_limits(
+        &self,
+        query: impl Into<ParsedQuery>,
+        limits: QueryLimits,
+        qid: Option<Qid>,
+    ) -> Result<LimitedResponse<ClickHouseResponse<RecordBatch>>> {
+        self.query_with_limits_params(query, None, limits, qid).await
+    }
+
+    /// Executes a parameterized query with result limits.
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_limits_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        limits: QueryLimits,
+        qid: Option<Qid>,
+    ) -> Result<LimitedResponse<ClickHouseResponse<RecordBatch>>> {
+        let inner = self.query_params(query, params, qid).await?;
+        Ok(LimitedResponse::new(inner, limits))
+    }
+
+    /// Executes a query with unified options (`EXPLAIN`, limits).
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_options(
+        &self,
+        query: impl Into<ParsedQuery>,
+        options: QueryOptions,
+        qid: Option<Qid>,
+    ) -> Result<ClickHouseResponse<RecordBatch>> {
+        self.query_with_options_params(query, None, options, qid).await
+    }
+
+    /// Executes a parameterized query with unified options (`EXPLAIN`, limits).
+    ///
+    /// # Errors
+    /// - Returns an error if the query fails
+    #[instrument(
+        skip_all,
+        fields(db.system = "clickhouse", db.operation = "query", clickhouse.query.id)
+    )]
+    pub async fn query_with_options_params(
+        &self,
+        query: impl Into<ParsedQuery>,
+        params: Option<QueryParams>,
+        options: QueryOptions,
+        qid: Option<Qid>,
+    ) -> Result<ClickHouseResponse<RecordBatch>> {
+        let parsed_query = query.into();
+        let qid = qid.unwrap_or_default();
+
+        let explain_receiver = options.explain.map(|explain_opts| {
+            let explain_query = format!("{} {}", explain_opts.build_prefix(), &*parsed_query);
+            let resolved_format = explain_opts.format.resolve(explain_opts.operation);
+            self.spawn_explain_query(explain_query, params.clone(), resolved_format)
+        });
+
+        if options.is_explain_only() {
+            let empty_stream = stream::empty();
+            return Ok(match explain_receiver {
+                Some(rx) => ClickHouseResponse::from_stream_with_explain(empty_stream, rx),
+                None => ClickHouseResponse::from_stream(empty_stream),
+            });
+        }
+
+        let (query_str, recorded_qid) = record_query(Some(qid), parsed_query, self.client_id);
+        let stream = self.query_raw(query_str, params, recorded_qid).await?;
+
+        let response = match (options.limits, explain_receiver) {
+            (Some(limits), Some(rx)) => ClickHouseResponse::from_stream_with_explain(
+                LimitedResponse::new(stream, limits),
+                rx,
+            ),
+            (Some(limits), None) => {
+                ClickHouseResponse::from_stream(LimitedResponse::new(stream, limits))
+            }
+            (None, Some(rx)) => ClickHouseResponse::from_stream_with_explain(stream, rx),
+            (None, None) => ClickHouseResponse::from_stream(stream),
+        };
+
+        Ok(response)
+    }
+
+    fn spawn_explain_query(
+        &self,
+        explain_query: String,
+        params: Option<QueryParams>,
+        resolved_format: ExplainFormat,
+    ) -> oneshot::Receiver<Result<ExplainResult>> {
+        let (tx, rx) = oneshot::channel();
+        let client = self.clone();
+        let explain_qid = Qid::new();
+
+        #[allow(clippy::disallowed_methods)]
+        drop(tokio::spawn(async move {
+            let result = async {
+                let mut stream =
+                    client.query_params(explain_query, params, Some(explain_qid)).await?;
+
+                let mut batches = Vec::new();
+                while let Some(batch_result) = stream.next().await {
+                    batches.push(batch_result?);
+                }
+
+                explain_result_from_batches(batches, resolved_format)
+            }
+            .await;
+
+            drop(tx.send(result));
+        }));
+
+        rx
+    }
+
     /// Executes a `ClickHouse` query and streams rows as column-major values.
     ///
     /// This method sends a query to `ClickHouse` and returns a stream of rows, where
@@ -2064,7 +2212,7 @@ impl Client<ArrowFormat> {
     ///     .await
     ///     .unwrap();
     ///
-    /// let schemas = client.fetch_schema(Some("my_db"), &["my_table"], None)
+    /// let schemas = client.fetch_schema(Some("my_db"), &["my_table"], None, None)
     ///     .await
     ///     .unwrap();
     /// for (table, schema) in schemas {
@@ -2087,10 +2235,11 @@ impl Client<ArrowFormat> {
         database: Option<&str>,
         tables: &[&str],
         qid: Option<Qid>,
+        schema_hints: Option<&ArrowSchemaHints>,
     ) -> Result<HashMap<String, SchemaRef>> {
         let database = database.unwrap_or(self.connection.database());
         let options = self.connection.metadata().arrow_options;
-        crate::arrow::schema::fetch_schema(self, database, tables, qid, options).await
+        crate::arrow::schema::fetch_schema(self, database, tables, qid, options, schema_hints).await
     }
 
     /// Issues a `CREATE TABLE` DDL statement for a table using Arrow schema.

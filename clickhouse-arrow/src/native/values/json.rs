@@ -11,7 +11,7 @@ impl<T: Serialize> ToSql for Json<T> {
     fn to_sql(self, _type_hint: Option<&Type>) -> Result<Value> {
         Ok(Value::Object(
             serde_json::to_string(&self.0)
-                .map_err(|e| Error::SerializeError(e.to_string()))?
+                .map_err(|e| Error::Serialize(e.to_string()))?
                 .into_bytes(),
         ))
     }
@@ -21,6 +21,6 @@ impl<T: DeserializeOwned> FromSql for Json<T> {
     fn from_sql(type_: &Type, value: Value) -> Result<Self> {
         let raw: String = FromSql::from_sql(type_, value)?;
 
-        Ok(Json(serde_json::from_str(&raw).map_err(|e| Error::DeserializeError(e.to_string()))?))
+        Ok(Json(serde_json::from_str(&raw).map_err(|e| Error::Deserialize(e.to_string()))?))
     }
 }

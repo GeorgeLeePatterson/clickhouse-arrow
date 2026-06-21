@@ -7,22 +7,25 @@ use crate::{Error, Result, Value};
 pub(crate) struct MapSerializer;
 
 impl Serializer for MapSerializer {
+    fn write_prefix_sync(
+        type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        if let Type::Map(k, v) = type_ {
+            k.serialize_prefix(writer, state);
+            v.serialize_prefix(writer, state);
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         type_: &Type,
         writer: &mut W,
         state: &mut SerializerState,
     ) -> Result<()> {
-        match type_ {
-            Type::Map(key, value) => {
-                let nested =
-                    Type::Array(Box::new(Type::Tuple(vec![(**key).clone(), (**value).clone()])));
-                nested.serialize_prefix_async(writer, state).await?;
-            }
-            _ => {
-                return Err(Error::SerializeError(format!(
-                    "MapSerializer called with non-map type: {type_:?}"
-                )));
-            }
+        if let Type::Map(k, v) = type_ {
+            k.serialize_prefix_async(writer, state).await?;
+            v.serialize_prefix_async(writer, state).await?;
         }
         Ok(())
     }
@@ -34,7 +37,7 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Map(key_type, value_type) = type_ else {
-            return Err(Error::SerializeError(format!(
+            return Err(Error::Serialize(format!(
                 "MapSerializer called with non-map type: {type_:?}"
             )));
         };
@@ -44,7 +47,7 @@ impl Serializer for MapSerializer {
 
         for value in values {
             let Value::Map(keys, values) = value else {
-                return Err(Error::SerializeError(format!(
+                return Err(Error::Serialize(format!(
                     "MapSerializer called with non-map value: {value:?}"
                 )));
             };
@@ -66,7 +69,7 @@ impl Serializer for MapSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Map(key_type, value_type) = type_ else {
-            return Err(Error::SerializeError(format!(
+            return Err(Error::Serialize(format!(
                 "MapSerializer called with non-map type: {type_:?}"
             )));
         };
@@ -76,7 +79,7 @@ impl Serializer for MapSerializer {
 
         for value in values {
             let Value::Map(keys, values) = value else {
-                return Err(Error::SerializeError(format!(
+                return Err(Error::Serialize(format!(
                     "MapSerializer called with non-map value: {value:?}"
                 )));
             };

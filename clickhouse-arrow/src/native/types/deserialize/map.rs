@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::native::protocol::MAX_STRING_SIZE;
 use crate::native::values::Value;
 use crate::{Error, Result};
@@ -9,19 +9,18 @@ use crate::{Error, Result};
 pub(crate) struct MapDeserializer;
 
 impl Deserializer for MapDeserializer {
-    async fn read_prefix<R: ClickHouseRead>(
+    async fn read_prefix<R: ClickHouseRead, T: Default + Send>(
         type_: &Type,
         reader: &mut R,
-        state: &mut DeserializerState,
+        state: &mut DeserializerState<T>,
     ) -> Result<()> {
         match type_ {
             Type::Map(key, value) => {
-                let nested =
-                    Type::Array(Box::new(Type::Tuple(vec![(**key).clone(), (**value).clone()])));
-                nested.deserialize_prefix_async(reader, state).await?;
+                key.deserialize_prefix(reader, state).await?;
+                value.deserialize_prefix(reader, state).await?;
             }
             _ => {
-                return Err(Error::DeserializeError(
+                return Err(Error::Deserialize(
                     "MapDeserializer called with non-map type".to_string(),
                 ));
             }
@@ -45,9 +44,7 @@ impl Deserializer for MapDeserializer {
         }
 
         let Type::Map(key, value) = type_ else {
-            return Err(Error::DeserializeError(
-                "MapDeserializer called with non-map type".to_string(),
-            ));
+            return Err(Error::Deserialize("MapDeserializer called with non-map type".to_string()));
         };
 
         let mut offsets: Vec<u64> = Vec::with_capacity(rows);
@@ -80,12 +77,13 @@ impl Deserializer for MapDeserializer {
         Ok(out)
     }
 
-    fn read_sync(
-        _type_: &Type,
-        _reader: &mut impl ClickHouseBytesRead,
-        _rows: usize,
-        _state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError("MapDeserializer sync not yet implemented".to_string()))
-    }
+    // TODO: Remove
+    // fn read_sync(
+    //     _type_: &Type,
+    //     _reader: &mut impl ClickHouseBytesRead,
+    //     _rows: usize,
+    //     _state: &mut DeserializerState,
+    // ) -> Result<Vec<Value>> {
+    //     Err(Error::DeserializeError("MapDeserializer sync not yet implemented".to_string()))
+    // }
 }

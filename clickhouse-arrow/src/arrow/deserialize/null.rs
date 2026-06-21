@@ -8,9 +8,9 @@ use arrow::array::ArrayRef;
 use arrow::datatypes::DataType;
 use tokio::io::AsyncReadExt;
 
-use super::ClickHouseArrowDeserializer;
+use super::{ArrowFieldCtx, ClickHouseArrowDeserializer};
 use crate::arrow::builder::TypedBuilder;
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
 
 /// Deserializes a `ClickHouse` `Nullable` type into an Arrow array.
@@ -63,48 +63,26 @@ use crate::{Error, Result, Type};
 /// let int32_array = array.as_any().downcast_ref::<Int32Array>().unwrap();
 /// assert_eq!(int32_array, &Int32Array::from(vec![Some(1), None, Some(3)]));
 /// ```
-pub(crate) async fn deserialize_async<R: ClickHouseRead>(
+pub(crate) async fn deserialize<R: ClickHouseRead>(
     inner: &Type,
     builder: &mut TypedBuilder,
     data_type: &DataType,
     reader: &mut R,
     rows: usize,
-    rbuffer: &mut Vec<u8>,
+    ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
-    let nulls = if rows > 0 {
-        let mut mask = vec![0u8; rows];
+    let null_rows = ctx.sparse_rows().unwrap_or(rows);
+    let nulls = if null_rows > 0 {
+        let mut mask = vec![0u8; null_rows];
         let _ = reader.read_exact(&mut mask).await?;
-        if mask.len() != rows {
-            return Err(Error::DeserializeError(format!("Nulls={}, rows={rows}", mask.len())));
+        if mask.len() != null_rows {
+            return Err(Error::deserialize(format!("Nulls={}, rows={null_rows}", mask.len())));
         }
         mask
     } else {
         vec![]
     };
-    inner.deserialize_arrow_async(builder, reader, data_type, rows, &nulls, rbuffer).await
-}
-
-#[allow(dead_code)] // TODO: remove once synchronous Arrow path is fully retired
-pub(crate) fn deserialize<R: ClickHouseBytesRead>(
-    inner: &Type,
-    builder: &mut TypedBuilder,
-    reader: &mut R,
-    data_type: &DataType,
-    rows: usize,
-    rbuffer: &mut Vec<u8>,
-) -> Result<ArrayRef> {
-    let nulls = if rows > 0 {
-        let mut mask = vec![0u8; rows];
-        reader.try_copy_to_slice(&mut mask)?;
-        if mask.len() != rows {
-            return Err(Error::DeserializeError(format!("Nulls={}, rows={rows}", mask.len())));
-        }
-        mask
-    } else {
-        vec![]
-    };
-
-    inner.deserialize_arrow(builder, reader, data_type, rows, &nulls, rbuffer)
+    inner.deserialize_arrow(builder, reader, data_type, rows, &nulls, ctx).await
 }
 
 #[cfg(test)]
@@ -117,6 +95,8 @@ mod tests {
     use crate::ArrowOptions;
     use crate::arrow::ch_to_arrow_type;
     use crate::native::types::Type;
+
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
 
     /// Tests deserialization of `Nullable(Int32)` with null values.
     #[tokio::test]
@@ -132,12 +112,13 @@ mod tests {
             3, 0, 0, 0, // 3
         ];
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(Int32)");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(Int32)");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array, &Int32Array::from(vec![Some(1), None, Some(3)]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -158,12 +139,13 @@ mod tests {
         ];
         let mut reader = Cursor::new(input);
         let opts = Some(ArrowOptions::default().with_strings_as_strings(true));
-        let data_type = ch_to_arrow_type(inner_type, opts).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, opts, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(String)");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(String)");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(array, &StringArray::from(vec![Some("a"), None, Some("c")]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
@@ -189,12 +171,13 @@ mod tests {
             5, 0, 0, 0, // 5
         ];
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(Array(Int32))");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(Array(Int32))");
         let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
         let values = list_array.values().as_any().downcast_ref::<Int32Array>().unwrap();
 
@@ -215,12 +198,13 @@ mod tests {
         let rows = 0;
         let input = vec![]; // No data for zero rows
         let mut reader = Cursor::new(input);
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
-        let result =
-            deserialize_async(inner_type, &mut builder, &data_type, &mut reader, rows, &mut vec![])
-                .await
-                .expect("Failed to deserialize Nullable(Int32) with zero rows");
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize(inner_type, &mut builder, &data_type, &mut reader, rows, &mut ctx)
+            .await
+            .expect("Failed to deserialize Nullable(Int32) with zero rows");
         let array = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(array.len(), 0);
         assert_eq!(array, &Int32Array::from(Vec::<i32>::new()));
@@ -231,16 +215,18 @@ mod tests {
     async fn test_null_mask_length() {
         let type_ = Type::Nullable(Box::new(Type::String));
         let inner_type = type_.strip_null();
-        let data_type = ch_to_arrow_type(inner_type, None).unwrap().0;
+        let data_type = ch_to_arrow_type(inner_type, None, None).unwrap().0;
         let mut builder = TypedBuilder::try_new(inner_type, &data_type).unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
         assert!(
-            deserialize_async(
+            deserialize(
                 inner_type,
                 &mut builder,
                 &data_type,
                 &mut Cursor::new(vec![0_u8; 50]),
                 100,
-                &mut vec![]
+                &mut ctx
             )
             .await
             .is_err()

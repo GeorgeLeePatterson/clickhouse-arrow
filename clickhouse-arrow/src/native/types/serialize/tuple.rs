@@ -5,21 +5,26 @@ use crate::{Error, Result, Value};
 pub(crate) struct TupleSerializer;
 
 impl Serializer for TupleSerializer {
+    fn write_prefix_sync(
+        type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        if let Type::Tuple(inner) = type_ {
+            for (_, item) in inner {
+                item.serialize_prefix(writer, state);
+            }
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         type_: &Type,
         writer: &mut W,
         state: &mut SerializerState,
     ) -> Result<()> {
-        match type_ {
-            Type::Tuple(inner) => {
-                for item in inner {
-                    item.serialize_prefix_async(writer, state).await?;
-                }
-            }
-            _ => {
-                return Err(Error::SerializeError(format!(
-                    "TupleSerializer called with non-tuple type: {type_:?}"
-                )));
+        if let Type::Tuple(inner) = type_ {
+            for (_, item) in inner {
+                item.serialize_prefix_async(writer, state).await?;
             }
         }
         Ok(())
@@ -32,9 +37,7 @@ impl Serializer for TupleSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Tuple(inner_types) = &type_ else {
-            return Err(Error::SerializeError(
-                "TupleSerializer called with non-tuple type".to_string(),
-            ));
+            return Err(Error::serialize("TupleSerializer called with non-tuple type"));
         };
 
         let mut columns = vec![Vec::with_capacity(values.len()); inner_types.len()];
@@ -45,7 +48,7 @@ impl Serializer for TupleSerializer {
                 columns[i].push(value);
             }
         }
-        for (inner_type, column) in inner_types.iter().zip(columns) {
+        for ((_, inner_type), column) in inner_types.iter().zip(columns) {
             inner_type.serialize_column(column, writer, state).await?;
         }
         Ok(())
@@ -58,9 +61,7 @@ impl Serializer for TupleSerializer {
         state: &mut SerializerState,
     ) -> Result<()> {
         let Type::Tuple(inner_types) = &type_ else {
-            return Err(Error::SerializeError(
-                "TupleSerializer called with non-tuple type".to_string(),
-            ));
+            return Err(Error::serialize("TupleSerializer called with non-tuple type"));
         };
 
         let mut columns = vec![Vec::with_capacity(values.len()); inner_types.len()];
@@ -71,7 +72,7 @@ impl Serializer for TupleSerializer {
                 columns[i].push(value);
             }
         }
-        for (inner_type, column) in inner_types.iter().zip(columns) {
+        for ((_, inner_type), column) in inner_types.iter().zip(columns) {
             inner_type.serialize_column_sync(column, writer, state)?;
         }
         Ok(())

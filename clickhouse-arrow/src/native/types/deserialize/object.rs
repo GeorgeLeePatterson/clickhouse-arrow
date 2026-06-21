@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{Deserializer, DeserializerState, Type};
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::native::values::Value;
 use crate::{Error, Result};
 
@@ -9,17 +9,17 @@ pub(crate) struct ObjectDeserializer;
 
 #[allow(clippy::uninit_vec)]
 impl Deserializer for ObjectDeserializer {
-    async fn read_prefix<R: ClickHouseRead>(
+    async fn read_prefix<R: ClickHouseRead, T: Default + Send>(
         type_: &Type,
         reader: &mut R,
-        _state: &mut DeserializerState,
+        _state: &mut DeserializerState<T>,
     ) -> Result<()> {
         match type_ {
             Type::Object => {
                 let _ = reader.read_i8().await?;
             }
             _ => {
-                return Err(Error::DeserializeError(
+                return Err(Error::Deserialize(
                     "ObjectDeserializer called with non-json type".to_string(),
                 ));
             }
@@ -46,34 +46,35 @@ impl Deserializer for ObjectDeserializer {
                 }
                 Ok(out)
             }
-            _ => Err(Error::DeserializeError(
-                "ObjectDeserializer called with non-json type".to_string(),
-            )),
+            _ => {
+                Err(Error::Deserialize("ObjectDeserializer called with non-json type".to_string()))
+            }
         }
     }
 
-    fn read_sync(
-        type_: &Type,
-        reader: &mut impl ClickHouseBytesRead,
-        rows: usize,
-        _state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        match type_ {
-            Type::Object | Type::String | Type::Binary => {
-                let mut out = Vec::with_capacity(rows);
-                for _ in 0..rows {
-                    let value = reader.try_get_string()?;
-                    out.push(if matches!(type_, Type::Object) {
-                        Value::Object(value.to_vec())
-                    } else {
-                        Value::String(value.to_vec())
-                    });
-                }
-                Ok(out)
-            }
-            _ => Err(Error::DeserializeError(
-                "ObjectDeserializer called with non-json type".to_string(),
-            )),
-        }
-    }
+    // TODO: Remove
+    // fn read_sync(
+    //     type_: &Type,
+    //     reader: &mut impl ClickHouseBytesRead,
+    //     rows: usize,
+    //     _state: &mut DeserializerState,
+    // ) -> Result<Vec<Value>> {
+    //     match type_ {
+    //         Type::Object | Type::String | Type::Binary => {
+    //             let mut out = Vec::with_capacity(rows);
+    //             for _ in 0..rows {
+    //                 let value = reader.try_get_string()?;
+    //                 out.push(if matches!(type_, Type::Object) {
+    //                     Value::Object(value.to_vec())
+    //                 } else {
+    //                     Value::String(value.to_vec())
+    //                 });
+    //             }
+    //             Ok(out)
+    //         }
+    //         _ => Err(Error::DeserializeError(
+    //             "ObjectDeserializer called with non-json type".to_string(),
+    //         )),
+    //     }
+    // }
 }

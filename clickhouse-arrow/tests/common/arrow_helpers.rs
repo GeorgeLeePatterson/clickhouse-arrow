@@ -31,6 +31,7 @@ pub mod assertions {
             ($dt1:expr, $dt2:expr) => {
                 $( dict($k1:pat, $v1:pat, $k2:pat, $v2:pat) => { $dictst:expr }; )?
                 $( list($field1:pat, $field2:pat) => { $listst:expr }; )?
+                $( struct_fields($fields1:pat, $fields2:pat) => { $structst:expr }; )?
                 $( utc_default() => { $utcst:expr }; )?
             };
             _ => $dflt:expr
@@ -50,6 +51,10 @@ pub mod assertions {
                     | DataType::ListView($field2),
                 ) => {
                     $listst
+                })?
+                // Struct fields where child names may differ (e.g., Nested flattening behavior)
+                $((DataType::Struct($fields1), DataType::Struct($fields2)) => {
+                    $structst
                 })?
                 // Dates
                 $((
@@ -132,6 +137,17 @@ pub mod assertions {
                             || is_list_like(field1.data_type(), field2.data_type())
                             || field1.data_type() == field2.data_type()
                         );
+                    }};
+                    struct_fields(fields1, fields2) => {{
+                        assert_eq!(fields1.len(), fields2.len(), "Struct field length mismatch");
+                        for (field1, field2) in fields1.iter().zip(fields2.iter()) {
+                            assert!(
+                                field1.is_nullable() == field2.is_nullable()
+                                && (is_string_like(field1.data_type(), field2.data_type())
+                                    || is_list_like(field1.data_type(), field2.data_type())
+                                    || field1.data_type() == field2.data_type())
+                            );
+                        }
                     }};
                     utc_default() => {{
                         // The match is enough
@@ -218,6 +234,29 @@ pub mod assertions {
         }
     }
 
+    /// # Panics
+    pub fn assert_structs(i: usize, col: &ArrayRef, ins: &ArrayRef) {
+        let left = col.as_any().downcast_ref::<StructArray>().unwrap();
+        let right = ins.as_any().downcast_ref::<StructArray>().unwrap();
+
+        assert_eq!(left.len(), right.len(), "Struct row count mismatch: col={i}");
+        assert_eq!(left.nulls(), right.nulls(), "Struct null bitmap mismatch: col={i}");
+        assert_eq!(
+            left.columns().len(),
+            right.columns().len(),
+            "Struct child count mismatch: col={i}"
+        );
+
+        for (child_idx, (left_child, right_child)) in
+            left.columns().iter().zip(right.columns().iter()).enumerate()
+        {
+            assert_eq!(
+                left_child, right_child,
+                "Struct child mismatch: col={i}, child={child_idx}"
+            );
+        }
+    }
+
     // ClickHouse defaults to UTC, but a timestamp may have no tz specified.
     /// # Panics
     pub fn assert_datetimes_utf_default(col: &ArrayRef, ins: &ArrayRef) {
@@ -284,6 +323,35 @@ pub fn test_schema() -> Arc<Schema> {
             "datetime64_9_utc_col",
             DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
             true,
+        ),
+        // ClickHouse 24.x+ Arrow path coverage
+        #[cfg(feature = "extended-types")]
+        Field::new("bfloat16_col", DataType::Float32, true),
+        #[cfg(feature = "extended-types")]
+        Field::new(
+            "qbit_float32_col",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 3),
+            false,
+        ),
+        #[cfg(feature = "extended-types")]
+        Field::new(
+            "nested_col",
+            DataType::Struct(
+                vec![
+                    Field::new(
+                        "name",
+                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                        false,
+                    ),
+                    Field::new(
+                        "score",
+                        DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                        false,
+                    ),
+                ]
+                .into(),
+            ),
+            false,
         ),
         // Maps and Tuples
         Field::new(
@@ -610,6 +678,65 @@ pub fn test_record_batch() -> RecordBatch {
         ])
         .with_timezone_opt(Some("UTC")),
     );
+    #[cfg(feature = "extended-types")]
+    let bfloat16_col =
+        Arc::new(Float32Array::from(vec![Some(0.0), None, Some(1.0), Some(-2.0), Some(42.5)]));
+    #[cfg(feature = "extended-types")]
+    let qbit_values = Arc::new(Float32Array::from(vec![
+        0.1, 0.2, 0.3, // row 1
+        1.0, 2.0, 3.0, // row 2
+        -1.5, 0.0, 1.5, // row 3
+        42.0, 43.0, 44.0, // row 4
+        9.9, 8.8, 7.7, // row 5
+    ])) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let qbit_float32_col = Arc::new(FixedSizeListArray::new(
+        Arc::new(Field::new("item", DataType::Float32, false)),
+        3,
+        qbit_values,
+        None,
+    )) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let nested_offsets = OffsetBuffer::new(vec![0, 2, 2, 3, 4, 6].into());
+    #[cfg(feature = "extended-types")]
+    let nested_name_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Utf8, false)),
+            nested_offsets.clone(),
+            Arc::new(StringArray::from(vec!["alice", "bob", "charlie", "diana", "eve", "frank"])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let nested_score_col = Arc::new(
+        ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            nested_offsets,
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50, 60])),
+            None,
+        )
+        .unwrap(),
+    ) as ArrayRef;
+    #[cfg(feature = "extended-types")]
+    let nested_col = Arc::new(StructArray::from(vec![
+        (
+            Arc::new(Field::new(
+                "name",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+                false,
+            )),
+            nested_name_col,
+        ),
+        (
+            Arc::new(Field::new(
+                "score",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+                false,
+            )),
+            nested_score_col,
+        ),
+    ])) as ArrayRef;
     // Map and Tuple
     let fields = Fields::from(vec![
         Arc::new(Field::new(STRUCT_KEY_FIELD_NAME, DataType::Int32, false)),
@@ -866,19 +993,25 @@ pub fn test_record_batch() -> RecordBatch {
         decimal64_col,
         // Datetimes
         date_col,
-        date32_col, // 20
+        date32_col,
         datetime_col,
         datetime_utc_col,
         datetime_est_col,
         datetime64_3_ny_col,
         datetime64_6_tokyo_col,
         datetime64_9_utc_col,
+        #[cfg(feature = "extended-types")]
+        bfloat16_col,
+        #[cfg(feature = "extended-types")]
+        qbit_float32_col,
+        #[cfg(feature = "extended-types")]
+        nested_col,
         // Map and Tuple
         map_array,
         tuple_int32_string_col,
         // Special
         ipv4_col,
-        ipv6_col, // 30
+        ipv6_col,
         uuid_col,
         //
         // TODO
@@ -896,7 +1029,7 @@ pub fn test_record_batch() -> RecordBatch {
         array_low_cardinality_string_col,
         array_int32_col,
         array_nullable_int32_col,
-        array_nullable_string_col, // 40
+        array_nullable_string_col,
         large_list_int32_col,
         array_tuple_col,
     ])

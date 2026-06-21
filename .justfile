@@ -3,8 +3,12 @@ ARROW_DEBUG := env('CLICKHOUSE_NATIVE_DEBUG_ARROW', '')
 DISABLE_CLEANUP := env('DISABLE_CLEANUP', '')
 
 # List of features
-# features := ["inner_pool", "pool", "serde", "derive", "cloud", "rust_decimal"]
-features := 'inner_pool pool serde derive cloud rust_decimal'
+# features := ["inner_pool", "pool", "serde", "derive", "cloud", "rust_decimal", "extended-types"]
+
+features := 'inner_pool pool serde derive cloud rust_decimal extended-types'
+coverage_ignore_regex := "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*"
+coverage_min_lines := "90"
+coverage_test_threads := "1"
 
 # List of Examples
 
@@ -17,6 +21,14 @@ default:
 test:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils -- --nocapture --show-output
+
+test-extended:
+    CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
+     -F "test-utils extended-types" -- --nocapture --show-output
+
+test-all:
+    just -f {{ justfile() }} test
+    just -f {{ justfile() }} test-extended
 
 # Serial test runner (slower; avoids Docker container-start contention)
 test-serial:
@@ -34,21 +46,47 @@ test-integration test_name:
     CLICKHOUSE_NATIVE_DEBUG_ARROW={{ ARROW_DEBUG }} RUST_LOG={{ LOG }} cargo test \
      -F test-utils --test "{{ test_name }}" -- --nocapture --show-output
 
-coverage:
-    cargo llvm-cov --html \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-dir coverage -F test-utils --open
-
 # --- COVERAGE ---
+
+coverage:
+    mkdir -p coverage
+    cargo llvm-cov clean --workspace
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F test-utils --no-report
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F "test-utils extended-types" --no-report
+    cargo llvm-cov report --html \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-dir coverage/html \
+     --fail-under-lines {{ coverage_min_lines }}
+
+coverage-default:
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --html \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-dir coverage/default -F test-utils --open
+
+coverage-extended:
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --html \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-dir coverage/extended -F "test-utils extended-types" --open
+
 coverage-json:
-    cargo llvm-cov --json \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-path coverage/cov.json -F test-utils
+    mkdir -p coverage
+    cargo llvm-cov clean --workspace
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F test-utils --no-report
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F "test-utils extended-types" --no-report
+    cargo llvm-cov report --json --summary-only \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-path coverage/cov.json \
+     --fail-under-lines {{ coverage_min_lines }}
 
 coverage-lcov:
-    cargo llvm-cov --lcov \
-     --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test_utils).*" \
-     --output-path coverage/lcov.info -F test-utils
+    mkdir -p coverage
+    cargo llvm-cov clean --workspace
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F test-utils --no-report
+    RUST_TEST_THREADS={{ coverage_test_threads }} cargo llvm-cov --workspace -F "test-utils extended-types" --no-report
+    cargo llvm-cov report --lcov \
+     --ignore-filename-regex '{{ coverage_ignore_regex }}' \
+     --output-path coverage/lcov.info \
+     --fail-under-lines {{ coverage_min_lines }}
 
 # --- DOCS ---
 docs:
@@ -170,17 +208,28 @@ fmt:
     @echo "Running rustfmt..."
     # cd clickhouse-arrow && cargo +nightly fmt --all --check
     cargo +nightly fmt --check -- --config-path ./rustfmt.toml
+
+fmt-fix:
+    @echo "Running rustfmt..."
+    # cd clickhouse-arrow && cargo +nightly fmt --all --check
+    cargo +nightly fmt -- --config-path ./rustfmt.toml
+
 fix:
     cargo clippy --fix --all-features --all-targets --allow-dirty
 
 # --- MAINTENANCE ---
 
-# Run checks CI will
-checks:
-    cargo +nightly fmt -- --check
+# Run checks CI will, excluding coverage so CI can parallelize test/lint and coverage jobs.
+checks-no-coverage:
+    cargo +nightly fmt --check -- --config-path ./rustfmt.toml
     cargo +nightly clippy --all-features --all-targets
     cargo +stable clippy --all-features --all-targets -- -D warnings
-    just -f {{justfile()}} test
+    just -f {{ justfile() }} test-all
+
+# Commit-readiness gate. This is the authoritative local truth.
+checks:
+    just -f {{ justfile() }} checks-no-coverage
+    just -f {{ justfile() }} coverage-json
 
 # Initialize development environment for maintainers
 init-dev:
@@ -217,23 +266,23 @@ prepare-release version:
     set -euo pipefail
 
     # Validate version format
-    if ! [[ "{{version}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if ! [[ "{{ version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "Error: Version must be in format X.Y.Z (e.g., 0.2.0)"
         exit 1
     fi
 
     # Parse version components
-    IFS='.' read -r MAJOR MINOR PATCH <<< "{{version}}"
+    IFS='.' read -r MAJOR MINOR PATCH <<< "{{ version }}"
 
     # Get current version for release notes
     CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 
     # Create release branch
-    git checkout -b "release-v{{version}}"
+    git checkout -b "release-v{{ version }}"
 
     # Update workspace version in root Cargo.toml (only in [workspace.package] section)
     # This uses a more specific pattern to only match the version under [workspace.package]
-    awk '/^\[workspace\.package\]/ {in_workspace=1} in_workspace && /^version = / {gsub(/"[^"]*"/, "\"{{version}}\""); in_workspace=0} {print}' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+    awk '/^\[workspace\.package\]/ {in_workspace=1} in_workspace && /^version = / {gsub(/"[^"]*"/, "\"{{ version }}\""); in_workspace=0} {print}' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
 
     # Update version constants in constants.rs
     sed -i '' "s/pub(super) const VERSION_MAJOR: u64 = [0-9]*;/pub(super) const VERSION_MAJOR: u64 = $MAJOR;/" clickhouse-arrow/src/constants.rs
@@ -241,16 +290,16 @@ prepare-release version:
     sed -i '' "s/pub(super) const VERSION_PATCH: u64 = [0-9]*;/pub(super) const VERSION_PATCH: u64 = $PATCH;/" clickhouse-arrow/src/constants.rs
 
     # Update clickhouse-arrow-derive dependency version in clickhouse-arrow/Cargo.toml
-    sed -i '' "s/clickhouse-arrow-derive = { version = \"[^\"]*\"/clickhouse-arrow-derive = { version = \"{{version}}\"/" clickhouse-arrow/Cargo.toml
+    sed -i '' "s/clickhouse-arrow-derive = { version = \"[^\"]*\"/clickhouse-arrow-derive = { version = \"{{ version }}\"/" clickhouse-arrow/Cargo.toml
 
     # Update clickhouse-arrow version references in README files (if they exist)
     # Look for patterns like: clickhouse-arrow = "0.1.1" or clickhouse-arrow = { version = "0.1.1"
     for readme in README.md clickhouse-arrow/README.md; do
         if [ -f "$readme" ]; then
             # Update simple dependency format
-            sed -i '' "s/clickhouse-arrow = \"[0-9]*\.[0-9]*\.[0-9]*\"/clickhouse-arrow = \"{{version}}\"/" "$readme" || true
+            sed -i '' "s/clickhouse-arrow = \"[0-9]*\.[0-9]*\.[0-9]*\"/clickhouse-arrow = \"{{ version }}\"/" "$readme" || true
             # Update version field in dependency table format
-            sed -i '' "s/clickhouse-arrow = { version = \"[0-9]*\.[0-9]*\.[0-9]*\"/clickhouse-arrow = { version = \"{{version}}\"/" "$readme" || true
+            sed -i '' "s/clickhouse-arrow = { version = \"[0-9]*\.[0-9]*\.[0-9]*\"/clickhouse-arrow = { version = \"{{ version }}\"/" "$readme" || true
         fi
     done
 
@@ -263,11 +312,11 @@ prepare-release version:
 
     # Generate full changelog
     echo "Generating changelog..."
-    git cliff --tag v{{version}} -o CHANGELOG.md
+    git cliff --tag v{{ version }} -o CHANGELOG.md
 
     # Generate release notes for this version
     echo "Generating release notes..."
-    git cliff --unreleased --tag v{{version}} --strip header -o RELEASE_NOTES.md
+    git cliff --unreleased --tag v{{ version }} --strip header -o RELEASE_NOTES.md
 
     # Stage all changes
     git add Cargo.toml clickhouse-arrow/Cargo.toml clickhouse-arrow/src/constants.rs Cargo.lock CHANGELOG.md RELEASE_NOTES.md
@@ -275,10 +324,10 @@ prepare-release version:
     git add README.md clickhouse-arrow/README.md 2>/dev/null || true
 
     # Commit
-    git commit -m "chore: prepare release v{{version}}"
+    git commit -m "chore: prepare release v{{ version }}"
 
     # Push branch
-    git push origin "release-v{{version}}"
+    git push origin "release-v{{ version }}"
 
     echo ""
     echo "✅ Release preparation complete!"
@@ -288,9 +337,9 @@ prepare-release version:
     head -20 RELEASE_NOTES.md
     echo ""
     echo "Next steps:"
-    echo "1. Create a PR from the 'release-v{{version}}' branch"
+    echo "1. Create a PR from the 'release-v{{ version }}' branch"
     echo "2. Review and merge the PR"
-    echo "3. After merge, run: just tag-release {{version}}"
+    echo "3. After merge, run: just tag-release {{ version }}"
     echo ""
 
 # Tag a release after the PR is merged
@@ -304,26 +353,26 @@ tag-release version:
 
     # Verify the version in Cargo.toml matches
     CARGO_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-    if [ "$CARGO_VERSION" != "{{version}}" ]; then
-        echo "Error: Cargo.toml version ($CARGO_VERSION) does not match requested version ({{version}})"
+    if [ "$CARGO_VERSION" != "{{ version }}" ]; then
+        echo "Error: Cargo.toml version ($CARGO_VERSION) does not match requested version ({{ version }})"
         echo "Did the release PR merge successfully?"
         exit 1
     fi
 
     # Create and push tag
-    git tag -a "v{{version}}" -m "Release v{{version}}"
-    git push origin "v{{version}}"
+    git tag -a "v{{ version }}" -m "Release v{{ version }}"
+    git push origin "v{{ version }}"
 
     echo ""
-    echo "✅ Tag v{{version}} created and pushed!"
+    echo "✅ Tag v{{ version }} created and pushed!"
     echo "The release workflow will now run automatically."
     echo ""
 
 # Preview what a release would do (dry run)
 release-dry version:
     @echo "This would:"
-    @echo "1. Create branch: release-v{{version}}"
-    @echo "2. Update version to {{version}} in:"
+    @echo "1. Create branch: release-v{{ version }}"
+    @echo "2. Update version to {{ version }} in:"
     @echo "   - Cargo.toml (workspace.package section only)"
     @echo "   - clickhouse-arrow/src/constants.rs"
     @echo "   - README files (if they contain clickhouse-arrow version references)"
@@ -332,6 +381,6 @@ release-dry version:
     @echo "5. Generate RELEASE_NOTES.md"
     @echo "6. Create commit and push branch"
     @echo ""
-    @echo "After PR merge, 'just tag-release {{version}}' would:"
-    @echo "1. Tag the merged commit as v{{version}}"
+    @echo "After PR merge, 'just tag-release {{ version }}' would:"
+    @echo "1. Tag the merged commit as v{{ version }}"
     @echo "2. Push the tag (triggering release workflow)"

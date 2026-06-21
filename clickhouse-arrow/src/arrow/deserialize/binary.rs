@@ -15,80 +15,10 @@ use std::sync::Arc;
 use arrow::array::*;
 use tokio::io::AsyncReadExt;
 
+use super::ArrowFieldCtx;
 use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
-
-macro_rules! binary {
-    // Infallible aka panic
-    (String => $reader:expr) => {
-        String::from_utf8_lossy(&$reader.try_get_string()?).as_ref()
-    };
-    (Binary => $reader:expr) => {{ $reader.try_get_string()? }};
-    // TODO: Perhaps serde_json deserialization should be behind feature flag due to overhead
-    (Object => $reader:expr) => {{
-        #[cfg(feature = "serde")]
-        {
-            let byts = $reader.try_get_string()?;
-            let value = String::from_utf8_lossy(&byts);
-            match serde_json::from_str::<serde_json::Value>(value.as_ref()) {
-                Ok(val) => val.to_string(),
-                Err(_) => value.to_string(),
-            }
-        }
-        #[cfg(not(feature = "serde"))]
-        String::from_utf8_lossy(&$reader.try_get_string()?).to_string()
-    }};
-    (FixedBinary($n:expr) => $reader:expr) => {{
-        {
-            let mut buf = vec![0u8; $n];
-            $reader.try_copy_to_slice(&mut buf)?;
-            buf
-        }
-    }};
-    (Fixed($n:expr) => $reader:expr) => {{
-        {
-            let mut buf = [0u8; $n];
-            $reader.try_copy_to_slice(&mut buf)?;
-            buf
-        }
-    }};
-    (FixedRev($n:expr) => $reader:expr) => {{
-        {
-            let mut buf = [0u8; $n];
-            $reader.try_copy_to_slice(&mut buf)?;
-            buf.reverse();
-            buf
-        }
-    }};
-    (Ipv4 => $reader:expr) => {{
-        {
-            let ipv4_int = $reader.try_get_u32_le()?;
-            let ip_addr = ::std::net::Ipv4Addr::from(ipv4_int);
-            ip_addr.octets()
-        }
-    }};
-    (Ipv6 => $reader:expr) => {{
-        {
-            let mut octets = [0u8; 16];
-            $reader.try_copy_to_slice(&mut octets[..])?;
-            std::net::Ipv6Addr::from(octets).octets()
-        }
-    }};
-    // CH writes UUID as a 128-bit value stored as two little-endian u64s
-    // in (high, low) order. Reverse each 8-byte half independently to land
-    // in canonical RFC 4122 byte order.
-    (Uuid => $reader:expr) => {{
-        {
-            let mut buf = [0u8; 16];
-            $reader.try_copy_to_slice(&mut buf)?;
-            buf[0..8].reverse();
-            buf[8..16].reverse();
-            buf
-        }
-    }};
-}
-pub(crate) use binary;
 
 macro_rules! binary_async {
     // Infallible aka panic
@@ -158,6 +88,52 @@ macro_rules! binary_async {
     }};
 }
 
+macro_rules! append_default {
+    ($builder:expr, $default:expr) => {{
+        $builder.append_value($default);
+    }};
+    (ok => $builder:expr, $default:expr) => {{
+        drop($builder.append_value($default));
+    }};
+}
+
+macro_rules! deserialize_binary_rows {
+    ($builder:expr, $reader:expr, $rows:expr, $nulls:expr, $sparse_offsets:expr, $default:expr, $read:expr) => {{
+        if let Some(offsets) = $sparse_offsets {
+            let mut sparse_idx = 0usize;
+            for row in 0..$rows {
+                if sparse_idx < offsets.len() && offsets[sparse_idx] == row {
+                    super::append_opt!($builder, sparse_idx, $nulls, $read);
+                    sparse_idx += 1;
+                } else {
+                    append_default!($builder, $default);
+                }
+            }
+        } else {
+            for i in 0..$rows {
+                super::append_opt!($builder, i, $nulls, $read);
+            }
+        }
+    }};
+    (ok => $builder:expr, $reader:expr, $rows:expr, $nulls:expr, $sparse_offsets:expr, $default:expr, $read:expr) => {{
+        if let Some(offsets) = $sparse_offsets {
+            let mut sparse_idx = 0usize;
+            for row in 0..$rows {
+                if sparse_idx < offsets.len() && offsets[sparse_idx] == row {
+                    super::append_opt!(ok => $builder, sparse_idx, $nulls, $read);
+                    sparse_idx += 1;
+                } else {
+                    append_default!(ok => $builder, $default);
+                }
+            }
+        } else {
+            for i in 0..$rows {
+                super::append_opt!(ok => $builder, i, $nulls, $read);
+            }
+        }
+    }};
+}
+
 /// Deserializes a `ClickHouse` string or binary type into an Arrow array.
 ///
 /// Reads variable-length or fixed-length data from the input stream, constructing an Arrow array
@@ -216,71 +192,104 @@ macro_rules! binary_async {
 ///     assert_eq!(array.as_ref(), expected.as_ref());
 /// }
 /// ```
-pub(crate) async fn deserialize_async<R: ClickHouseRead>(
+pub(crate) async fn deserialize<R: ClickHouseRead>(
     type_hint: &Type,
     builder: &mut TypedBuilder,
     reader: &mut R,
     rows: usize,
     nulls: &[u8],
+    ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
     type B = TypedBuilder;
+    let sparse_offsets = ctx.sparse_offsets();
 
     // Use pattern matching on the builder to deserialize the appropriate type
     Ok(super::deser!(() => builder => {
     B::String(b) => {{
-        for i in 0..rows {
-           super::opt_value!(b, i, nulls, binary_async!(String => reader));
-        }
+        deserialize_binary_rows!(b, reader, rows, nulls, sparse_offsets, "", binary_async!(String => reader));
         Arc::new(b.finish())
     }},
     B::Binary(b) => {{
-        for i in 0..rows {
-           super::opt_value!(b, i, nulls, binary_async!(Binary => reader));
-        }
+        deserialize_binary_rows!(b, reader, rows, nulls, sparse_offsets, [], binary_async!(Binary => reader));
         Arc::new(b.finish())
     }},
     B::Object(b) => {{
-        for i in 0..rows {
-           super::opt_value!(b, i, nulls, binary_async!(Object => reader));
-        }
+        deserialize_binary_rows!(b, reader, rows, nulls, sparse_offsets, "", binary_async!(Object => reader));
         Arc::new(b.finish())
     }},
     B::FixedSizeBinary(b) => {{
         match type_hint.strip_null() {
             Type::FixedSizedString(n) | Type::FixedSizedBinary(n) => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(FixedBinary(*n) => reader));
-                }
+                let default = vec![0_u8; *n];
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    &default,
+                    binary_async!(FixedBinary(*n) => reader)
+                );
                 Arc::new(b.finish())
             },
             Type::Ipv4 => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(Ipv4 => reader));
-                }
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    [0_u8; 4],
+                    binary_async!(Ipv4 => reader)
+                );
                 Arc::new(b.finish())
             },
             Type::Ipv6 => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(Ipv6 => reader));
-                }
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    [0_u8; 16],
+                    binary_async!(Ipv6 => reader)
+                );
                 Arc::new(b.finish())
             },
             Type::Uuid => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(Uuid => reader));
-                }
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    [0_u8; 16],
+                    binary_async!(Uuid => reader)
+                );
                 Arc::new(b.finish())
             },
             Type::Int128 | Type::UInt128 => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(Fixed(16) => reader));
-                }
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    [0_u8; 16],
+                    binary_async!(Fixed(16) => reader)
+                );
                 Arc::new(b.finish())
             },
             Type::Int256 | Type::UInt256 => {
-                for i in 0..rows {
-                   super::opt_value!(ok => b, i, nulls, binary_async!(FixedRev(32) => reader));
-                }
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    [0_u8; 32],
+                    binary_async!(FixedRev(32) => reader)
+                );
                 Arc::new(b.finish())
             },
             _ => return Err(Error::ArrowDeserialize(format!(
@@ -304,6 +313,33 @@ mod tests {
     use super::*;
     use crate::native::types::Type;
 
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
+
+    async fn deserialize_for_test(
+        type_hint: &Type,
+        builder: &mut TypedBuilder,
+        reader: &mut Cursor<Vec<u8>>,
+        rows: usize,
+        nulls: &[u8],
+    ) -> Result<ArrayRef> {
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        deserialize(type_hint, builder, reader, rows, nulls, &mut ctx).await
+    }
+
+    async fn deserialize_sparse_for_test(
+        type_hint: &Type,
+        builder: &mut TypedBuilder,
+        reader: &mut Cursor<Vec<u8>>,
+        rows: usize,
+        nulls: &[u8],
+        sparse_offsets: Vec<usize>,
+    ) -> Result<ArrayRef> {
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer).with_sparse_offsets(sparse_offsets);
+        deserialize(type_hint, builder, reader, rows, nulls, &mut ctx).await
+    }
+
     /// Tests deserialization of `String` with non-nullable values.
     #[tokio::test]
     async fn test_deserialize_string() {
@@ -321,7 +357,7 @@ mod tests {
         let type_ = Type::String;
         let data_type = DataType::Utf8;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize String");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
@@ -346,12 +382,60 @@ mod tests {
         let type_ = Type::String;
         let data_type = DataType::Utf8;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(String)");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(array, &StringArray::from(vec![Some("a"), None, Some("c")]));
         assert_eq!(array.nulls().unwrap().iter().collect::<Vec<bool>>(), vec![true, false, true]);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_sparse_string_defaults() {
+        let type_hint = Type::String;
+        let rows = 4;
+        let input = vec![
+            1, b'a', // row 0
+            2, b'b', b'c', // row 2
+        ];
+        let mut reader = Cursor::new(input);
+        let data_type = DataType::Utf8;
+        let mut builder = TypedBuilder::try_new(&type_hint, &data_type).unwrap();
+        let result =
+            deserialize_sparse_for_test(&type_hint, &mut builder, &mut reader, rows, &[], vec![
+                0, 2,
+            ])
+            .await
+            .expect("Failed to deserialize sparse String");
+        let array = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(array, &StringArray::from(vec!["a", "", "bc", ""]));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_sparse_nullable_string() {
+        let type_hint = Type::Nullable(Box::new(Type::String));
+        let rows = 4;
+        let null_mask = vec![0, 1];
+        let input = vec![
+            1, b'x', // row 0 non-null
+            0,    // row 2 null payload slot
+        ];
+        let mut reader = Cursor::new(input);
+        let builder_type = type_hint.strip_null();
+        let data_type = DataType::Utf8;
+        let mut builder = TypedBuilder::try_new(builder_type, &data_type).unwrap();
+        let result = deserialize_sparse_for_test(
+            builder_type,
+            &mut builder,
+            &mut reader,
+            rows,
+            &null_mask,
+            vec![0, 2],
+        )
+        .await
+        .expect("Failed to deserialize sparse nullable String");
+        let array = result.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(array, &StringArray::from(vec![Some("x"), Some(""), None, Some("")]));
     }
 
     /// Tests deserialization of `FixedSizedString` with non-nullable values.
@@ -371,7 +455,7 @@ mod tests {
         let type_ = Type::FixedSizedString(3);
         let data_type = DataType::FixedSizeBinary(3);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize FixedSizedString(3)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -398,7 +482,7 @@ mod tests {
         let type_ = Type::FixedSizedString(3);
         let data_type = DataType::FixedSizeBinary(3);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(FixedSizedString(3))");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -425,7 +509,7 @@ mod tests {
         let type_ = Type::Binary;
         let data_type = DataType::Binary;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Binary");
         let array = result.as_any().downcast_ref::<BinaryArray>().unwrap();
@@ -452,7 +536,7 @@ mod tests {
         let type_ = Type::Binary;
         let data_type = DataType::Binary;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(Binary)");
         let array = result.as_any().downcast_ref::<BinaryArray>().unwrap();
@@ -479,7 +563,7 @@ mod tests {
         let type_ = Type::FixedSizedBinary(3);
         let data_type = DataType::FixedSizeBinary(3);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize FixedSizedBinary(3)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -506,7 +590,7 @@ mod tests {
         let type_ = Type::FixedSizedBinary(3);
         let data_type = DataType::FixedSizeBinary(3);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(FixedSizedBinary(3))");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -540,7 +624,7 @@ mod tests {
         let type_ = Type::Uuid;
         let data_type = DataType::FixedSizeBinary(16);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Uuid");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -576,7 +660,7 @@ mod tests {
         let type_ = Type::Uuid;
         let data_type = DataType::FixedSizeBinary(16);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(Uuid)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -608,7 +692,7 @@ mod tests {
         let type_ = Type::Ipv4;
         let data_type = DataType::FixedSizeBinary(4);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Ipv4");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -634,7 +718,7 @@ mod tests {
         let type_ = Type::Ipv4;
         let data_type = DataType::FixedSizeBinary(4);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(Ipv4)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -660,7 +744,7 @@ mod tests {
         let type_ = Type::Ipv6;
         let data_type = DataType::FixedSizeBinary(16);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Ipv6");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -686,7 +770,7 @@ mod tests {
         let type_ = Type::Ipv6;
         let data_type = DataType::FixedSizeBinary(16);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(Ipv6)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -712,7 +796,7 @@ mod tests {
         let type_ = Type::Int128;
         let data_type = DataType::FixedSizeBinary(16);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Int128");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -744,7 +828,7 @@ mod tests {
         let type_ = Type::Int128;
         let data_type = DataType::FixedSizeBinary(16);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(Int128)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -782,7 +866,7 @@ mod tests {
         let type_ = Type::Int256;
         let data_type = DataType::FixedSizeBinary(32);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Int256");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -821,7 +905,7 @@ mod tests {
         let type_ = Type::Int256;
         let data_type = DataType::FixedSizeBinary(32);
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize Nullable(Int256)");
         let array = result.as_any().downcast_ref::<FixedSizeBinaryArray>().unwrap();
@@ -849,7 +933,7 @@ mod tests {
         let type_ = Type::String;
         let data_type = DataType::Utf8;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .expect("Failed to deserialize String with zero rows");
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();
@@ -873,7 +957,7 @@ mod tests {
         let type_ = Type::String;
         let data_type = DataType::Utf8;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_hint, &mut builder, &mut reader, rows, &null_mask)
+        let result = deserialize_for_test(&type_hint, &mut builder, &mut reader, rows, &null_mask)
             .await
             .unwrap();
         let array = result.as_any().downcast_ref::<StringArray>().unwrap();

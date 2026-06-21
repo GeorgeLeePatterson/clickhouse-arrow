@@ -42,6 +42,8 @@ geo-types = ["dep:geo-types"]
 cloud = ["dep:ureq"]
 # Enable `rust_decimal` types for serialization and deserialization
 rust_decimal = ["dep:rust_decimal"]
+# Enable newer/extended ClickHouse data types (e.g. Variant, Dynamic, Nested, BFloat16, Time64)
+extended-types = []
 
 # -- Testing --
 test-utils = [
@@ -136,6 +138,10 @@ required-features = ["test-utils", "derive"]
 name = "e2e_compat"
 required-features = ["test-utils"]
 
+[[test]]
+name = "e2e_params"
+required-features = ["test-utils", "derive"]
+
 # EXAMPLES
 
 [[example]]
@@ -155,6 +161,21 @@ doc-scrape-examples = false
 
 [[example]]
 name = "insert_multi_threaded"
+required-features = ["test-utils"]
+doc-scrape-examples = false
+
+[[example]]
+name = "dynamic_tune"
+required-features = ["test-utils"]
+doc-scrape-examples = false
+
+[[example]]
+name = "large_scale"
+required-features = ["test-utils"]
+doc-scrape-examples = false
+
+[[example]]
+name = "test_batch_size"
 required-features = ["test-utils"]
 doc-scrape-examples = false
 

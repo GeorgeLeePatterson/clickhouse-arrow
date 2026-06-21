@@ -39,6 +39,7 @@ use std::sync::Arc;
 use arrow::array::*;
 use tokio::io::AsyncReadExt;
 
+use super::ArrowFieldCtx;
 use crate::arrow::builder::TypedBuilder;
 use crate::io::ClickHouseRead;
 use crate::{Error, Result, Type};
@@ -84,23 +85,49 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
     reader: &mut R,
     rows: usize,
     nulls: &[u8],
+    ctx: &mut ArrowFieldCtx<'_>,
 ) -> Result<ArrayRef> {
     super::deser!(() => builder => {
         TypedBuilder::Enum8(b) => {{
             let Type::Enum8(pairs) = type_hint else {
                 return Err(Error::UnexpectedType(type_hint.clone()));
             };
-            for i in 0..rows {
-                let idx = super::primitive::primitive_async!(Int8 => reader);
-                if nulls.is_empty() || nulls[i] == 0 {
-                    // Find index in pairs
-                    b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
-                        Error::ArrowDeserialize(format!(
-                            "Invalid Enum8 index: {idx} not found in pairs"
-                        ))
-                    )?.0);
-                } else {
-                    b.append_null();
+            if let Some(offsets) = ctx.sparse_offsets() {
+                let default_label = pairs.first().map(|(name, _)| name.as_str()).ok_or_else(|| {
+                    Error::ArrowDeserialize("Enum8 sparse deserialization requires non-empty enum pairs".to_string())
+                })?;
+                let sparse_rows = offsets.len();
+                let mut sparse_idx = 0usize;
+                for row in 0..rows {
+                    if sparse_idx < sparse_rows && offsets[sparse_idx] == row {
+                        let idx = super::primitive::primitive!(Int8 => reader);
+                        if nulls.is_empty() || nulls[sparse_idx] == 0 {
+                            b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
+                                Error::ArrowDeserialize(format!(
+                                    "Invalid Enum8 index: {idx} not found in pairs"
+                                ))
+                            )?.0);
+                        } else {
+                            b.append_null();
+                        }
+                        sparse_idx += 1;
+                    } else {
+                        b.append_value(default_label);
+                    }
+                }
+            } else {
+                for i in 0..rows {
+                    let idx = super::primitive::primitive!(Int8 => reader);
+                    if nulls.is_empty() || nulls[i] == 0 {
+                        // Find index in pairs
+                        b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
+                            Error::ArrowDeserialize(format!(
+                                "Invalid Enum8 index: {idx} not found in pairs"
+                            ))
+                        )?.0);
+                    } else {
+                        b.append_null();
+                    }
                 }
             }
             Ok(Arc::new(b.finish()) as ArrayRef)
@@ -109,17 +136,42 @@ pub(super) async fn deserialize_async<R: ClickHouseRead>(
             let Type::Enum16(pairs) = type_hint else {
                 return Err(Error::UnexpectedType(type_hint.clone()));
             };
-            for i in 0..rows {
-                let idx = super::primitive::primitive_async!(Int16 => reader);
-                if nulls.is_empty() || nulls[i] == 0 {
-                    // Find index in pairs
-                    b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
-                        Error::ArrowDeserialize(format!(
-                            "Invalid Enum16 index: {idx} not found in pairs"
-                        ))
-                    )?.0);
-                } else {
-                    b.append_null();
+            if let Some(offsets) = ctx.sparse_offsets() {
+                let default_label = pairs.first().map(|(name, _)| name.as_str()).ok_or_else(|| {
+                    Error::ArrowDeserialize("Enum16 sparse deserialization requires non-empty enum pairs".to_string())
+                })?;
+                let sparse_rows = offsets.len();
+                let mut sparse_idx = 0usize;
+                for row in 0..rows {
+                    if sparse_idx < sparse_rows && offsets[sparse_idx] == row {
+                        let idx = super::primitive::primitive!(Int16 => reader);
+                        if nulls.is_empty() || nulls[sparse_idx] == 0 {
+                            b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
+                                Error::ArrowDeserialize(format!(
+                                    "Invalid Enum16 index: {idx} not found in pairs"
+                                ))
+                            )?.0);
+                        } else {
+                            b.append_null();
+                        }
+                        sparse_idx += 1;
+                    } else {
+                        b.append_value(default_label);
+                    }
+                }
+            } else {
+                for i in 0..rows {
+                    let idx = super::primitive::primitive!(Int16 => reader);
+                    if nulls.is_empty() || nulls[i] == 0 {
+                        // Find index in pairs
+                        b.append_value(&pairs.iter().find(|(_, key)| *key == idx).ok_or(
+                            Error::ArrowDeserialize(format!(
+                                "Invalid Enum16 index: {idx} not found in pairs"
+                            ))
+                        )?.0);
+                    } else {
+                        b.append_null();
+                    }
                 }
             }
             Ok(Arc::new(b.finish()) as ArrayRef)
@@ -143,6 +195,8 @@ mod tests {
     // Helper to create a mock reader
     type MockReader = Cursor<Vec<u8>>;
 
+    fn test_ctx(row_buffer: &mut Vec<u8>) -> ArrowFieldCtx<'_> { ArrowFieldCtx::new(row_buffer) }
+
     #[tokio::test]
     async fn test_deserialize_enum8() {
         let pairs = vec![("a".to_string(), 1_i8), ("b".to_string(), 2_i8)];
@@ -155,7 +209,10 @@ mod tests {
             Box::new(arrow::datatypes::DataType::Utf8),
         );
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &[]).await.unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let array =
+            deserialize_async(&type_, &mut builder, &mut reader, 3, &[], &mut ctx).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0, 1, 0]), values).unwrap(),
@@ -175,7 +232,10 @@ mod tests {
             Box::new(arrow::datatypes::DataType::Utf8),
         );
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &[]).await.unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let array =
+            deserialize_async(&type_, &mut builder, &mut reader, 3, &[], &mut ctx).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["x", "y"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int16Type>::try_new(Int16Array::from(vec![0, 1, 0]), values).unwrap(),
@@ -196,7 +256,11 @@ mod tests {
             Box::new(arrow::datatypes::DataType::Utf8),
         );
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &nulls).await.unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let array = deserialize_async(&type_, &mut builder, &mut reader, 3, &nulls, &mut ctx)
+            .await
+            .unwrap();
         let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int8Type>::try_new(
@@ -220,7 +284,10 @@ mod tests {
             Box::new(arrow::datatypes::DataType::Utf8),
         );
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let array = deserialize_async(&type_, &mut builder, &mut reader, 0, &[]).await.unwrap();
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let array =
+            deserialize_async(&type_, &mut builder, &mut reader, 0, &[], &mut ctx).await.unwrap();
         let values = Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef;
         let expected = Arc::new(
             DictionaryArray::<Int8Type>::try_new(Int8Array::from(Vec::<i8>::new()), values)
@@ -241,7 +308,9 @@ mod tests {
             Box::new(arrow::datatypes::DataType::Utf8),
         );
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_, &mut builder, &mut reader, 1, &[]).await;
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize_async(&type_, &mut builder, &mut reader, 1, &[], &mut ctx).await;
         assert!(matches!(
             result,
             Err(Error::ArrowDeserialize(msg))
@@ -257,7 +326,9 @@ mod tests {
         let type_ = Type::Int32;
         let data_type = arrow::datatypes::DataType::Int32;
         let mut builder = TypedBuilder::try_new(&type_, &data_type).unwrap();
-        let result = deserialize_async(&type_, &mut builder, &mut reader, 0, &[]).await;
+        let mut row_buffer = Vec::new();
+        let mut ctx = test_ctx(&mut row_buffer);
+        let result = deserialize_async(&type_, &mut builder, &mut reader, 0, &[], &mut ctx).await;
         assert!(matches!(
             result,
             Err(Error::ArrowDeserialize(msg))

@@ -22,9 +22,12 @@
 use arrow::array::ArrayRef;
 use tokio::io::AsyncWriteExt;
 
-use crate::formats::SerializerState;
+use crate::arrow::simd::expand_null_bitmap;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Result, Type};
+
+const STACK_NULL_MASK_CAPACITY: usize = 1024;
+const STACK_NULL_MASK_ZEROES: [u8; STACK_NULL_MASK_CAPACITY] = [0; STACK_NULL_MASK_CAPACITY];
 
 /// Serializes the nullability bitmap for an Arrow array to `ClickHouse`’s native format.
 ///
@@ -45,22 +48,34 @@ pub(super) async fn serialize_nulls_async<W: ClickHouseWrite>(
     type_hint: &Type,
     writer: &mut W,
     array: &ArrayRef,
-    _state: &mut SerializerState,
 ) -> Result<()> {
     if matches!(type_hint.strip_null(), Type::Array(_) | Type::Map(_, _)) {
         return Ok(());
     }
 
-    // Write null bitmap
+    let len = array.len();
+    if len == 0 {
+        return Ok(());
+    }
+
     if let Some(null_buffer) = array.nulls() {
-        let mut null_mask = vec![1_u8; array.len()]; // Initialize with all NULLs (1 in ClickHouse)
-        for valid_idx in null_buffer.valid_indices() {
-            null_mask[valid_idx] = 0; // Set to 0 for non-NULL values
+        let bitmap_bytes = null_buffer.validity();
+        if len <= STACK_NULL_MASK_CAPACITY {
+            let mut null_mask = [0_u8; STACK_NULL_MASK_CAPACITY];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask[..len], len);
+            writer.write_all(&null_mask[..len]).await?;
+        } else {
+            let mut null_mask = vec![0_u8; len];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+            writer.write_all(&null_mask).await?;
         }
-        writer.write_all(&null_mask).await?;
     } else {
-        let nulls = vec![0_u8; array.len()];
-        writer.write_all(&nulls).await?;
+        let mut remaining = len;
+        while remaining > 0 {
+            let chunk_len = remaining.min(STACK_NULL_MASK_CAPACITY);
+            writer.write_all(&STACK_NULL_MASK_ZEROES[..chunk_len]).await?;
+            remaining -= chunk_len;
+        }
     }
 
     Ok(())
@@ -69,23 +84,35 @@ pub(super) fn serialize_nulls<W: ClickHouseBytesWrite>(
     type_hint: &Type,
     writer: &mut W,
     array: &ArrayRef,
-    _state: &mut SerializerState,
 ) {
     // ClickHouse: Arrays cannot be nullable
     if matches!(type_hint.strip_null(), Type::Array(_) | Type::Map(_, _)) {
         return;
     }
 
-    // Write null bitmap
+    let len = array.len();
+    if len == 0 {
+        return;
+    }
+
     if let Some(null_buffer) = array.nulls() {
-        let mut null_mask = vec![1_u8; array.len()]; // Initialize with all NULLs (1 in ClickHouse)
-        for valid_idx in null_buffer.valid_indices() {
-            null_mask[valid_idx] = 0; // Set to 0 for non-NULL values
+        let bitmap_bytes = null_buffer.validity();
+        if len <= STACK_NULL_MASK_CAPACITY {
+            let mut null_mask = [0_u8; STACK_NULL_MASK_CAPACITY];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask[..len], len);
+            writer.put_slice(&null_mask[..len]);
+        } else {
+            let mut null_mask = vec![0_u8; len];
+            expand_null_bitmap(bitmap_bytes, &mut null_mask, len);
+            writer.put_slice(&null_mask);
         }
-        writer.put_slice(&null_mask);
     } else {
-        let nulls = vec![0_u8; array.len()];
-        writer.put_slice(&nulls);
+        let mut remaining = len;
+        while remaining > 0 {
+            let chunk_len = remaining.min(STACK_NULL_MASK_CAPACITY);
+            writer.put_slice(&STACK_NULL_MASK_ZEROES[..chunk_len]);
+            remaining -= chunk_len;
+        }
     }
 }
 
@@ -103,44 +130,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_nullability_with_nulls() {
-        let mut state = SerializerState::default();
         let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls_async(&Type::Int32, &mut writer, &array, &mut state).await.unwrap();
+        serialize_nulls_async(&Type::Int32, &mut writer, &array).await.unwrap();
         assert_eq!(writer, vec![0, 1, 0]); // 1 for null, 0 for non-null
     }
 
     #[tokio::test]
     async fn test_write_nullability_without_nulls() {
-        let mut state = SerializerState::default();
         let array = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls_async(&Type::Int32, &mut writer, &array, &mut state).await.unwrap();
+        serialize_nulls_async(&Type::Int32, &mut writer, &array).await.unwrap();
         assert_eq!(writer, vec![0, 0, 0]); // All 0 for non-null
     }
 
     #[tokio::test]
     async fn test_write_nullability_empty() {
-        let mut state = SerializerState::default();
         let array = Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls_async(&Type::Int32, &mut writer, &array, &mut state).await.unwrap();
+        serialize_nulls_async(&Type::Int32, &mut writer, &array).await.unwrap();
         assert!(writer.is_empty());
     }
 
     #[tokio::test]
     async fn test_write_nullability_nullable_string() {
-        let mut state = SerializerState::default();
         let array = Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls_async(&Type::String, &mut writer, &array, &mut state).await.unwrap();
+        serialize_nulls_async(&Type::String, &mut writer, &array).await.unwrap();
         assert_eq!(writer, vec![0, 1, 0]); // 1 for null, 0 for non-null
     }
 
     // ClickHouse doesn't support nullable arrays
     #[tokio::test]
     async fn test_write_nullability_nullable_array() {
-        let mut state = SerializerState::default();
         let data = vec![
             Some(vec![Some(0), Some(1), Some(2)]),
             None,
@@ -154,135 +176,41 @@ mod tests {
             &Type::Nullable(Type::Array(Type::Int32.into()).into()),
             &mut writer,
             &array,
-            &mut state,
         )
         .await
         .unwrap();
         assert!(writer.is_empty());
     }
-}
-
-#[cfg(test)]
-mod tests_sync {
-    use std::sync::Arc;
-
-    use arrow::array::{Int32Array, ListArray, StringArray};
-    use arrow::datatypes::Int32Type;
-
-    use super::*;
-
-    // Helper to create a mock writer
-    type MockWriter = Vec<u8>;
 
     #[test]
-    fn test_write_nullability_with_nulls() {
-        let mut state = SerializerState::default();
+    fn test_write_nullability_sync_with_nulls() {
         let array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls(&Type::Int32, &mut writer, &array, &mut state);
-        assert_eq!(writer, vec![0, 1, 0]); // 1 for null, 0 for non-null
+        serialize_nulls(&Type::Int32, &mut writer, &array);
+        assert_eq!(writer, vec![0, 1, 0]);
     }
 
     #[test]
-    fn test_write_nullability_without_nulls() {
-        let mut state = SerializerState::default();
+    fn test_write_nullability_sync_without_nulls() {
         let array = Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls(&Type::Int32, &mut writer, &array, &mut state);
-        assert_eq!(writer, vec![0, 0, 0]); // All 0 for non-null
+        serialize_nulls(&Type::Int32, &mut writer, &array);
+        assert_eq!(writer, vec![0, 0, 0]);
     }
 
     #[test]
-    fn test_write_nullability_empty() {
-        let mut state = SerializerState::default();
-        let array = Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef;
+    fn test_write_nullability_sync_array_and_map_are_skipped() {
+        let int_array = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
         let mut writer = MockWriter::new();
-        serialize_nulls(&Type::Int32, &mut writer, &array, &mut state);
+        serialize_nulls(&Type::Array(Box::new(Type::Int32)), &mut writer, &int_array);
         assert!(writer.is_empty());
-    }
 
-    #[test]
-    fn test_write_nullability_nullable_string() {
-        let mut state = SerializerState::default();
-        let array = Arc::new(StringArray::from(vec![Some("a"), None, Some("c")])) as ArrayRef;
-        let mut writer = MockWriter::new();
-        serialize_nulls(&Type::String, &mut writer, &array, &mut state);
-        assert_eq!(writer, vec![0, 1, 0]); // 1 for null, 0 for non-null
-    }
-
-    // ClickHouse doesn't support nullable arrays
-    #[test]
-    fn test_write_nullability_nullable_array() {
-        let mut state = SerializerState::default();
-        let data = vec![
-            Some(vec![Some(0), Some(1), Some(2)]),
-            None,
-            Some(vec![Some(3), None, Some(5)]),
-            Some(vec![Some(6), Some(7)]),
-        ];
-        let list_array = ListArray::from_iter_primitive::<Int32Type, _, _>(data);
-        let array = Arc::new(list_array) as ArrayRef;
         let mut writer = MockWriter::new();
         serialize_nulls(
-            &Type::Nullable(Type::Array(Type::Int32.into()).into()),
+            &Type::Map(Box::new(Type::Int32), Box::new(Type::String)),
             &mut writer,
-            &array,
-            &mut state,
+            &int_array,
         );
         assert!(writer.is_empty());
-    }
-
-    // Comprehensive test for various Array type combinations
-    #[test]
-    fn test_write_nullability_array_type_variations() {
-        let mut state = SerializerState::default();
-
-        // Test 1: Array(Nullable(Int64)) - should not write null mask
-        let data = vec![
-            Some(vec![Some(1i64), None, Some(3)]),
-            Some(vec![None, None]),
-            Some(vec![Some(10), Some(20), Some(30)]),
-        ];
-        let list_array = ListArray::from_iter_primitive::<arrow::datatypes::Int64Type, _, _>(data);
-        let array = Arc::new(list_array) as ArrayRef;
-        let mut writer = MockWriter::new();
-
-        // Type is Array(Nullable(Int64)) - not wrapped in Nullable
-        serialize_nulls(
-            &Type::Array(Type::Nullable(Type::Int64.into()).into()),
-            &mut writer,
-            &array,
-            &mut state,
-        );
-        assert!(writer.is_empty(), "Array type should not write null mask");
-
-        // Test 2: Nullable(Array(Int64)) - should not write null mask due to special handling
-        let data2 = vec![
-            Some(vec![Some(1i64), Some(2), Some(3)]),
-            None, // This array is null
-            Some(vec![Some(10), Some(20)]),
-        ];
-        let list_array2 =
-            ListArray::from_iter_primitive::<arrow::datatypes::Int64Type, _, _>(data2);
-        let array2 = Arc::new(list_array2) as ArrayRef;
-        let mut writer2 = MockWriter::new();
-
-        serialize_nulls(
-            &Type::Nullable(Type::Array(Type::Int64.into()).into()),
-            &mut writer2,
-            &array2,
-            &mut state,
-        );
-        assert!(writer2.is_empty(), "Nullable(Array) should not write null mask");
-
-        // Test 3: Map type (similar rules as Array)
-        let mut writer3 = MockWriter::new();
-        serialize_nulls(
-            &Type::Nullable(Type::Map(Type::String.into(), Type::Int32.into()).into()),
-            &mut writer3,
-            &array, // Using dummy array since we're just testing the type check
-            &mut state,
-        );
-        assert!(writer3.is_empty(), "Nullable(Map) should not write null mask");
     }
 }

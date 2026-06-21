@@ -1,21 +1,21 @@
 use tokio::io::AsyncReadExt;
 
 use super::{Deserializer, DeserializerState, Type};
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::native::types::low_cardinality::*;
 use crate::{Error, Result, Value};
 
 pub(crate) struct LowCardinalityDeserializer;
 
 impl Deserializer for LowCardinalityDeserializer {
-    async fn read_prefix<R: ClickHouseRead>(
+    async fn read_prefix<R: ClickHouseRead, T: Default + Send>(
         _type_: &Type,
         reader: &mut R,
-        _state: &mut DeserializerState,
+        _state: &mut DeserializerState<T>,
     ) -> Result<()> {
         let version = reader.read_u64_le().await?;
         if version != LOW_CARDINALITY_VERSION {
-            return Err(Error::DeserializeError(format!(
+            return Err(Error::Deserialize(format!(
                 "LowCardinality: invalid low cardinality version: {version}"
             )));
         }
@@ -60,7 +60,7 @@ impl Deserializer for LowCardinalityDeserializer {
                             TUINT32 => Type::UInt32,
                             TUINT64 => Type::UInt64,
                             x => {
-                                return Err(Error::DeserializeError(format!(
+                                return Err(Error::Deserialize(format!(
                                     "LowCardinality: bad index type: {x}"
                                 )));
                             }
@@ -97,7 +97,7 @@ impl Deserializer for LowCardinalityDeserializer {
                     num_pending_rows -= reading_rows;
                     if has_additional_keys && !needs_global_dictionary {
                         let additional_keys = additional_keys.as_ref().ok_or_else(|| {
-                            Error::DeserializeError(
+                            Error::Deserialize(
                                 "LowCardinality: missing additional keys".to_string(),
                             )
                         })?;
@@ -107,7 +107,7 @@ impl Deserializer for LowCardinalityDeserializer {
                                 Value::Null
                             } else {
                                 additional_keys.get(entry).cloned().ok_or_else(|| {
-                                    Error::DeserializeError(format!(
+                                    Error::Deserialize(format!(
                                         "LowCardinality: illegal index {entry} in additional_keys"
                                     ))
                                 })?
@@ -116,7 +116,7 @@ impl Deserializer for LowCardinalityDeserializer {
                         }
                     } else if needs_global_dictionary && !has_additional_keys {
                         let global_dictionary = global_dictionary.as_ref().ok_or_else(|| {
-                            Error::DeserializeError(
+                            Error::Deserialize(
                                 "LowCardinality: missing global dictionary".to_string(),
                             )
                         })?;
@@ -124,7 +124,7 @@ impl Deserializer for LowCardinalityDeserializer {
                             let entry = entry.index_value()?;
                             output.push(global_dictionary.get(entry).cloned().ok_or_else(
                                 || {
-                                    Error::DeserializeError(format!(
+                                    Error::Deserialize(format!(
                                         "LowCardinality: illegal index {entry} in \
                                          global_dictionary"
                                     ))
@@ -133,12 +133,12 @@ impl Deserializer for LowCardinalityDeserializer {
                         }
                     } else if needs_global_dictionary && has_additional_keys {
                         let additional_keys = additional_keys.as_ref().ok_or_else(|| {
-                            Error::DeserializeError(
+                            Error::Deserialize(
                                 "LowCardinality: missing additional keys".to_string(),
                             )
                         })?;
                         let global_dictionary = global_dictionary.as_ref().ok_or_else(|| {
-                            Error::DeserializeError(
+                            Error::Deserialize(
                                 "LowCardinality: missing global dictionary".to_string(),
                             )
                         })?;
@@ -148,7 +148,7 @@ impl Deserializer for LowCardinalityDeserializer {
                                 Value::Null
                             } else if entry < additional_keys.len() {
                                 additional_keys.get(entry).cloned().ok_or_else(|| {
-                                    Error::DeserializeError(format!(
+                                    Error::Deserialize(format!(
                                         "LowCardinality: illegal index {entry} in additional_keys",
                                     ))
                                 })?
@@ -157,7 +157,7 @@ impl Deserializer for LowCardinalityDeserializer {
                                     .get(entry - additional_keys.len())
                                     .cloned()
                                     .ok_or_else(|| {
-                                        Error::DeserializeError(format!(
+                                        Error::Deserialize(format!(
                                             "LowCardinality: illegal index {entry} in \
                                              global_dictionary"
                                         ))
@@ -171,21 +171,22 @@ impl Deserializer for LowCardinalityDeserializer {
                 output
             }
             _ => {
-                return Err(Error::SerializeError(
+                return Err(Error::Serialize(
                     "LowCardinalityDeserializer: unexpected type".to_string(),
                 ));
             }
         })
     }
 
-    fn read_sync(
-        _type_: &Type,
-        _reader: &mut impl ClickHouseBytesRead,
-        _rows: usize,
-        _state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        Err(Error::DeserializeError(
-            "LowCardinalityDeserializer sync not yet implemented".to_string(),
-        ))
-    }
+    // TODO: Remove
+    // fn read_sync(
+    //     _type_: &Type,
+    //     _reader: &mut impl ClickHouseBytesRead,
+    //     _rows: usize,
+    //     _state: &mut DeserializerState,
+    // ) -> Result<Vec<Value>> {
+    //     Err(Error::DeserializeError(
+    //         "LowCardinalityDeserializer sync not yet implemented".to_string(),
+    //     ))
+    // }
 }

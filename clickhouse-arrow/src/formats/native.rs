@@ -35,10 +35,10 @@ impl super::sealed::ClientFormatImpl<Block> for NativeFormat {
         state: &mut DeserializerState,
     ) -> Result<Option<Block>> {
         Ok(if let CompressionMethod::None = metadata.compression {
-            Block::read_async(reader, revision, (), state).await?.into_option()
+            Block::read(reader, revision, (), state).await?.into_option()
         } else {
             let mut decompressor = DecompressionReader::new(metadata.compression, reader).await?;
-            Block::read_async(&mut decompressor, revision, (), state).await?.into_option()
+            Block::read(&mut decompressor, revision, (), state).await?.into_option()
         })
     }
 

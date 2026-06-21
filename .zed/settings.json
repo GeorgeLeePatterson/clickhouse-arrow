@@ -3,11 +3,9 @@
     "rust-analyzer": {
       "initialization_options": {
         "cargo": {
-          "features": [
-            "test-utils"
-          ]
-        }
-      }
-    }
-  }
+          "features": ["test-utils", "extended-types", "rust_decimal"],
+        },
+      },
+    },
+  },
 }

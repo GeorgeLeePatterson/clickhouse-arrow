@@ -7,6 +7,14 @@ use crate::{Error, Result, Value};
 pub(crate) struct ObjectSerializer;
 
 impl Serializer for ObjectSerializer {
+    fn write_prefix_sync(
+        _type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        _state: &mut SerializerState,
+    ) {
+        writer.put_i8(1);
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         _type_: &Type,
         writer: &mut W,
@@ -27,11 +35,9 @@ impl Serializer for ObjectSerializer {
         for value in values {
             let value = if value == Value::Null { type_.default_value() } else { value };
             match value {
-                Value::Object(bytes) => {
-                    writer.write_string(bytes).await?;
-                }
+                Value::Object(bytes) => writer.write_string(bytes).await?,
                 _ => {
-                    return Err(Error::SerializeError(format!(
+                    return Err(Error::serialize(format!(
                         "ObjectSerializer unimplemented: {type_:?} for value = {value:?}",
                     )));
                 }
@@ -49,11 +55,9 @@ impl Serializer for ObjectSerializer {
         for value in values {
             let value = if value == Value::Null { type_.default_value() } else { value };
             match value {
-                Value::Object(bytes) => {
-                    writer.put_string(bytes)?;
-                }
+                Value::Object(bytes) => writer.put_string(bytes)?,
                 _ => {
-                    return Err(Error::SerializeError(format!(
+                    return Err(Error::serialize(format!(
                         "ObjectSerializer unimplemented: {type_:?} for value = {value:?}",
                     )));
                 }

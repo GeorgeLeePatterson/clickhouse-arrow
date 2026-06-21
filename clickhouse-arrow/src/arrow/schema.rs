@@ -11,6 +11,18 @@ use super::utils::array_to_string_iter;
 use crate::ArrowOptions;
 use crate::prelude::*;
 
+/// Optional schema conversion hints used for CH -> Arrow type resolution.
+///
+/// Hints are keyed by `(table_name, column_name)` in [`ArrowSchemaHints`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArrowSchemaHint {
+    pub dynamic_types: Vec<Type>,
+}
+
+/// Map of per-column schema hints for [`fetch_schema`].
+pub type ArrowSchemaHints = HashMap<(String, String), ArrowSchemaHint>;
+
 /// Fetches all tables for provided databases.
 pub(crate) async fn fetch_tables(
     client: &ArrowClient,
@@ -93,6 +105,7 @@ pub(crate) async fn fetch_schema(
     tables: &[&str],
     qid: Option<Qid>,
     options: ArrowOptions,
+    schema_hints: Option<&ArrowSchemaHints>,
 ) -> Result<HashMap<String, SchemaRef>> {
     let query = if tables.is_empty() {
         format!("SELECT table, name, type FROM system.columns WHERE database = '{database}'")
@@ -130,14 +143,16 @@ pub(crate) async fn fetch_schema(
         ))?;
 
         for i in 0..batch.num_rows() {
-            let table = table_col.value(i).to_string();
-            let name = name_col.value(i).to_string();
+            let key = (table_col.value(i).to_string(), name_col.value(i).to_string());
             let type_str = type_col.value(i).to_string();
             let ch_type = Type::from_str(&type_str)?;
-            let (arrow_type, is_nullable) =
-                super::types::ch_to_arrow_type(&ch_type, Some(options))?;
-            let field = Field::new(name, arrow_type, is_nullable);
-            schemas.entry(table).or_default().push(field);
+            let (arrow_type, is_nullable) = super::types::ch_to_arrow_type(
+                &ch_type,
+                Some(options),
+                schema_hints.and_then(|h| h.get(&key)),
+            )?;
+            let field = Field::new(key.1, arrow_type, is_nullable);
+            schemas.entry(key.0).or_default().push(field);
         }
     }
 

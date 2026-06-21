@@ -271,6 +271,7 @@ impl Value {
     pub fn from_value<T: ToSql>(value: T) -> Result<Self> { value.to_sql(None) }
 
     /// Guesses a [`Type`] from the value, may not correspond to actual column type in `ClickHouse`
+    #[expect(clippy::cast_possible_truncation)]
     pub fn guess_type(&self) -> Type {
         match self {
             Value::Int8(_) => Type::Int8,
@@ -287,22 +288,24 @@ impl Value {
             Value::UInt256(_) => Type::UInt256,
             Value::Float32(_) => Type::Float32,
             Value::Float64(_) => Type::Float64,
-            Value::Decimal32(p, _) => Type::Decimal32(*p),
-            Value::Decimal64(p, _) => Type::Decimal64(*p),
-            Value::Decimal128(p, _) => Type::Decimal128(*p),
-            Value::Decimal256(p, _) => Type::Decimal256(*p),
+            Value::Decimal32(p, _) => Type::Decimal32(*p as u8),
+            Value::Decimal64(p, _) => Type::Decimal64(*p as u8),
+            Value::Decimal128(p, _) => Type::Decimal128(*p as u8),
+            Value::Decimal256(p, _) => Type::Decimal256(*p as u8),
             Value::String(_) => Type::String,
             Value::Uuid(_) => Type::Uuid,
             Value::Date(_) => Type::Date,
             Value::Date32(_) => Type::Date32,
             Value::DateTime(time) => Type::DateTime(time.0),
-            Value::DateTime64(x) => Type::DateTime64(x.2, x.0),
+            Value::DateTime64(x) => Type::DateTime64(x.2 as u8, x.0),
             Value::Enum8(_, i) => Type::Enum8(vec![(String::new(), *i)]),
             Value::Enum16(_, i) => Type::Enum16(vec![(String::new(), *i)]),
             Value::Array(x) => {
                 Type::Array(Box::new(x.first().map_or(Type::String, Value::guess_type)))
             }
-            Value::Tuple(values) => Type::Tuple(values.iter().map(Value::guess_type).collect()),
+            Value::Tuple(values) => {
+                Type::tuple_anon(values.iter().map(Value::guess_type).collect())
+            }
             Value::Null => Type::Nullable(Box::new(Type::String)),
             Value::Map(k, v) => Type::Map(
                 Box::new(k.first().map_or(Type::String, Value::guess_type)),
@@ -352,6 +355,7 @@ impl fmt::Debug for Value {
 
 impl fmt::Display for Value {
     #[expect(clippy::too_many_lines)]
+    #[expect(clippy::cast_possible_truncation)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[expect(clippy::match_same_arms)]
         match self {
@@ -434,9 +438,11 @@ impl fmt::Display for Value {
                 write!(f, "')")
             }
             Value::DateTime64(datetime) => {
-                let chrono_date: chrono::DateTime<Tz> =
-                    FromSql::from_sql(&Type::DateTime64(datetime.2, datetime.0), self.clone())
-                        .map_err(|_| fmt::Error)?;
+                let chrono_date: chrono::DateTime<Tz> = FromSql::from_sql(
+                    &Type::DateTime64(datetime.2 as u8, datetime.0),
+                    self.clone(),
+                )
+                .map_err(|_| fmt::Error)?;
                 let string = chrono_date.to_rfc3339_opts(SecondsFormat::AutoSi, true);
                 write!(f, "parseDateTime64BestEffort('")?;
                 escape_string(f, &string)?;

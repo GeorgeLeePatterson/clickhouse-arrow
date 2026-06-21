@@ -1,7 +1,7 @@
 use tokio::io::AsyncReadExt;
 
 use super::{ClickHouseNativeDeserializer, Deserializer, DeserializerState, Type};
-use crate::io::{ClickHouseBytesRead, ClickHouseRead};
+use crate::io::ClickHouseRead;
 use crate::{Result, Value};
 
 /// Trait to allow reading `Item`s and packing them into a `Value::*`.
@@ -28,12 +28,12 @@ impl ArrayDeserializerGeneric for ArrayDeserializer {
 }
 
 impl<T: ArrayDeserializerGeneric + 'static> Deserializer for T {
-    async fn read_prefix<R: ClickHouseRead>(
+    async fn read_prefix<R: ClickHouseRead, S: Default + Send>(
         type_: &Type,
         reader: &mut R,
-        state: &mut DeserializerState,
+        state: &mut DeserializerState<S>,
     ) -> Result<()> {
-        Self::inner_type(type_)?.deserialize_prefix_async(reader, state).await
+        Self::inner_type(type_)?.deserialize_prefix(reader, state).await
     }
 
     async fn read<R: ClickHouseRead>(
@@ -70,33 +70,34 @@ impl<T: ArrayDeserializerGeneric + 'static> Deserializer for T {
         Ok(out)
     }
 
-    fn read_sync(
-        type_: &Type,
-        reader: &mut impl ClickHouseBytesRead,
-        rows: usize,
-        state: &mut DeserializerState,
-    ) -> Result<Vec<Value>> {
-        let mut offsets = Vec::with_capacity(rows);
-        for _ in 0..rows {
-            offsets.push(reader.try_get_u64_le()?);
-        }
+    // TODO: Remove
+    // fn read_sync(
+    //     type_: &Type,
+    //     reader: &mut impl ClickHouseBytesRead,
+    //     rows: usize,
+    //     state: &mut DeserializerState,
+    // ) -> Result<Vec<Value>> {
+    //     let mut offsets = Vec::with_capacity(rows);
+    //     for _ in 0..rows {
+    //         offsets.push(reader.try_get_u64_le()?);
+    //     }
 
-        // TODO: This could probably be optimized
-        #[expect(clippy::cast_possible_truncation)]
-        let mut items = Self::inner_type(type_)?
-            .deserialize_column_sync(reader, offsets[offsets.len() - 1] as usize, state)?
-            .into_iter()
-            .map(Self::item_mapping);
+    //     // TODO: This could probably be optimized
+    //     #[expect(clippy::cast_possible_truncation)]
+    //     let mut items = Self::inner_type(type_)?
+    //         .deserialize_column_sync(reader, offsets[offsets.len() - 1] as usize, state)?
+    //         .into_iter()
+    //         .map(Self::item_mapping);
 
-        let mut out = Vec::with_capacity(rows);
-        let mut read_offset = 0u64;
-        for offset in offsets {
-            let len = offset - read_offset;
-            read_offset = offset;
-            #[expect(clippy::cast_possible_truncation)]
-            out.push(Self::inner_value((&mut items).take(len as usize).collect()));
-        }
+    //     let mut out = Vec::with_capacity(rows);
+    //     let mut read_offset = 0u64;
+    //     for offset in offsets {
+    //         let len = offset - read_offset;
+    //         read_offset = offset;
+    //         #[expect(clippy::cast_possible_truncation)]
+    //         out.push(Self::inner_value((&mut items).take(len as usize).collect()));
+    //     }
 
-        Ok(out)
-    }
+    //     Ok(out)
+    // }
 }

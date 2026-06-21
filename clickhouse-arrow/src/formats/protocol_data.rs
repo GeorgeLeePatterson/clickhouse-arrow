@@ -1,5 +1,5 @@
 use super::DeserializerState;
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::{Result, Type};
 
 /// Trait for serializing and deserializing data into `ClickHouse`'s native block format.
@@ -53,20 +53,21 @@ pub(crate) trait ProtocolData<Return, Deser: Default> {
     /// # Returns
     /// A `Future` resolving to a `Result` of `Return` (e.g., `RecordBatch`) or
     /// a `Error` if deserialization fails.
-    fn read_async<R: ClickHouseRead>(
+    fn read<R: ClickHouseRead>(
         reader: &mut R,
         revision: u64,
         options: Self::Options,
         state: &mut DeserializerState<Deser>,
     ) -> impl Future<Output = Result<Return>> + Send;
 
-    #[allow(dead_code)] // TODO: remove once synchronous ProtocolData path is fully retired
-    fn read<R: ClickHouseBytesRead + 'static>(
-        _reader: &mut R,
-        _revision: u64,
-        _options: Self::Options,
-        _state: &mut DeserializerState<Deser>,
-    ) -> Result<Return>;
+    // TODO: Remove
+    // #[allow(dead_code)] // TODO: remove once synchronous ProtocolData path is fully retired
+    // fn read<R: ClickHouseBytesRead + 'static>(
+    //     _reader: &mut R,
+    //     _revision: u64,
+    //     _options: Self::Options,
+    //     _state: &mut DeserializerState<Deser>,
+    // ) -> Result<Return>;
 }
 
 /// Simple trait to determine whether a `Block` of data (whatever impls `ProtocolData`) is empty, ie

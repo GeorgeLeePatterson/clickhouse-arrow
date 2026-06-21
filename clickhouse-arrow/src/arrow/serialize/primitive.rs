@@ -33,8 +33,12 @@ use arrow::array::*;
 use arrow::datatypes::{DataType, i256};
 use tokio::io::AsyncWriteExt;
 
+#[cfg(feature = "extended-types")]
+use super::qbit::f32_to_bfloat16_bits;
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
 use crate::{Error, Result, Type};
+
+static NULL_UUID: [u8; 16] = [0; 16];
 
 /// Serializes an Arrow array to `ClickHouse`’s native format for primitive types.
 ///
@@ -113,17 +117,30 @@ pub(super) async fn serialize_async<W: ClickHouseWrite>(
                 .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
 
             for i in 0..array.len() {
-                let value = if array.is_null(i) { &[0u8; 16] } else { array.value(i) };
-                if value.len() != 16 {
-                    return Err(Error::ArrowSerialize("UUID must be 16 bytes".into()));
+                if array.is_null(i) {
+                    writer.write_all(&NULL_UUID).await?;
+                } else {
+                    let bytes = uuid_slice_to_clickhouse(array.value(i))
+                        .ok_or_else(|| Error::ArrowSerialize("UUID must be 16 bytes".into()))?;
+                    writer.write_all(&bytes).await?;
                 }
-                let bytes: [u8; 16] = value.try_into().unwrap();
-                let low = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-                let high = u64::from_le_bytes(bytes[8..].try_into().unwrap());
-                writer.write_u64_le(high).await?; // High bits first
-                writer.write_u64_le(low).await?; // Low bits second
             }
         }
+        #[cfg(feature = "extended-types")]
+        Type::BFloat16 => write_bfloat16_values(values, writer).await?,
+        #[cfg(feature = "extended-types")]
+        Type::Time => write_time_values(values, writer).await?,
+        #[cfg(feature = "extended-types")]
+        Type::Time64(p) => match p {
+            0..=3 => write_time64_ms_values(values, writer).await?,
+            4..=6 => write_time64_us_values(values, writer).await?,
+            7..=9 => write_time64_ns_values(values, writer).await?,
+            _ => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Unsupported precision for Time64: {p}"
+                )));
+            }
+        },
         _ => {
             return Err(Error::ArrowSerialize(format!("Unsupported data type: {type_hint:?}")));
         }
@@ -159,6 +176,8 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         Type::UInt256 => put_u256_values(values, writer)?,
         Type::Float32 => put_f32_values(values, writer)?,
         Type::Float64 => put_f64_values(values, writer)?,
+        #[cfg(feature = "extended-types")]
+        Type::BFloat16 => put_bfloat16_values(values, writer)?,
         Type::Decimal32(_) => put_decimal32_values(values, writer)?,
         Type::Decimal64(_) => put_decimal64_values(values, writer)?,
         Type::Decimal128(_) => put_decimal128_values(values, writer)?,
@@ -166,6 +185,19 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
         Type::Date => put_date_values(values, writer)?,
         Type::Date32 => put_date32_values(values, writer)?,
         Type::DateTime(_) => put_datetime_values(values, writer)?,
+        #[cfg(feature = "extended-types")]
+        Type::Time => put_time_values(values, writer)?,
+        #[cfg(feature = "extended-types")]
+        Type::Time64(p) => match p {
+            0..=3 => put_time64_ms_values(values, writer)?,
+            4..=6 => put_time64_us_values(values, writer)?,
+            7..=9 => put_time64_ns_values(values, writer)?,
+            _ => {
+                return Err(Error::ArrowSerialize(format!(
+                    "Unsupported precision for Time64: {p}"
+                )));
+            }
+        },
         Type::DateTime64(p, _) => match p {
             0 => put_datetime64_unknown_values(values, writer)?,
             1..=3 => put_datetime64_3_values(values, writer)?,
@@ -186,15 +218,13 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
                 .ok_or(Error::ArrowSerialize("Expected FixedSizeBinaryArray for Uuid".into()))?;
 
             for i in 0..array.len() {
-                let value = if array.is_null(i) { &[0u8; 16] } else { array.value(i) };
-                if value.len() != 16 {
-                    return Err(Error::ArrowSerialize("UUID must be 16 bytes".into()));
+                if array.is_null(i) {
+                    writer.put_slice(&NULL_UUID);
+                } else {
+                    let bytes = uuid_slice_to_clickhouse(array.value(i))
+                        .ok_or_else(|| Error::ArrowSerialize("UUID must be 16 bytes".into()))?;
+                    writer.put_slice(&bytes);
                 }
-                let bytes: [u8; 16] = value.try_into().unwrap();
-                let low = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-                let high = u64::from_le_bytes(bytes[8..].try_into().unwrap());
-                writer.put_u64_le(high); // High bits first
-                writer.put_u64_le(low); // Low bits second
             }
         }
         _ => {
@@ -203,6 +233,18 @@ pub(super) fn serialize<W: ClickHouseBytesWrite>(
     }
 
     Ok(())
+}
+
+#[inline]
+fn uuid_slice_to_clickhouse(value: &[u8]) -> Option<[u8; 16]> {
+    if value.len() != 16 {
+        return None;
+    }
+
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&value[8..16]);
+    out[8..16].copy_from_slice(&value[..8]);
+    Some(out)
 }
 
 /// Macro to generate serialization functions for primitive types.
@@ -442,6 +484,69 @@ put_primitive_values!(put_bool_values, BooleanArray, u8, put_u8);
 put_primitive_values!(put_u16_values, UInt16Array, u16, put_u16_le);
 put_primitive_values!(put_u32_values, UInt32Array, u32, put_u32_le);
 put_primitive_values!(put_u64_values, UInt64Array, u64, put_u64_le);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_bfloat16_values, scalar u16::default(), write_u16_le, [
+    (Float32Array, |v: f32| Ok::<_, Error>(f32_to_bfloat16_bits(v))),
+    (UInt16Array, |v: u16| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_bfloat16_values, scalar u16::default(), put_u16_le, [
+    (Float32Array, |v: f32| Ok::<_, Error>(f32_to_bfloat16_bits(v))),
+    (UInt16Array, |v: u16| Ok::<_, Error>(v))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time_values, scalar u32::default(), write_u32_le, [
+    (Time32SecondArray, |v: i32| Ok::<_, Error>(v as u32)),
+    (Int32Array, |v: i32| Ok::<_, Error>(v as u32)),
+    (DurationSecondArray, |v: i64| Ok::<_, Error>(v as u32))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time_values, scalar u32::default(), put_u32_le, [
+    (Time32SecondArray, |v: i32| Ok::<_, Error>(v as u32)),
+    (Int32Array, |v: i32| Ok::<_, Error>(v as u32)),
+    (DurationSecondArray, |v: i64| Ok::<_, Error>(v as u32))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time64_ms_values, scalar i64::default(), write_i64_le, [
+    (Time32MillisecondArray, |v: i32| Ok::<_, Error>(i64::from(v))),
+    (DurationMillisecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time64_ms_values, scalar i64::default(), put_i64_le, [
+    (Time32MillisecondArray, |v: i32| Ok::<_, Error>(i64::from(v))),
+    (DurationMillisecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time64_us_values, scalar i64::default(), write_i64_le, [
+    (Time64MicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationMicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time64_us_values, scalar i64::default(), put_i64_le, [
+    (Time64MicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationMicrosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+
+#[cfg(feature = "extended-types")]
+write_primitive_values!(write_time64_ns_values, scalar i64::default(), write_i64_le, [
+    (Time64NanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationNanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
+#[cfg(feature = "extended-types")]
+put_primitive_values!(put_time64_ns_values, scalar i64::default(), put_i64_le, [
+    (Time64NanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (DurationNanosecondArray, |v: i64| Ok::<_, Error>(v)),
+    (Int64Array, |v: i64| Ok::<_, Error>(v))
+]);
 
 // Large primitives
 write_primitive_values!(write_i128_values, scalar i128::default(), write_i128_le, [
@@ -1097,6 +1202,35 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "extended-types")]
+    async fn test_serialize_bfloat16() {
+        let column = Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef;
+        let field = Field::new("bf16", DataType::Float32, true);
+        let mut writer = MockWriter::new();
+        serialize_async(&Type::BFloat16, &mut writer, &column, field.data_type()).await.unwrap();
+        assert_eq!(writer, vec![
+            0x80, 0x3F, // 1.0 -> 0x3F80
+            0x20, 0xC0, // -2.5 -> 0xC020
+            0x00, 0x00, // null -> default
+        ]);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "extended-types")]
+    async fn test_serialize_time64_microseconds() {
+        let column = Arc::new(Time64MicrosecondArray::from(vec![10_i64, 20_i64])) as ArrayRef;
+        let field = Field::new("t", DataType::Time64(TimeUnit::Microsecond), false);
+        let mut writer = MockWriter::new();
+        serialize_async(&Type::Time64(6), &mut writer, &column, field.data_type()).await.unwrap();
+
+        let expected = vec![
+            10, 0, 0, 0, 0, 0, 0, 0, //
+            20, 0, 0, 0, 0, 0, 0, 0, //
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
     async fn test_serialize_decimal128() {
         let column = Arc::new(Decimal128Array::from(vec![0, 1])) as ArrayRef;
         let field = Field::new("decimal", DataType::Decimal128(38, 0), false);
@@ -1169,6 +1303,36 @@ mod tests {
         let expected = vec![
             0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // High bits
             0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // Low bits
+        ];
+        assert_eq!(writer, expected);
+    }
+
+    #[tokio::test]
+    async fn test_serialize_uuid_with_null() {
+        let column = Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                vec![
+                    Some(
+                        [
+                            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
+                            0x9a, 0xbc, 0xde, 0xf0,
+                        ]
+                        .as_ref(),
+                    ),
+                    None,
+                ]
+                .into_iter(),
+                16,
+            )
+            .unwrap(),
+        ) as ArrayRef;
+        let field = Field::new("uuid", DataType::FixedSizeBinary(16), true);
+        let mut writer = MockWriter::new();
+        serialize_async(&Type::Uuid, &mut writer, &column, field.data_type()).await.unwrap();
+        let expected = vec![
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // High bits
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // Low bits
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // null UUID
         ];
         assert_eq!(writer, expected);
     }
@@ -1862,864 +2026,298 @@ mod tests {
             if msg.contains("Unsupported data type: String")
         ));
     }
-}
 
-#[cfg(test)]
-mod tests_sync {
-    use std::sync::Arc;
+    async fn assert_sync_matches_async(type_hint: Type, column: ArrayRef, data_type: DataType) {
+        let mut async_writer = MockWriter::new();
+        serialize_async(&type_hint, &mut async_writer, &column, &data_type).await.unwrap();
 
-    use arrow::array::*;
-    use arrow::datatypes::*;
-    use chrono_tz::Tz;
+        let mut sync_writer = MockWriter::new();
+        serialize(&type_hint, &mut sync_writer, &column, &data_type).unwrap();
 
-    use super::*;
-
-    type MockWriter = Vec<u8>;
-
-    #[test]
-    fn test_serialize_int8() {
-        let column = Arc::new(Int8Array::from(vec![1, -2, 0])) as ArrayRef;
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int8, &mut writer, &column, &DataType::Int8).unwrap();
-        let expected = vec![1, 254, 0]; // -2 = 254 in u8
-        assert_eq!(writer, expected);
+        assert_eq!(sync_writer, async_writer);
     }
 
-    #[test]
-    fn test_serialize_int8_min_max() {
-        let column = Arc::new(Int8Array::from(vec![i8::MIN, i8::MAX, 0])) as ArrayRef;
-        let field = Field::new("int", DataType::Int8, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int8, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![128, 127, 0]; // i8::MIN = -128, i8::MAX = 127
-        assert_eq!(writer, expected);
-    }
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_numeric_paths() {
+        assert_sync_matches_async(
+            Type::Int8,
+            Arc::new(Int8Array::from(vec![1, -2, 0])) as ArrayRef,
+            DataType::Int8,
+        )
+        .await;
 
-    #[test]
-    fn test_serialize_uint8_bool() {
-        let column = Arc::new(BooleanArray::from(vec![true, false, true])) as ArrayRef;
-        let field = Field::new("bool", DataType::Boolean, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt8, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![1, 0, 1];
-        assert_eq!(writer, expected);
-    }
+        assert_sync_matches_async(
+            Type::UInt8,
+            Arc::new(BooleanArray::from(vec![true, false, true])) as ArrayRef,
+            DataType::Boolean,
+        )
+        .await;
 
-    #[test]
-    fn test_serialize_uint8() {
-        let column = Arc::new(UInt8Array::from(vec![0, u8::MAX, 42])) as ArrayRef;
-        let field = Field::new("uint", DataType::UInt8, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt8, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![0, 255, 42];
-        assert_eq!(writer, expected);
-    }
+        assert_sync_matches_async(
+            Type::UInt8,
+            Arc::new(UInt8Array::from(vec![0, u8::MAX, 42])) as ArrayRef,
+            DataType::UInt8,
+        )
+        .await;
 
-    #[test]
-    fn test_serialize_int32() {
-        let column = Arc::new(Int32Array::from(vec![1, -2, 0])) as ArrayRef;
-        let field = Field::new("int", DataType::Int32, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int32, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![1, 0, 0, 0, 254, 255, 255, 255, 0, 0, 0, 0]; // -2 = 0xFFFF_FFFE
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_int128_binary() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![
-                    i128::from(123).to_le_bytes().as_ref(),
-                    i128::from(-456).to_le_bytes().as_ref(),
-                ]
-                .into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("int", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int128, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 123
-            56, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, // -456
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_int128_fixed_binary_invalid() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(vec![&[0_u8; 17] as &[u8]].into_iter()).unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("int", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Int128, &mut writer, &column, field.data_type());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_serialize_int128_binary_invalid() {
-        let column = Arc::new(BinaryArray::from(vec![Some(&[0_u8; 17] as &[u8])])) as ArrayRef;
-        let field = Field::new("int", DataType::Binary, false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Int128, &mut writer, &column, field.data_type());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_serialize_int256() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![i256::from(123).to_le_bytes().as_ref()].into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("int", DataType::FixedSizeBinary(32), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Upper 16 bytes (0)
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 123, // Lower 16 bytes (123)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_float32() {
-        let column = Arc::new(Float32Array::from(vec![1.5, -2.0, 0.0])) as ArrayRef;
-        let field = Field::new("float", DataType::Float32, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Float32, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 192, 63, // 1.5 (0x3FC00000)
-            0, 0, 0, 192, // -2.0 (0xC0000000)
-            0, 0, 0, 0, // 0.0 (0x00000000)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_float64() {
-        let column = Arc::new(Float64Array::from(vec![1.5, -2.0, 0.0])) as ArrayRef;
-        let field = Field::new("float", DataType::Float64, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Float64, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 248, 63, // 1.5 (0x3FF8000000000000)
-            0, 0, 0, 0, 0, 0, 0, 192, // -2.0 (0xC000000000000000)
-            0, 0, 0, 0, 0, 0, 0, 0, // 0.0 (0x0000000000000000)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_decimal128() {
-        let column = Arc::new(Decimal128Array::from(vec![0, 1])) as ArrayRef;
-        let field = Field::new("decimal", DataType::Decimal128(38, 0), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Decimal128(0), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0
-            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 1
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_date() {
-        let column = Arc::new(Date32Array::from(vec![0, 1])) as ArrayRef; // 1970-01-01, 1970-01-02
-        let field = Field::new("date", DataType::Date32, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Date, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![0, 0, 1, 0]; // 0, 1 (u16 LE)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_3() {
-        let column = Arc::new(TimestampMillisecondArray::from(vec![0, 1000])) as ArrayRef; // 1970-01-01 00:00:00, 00:00:01
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(3, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![0, 0, 0, 0, 0, 0, 0, 0, 232, 3, 0, 0, 0, 0, 0, 0]; // 0, 1000 (u64 LE)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_ipv4() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![[192, 168, 1, 1].as_ref(), [10, 0, 0, 1].as_ref()].into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("ip", DataType::FixedSizeBinary(4), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Ipv4, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![192, 168, 1, 1, 10, 0, 0, 1]; // 192.168.1.1, 10.0.0.1 (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uuid() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![
-                    [
-                        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
-                        0x9a, 0xbc, 0xde, 0xf0,
-                    ]
-                    .as_ref(),
-                ]
-                .into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uuid", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Uuid, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // High bits
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, // Low bits
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uuid_invalid() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![
-                    [
-                        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
-                        0x9a, 0xbc, 0xde, 0xf0, 0xf0,
-                    ]
-                    .as_ref(),
-                ]
-                .into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uuid", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Uuid, &mut writer, &column, field.data_type());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_serialize_empty_int32() {
-        let column = Arc::new(Int32Array::from(Vec::<i32>::new())) as ArrayRef;
-        let field = Field::new("int", DataType::Int32, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int32, &mut writer, &column, field.data_type()).unwrap();
-        assert!(writer.is_empty());
-    }
-
-    #[test]
-    fn test_serialize_nullable_int32() {
-        let column = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef;
-        let field = Field::new("int", DataType::Int32, true);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Nullable(Box::new(Type::Int32)), &mut writer, &column, field.data_type())
-            .unwrap();
-        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0]; // 1, 0 (null), 3
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_null_only_int32() {
-        let column = Arc::new(Int32Array::from(vec![None, None])) as ArrayRef;
-        let field = Field::new("int", DataType::Int32, true);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Nullable(Box::new(Type::Int32)), &mut writer, &column, field.data_type())
-            .unwrap();
-        let expected = vec![0, 0, 0, 0, 0, 0, 0, 0]; // Two nulls (0)
-        assert_eq!(writer, expected);
-    }
-
-    // Test invalid values
-
-    #[test]
-    fn test_invalid_datetimes() {
-        let cases = [(
-            Type::Date,
-            Arc::new(Date32Array::from(vec![Some(-1)])) as ArrayRef,
-            Field::new("date", DataType::Date32, true),
-            "Date out of range",
-        )];
-
-        for (type_, array, field, expected) in cases {
-            let mut writer = MockWriter::new();
-            let result = serialize(&type_, &mut writer, &array, field.data_type());
-            assert!(matches!(
-                result,
-                Err(Error::ArrowSerialize(msg))
-                if msg.contains(expected)
-            ));
-        }
-    }
-
-    #[test]
-    fn test_invalid_decimal() {
-        let cases = [
-            (
-                Type::Decimal32(0),
-                Arc::new(Decimal128Array::from(vec![Some(1_000_000_000)])) as ArrayRef,
-                Field::new("decimal", DataType::Decimal128(9, 0), true),
-                "Decimal32 out of range",
-            ),
-            (
-                Type::Decimal64(0),
-                Arc::new(Decimal128Array::from(vec![Some(1_000_000_000_000_000_000)])) as ArrayRef,
-                Field::new("decimal", DataType::Decimal128(18, 0), true),
-                "Decimal64 out of range",
-            ),
-        ];
-        for (type_, array, field, expected) in cases {
-            let mut writer = MockWriter::new();
-            let result = serialize(&type_, &mut writer, &array, field.data_type());
-            assert!(matches!(
-                result,
-                Err(Error::ArrowSerialize(msg))
-                if msg.contains(expected)
-            ));
-        }
-    }
-
-    #[test]
-    fn test_serialize_invalid_type() {
-        let column = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
-        let field = Field::new("str", DataType::Utf8, false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Int32, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg)) if msg.contains("Expected Int32Array")
-        ));
-
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Decimal32(3), &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg)) if msg.contains("Expected one of")
-        ));
-
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Ipv6, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg)) if msg.contains("Expected one of")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_invalid_uuid_length() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(vec![[0x12, 0x34].as_ref()].into_iter()).unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uuid", DataType::FixedSizeBinary(2), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Uuid, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg)) if msg.contains("UUID must be 16 bytes")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_uint128_uint64() {
-        let column = Arc::new(UInt64Array::from(vec![123_u64])) as ArrayRef;
-        let field = Field::new("uint", DataType::UInt64, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt128, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 123 (big-endian)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uint128_fixed_size_binary() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![u128::from(123_u32).to_le_bytes().as_ref()].into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uint", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt128, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 123 (big-endian)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uint128_binary() {
-        let column = Arc::new(BinaryArray::from_iter(vec![Some(
-            u128::from(456_u32).to_le_bytes().as_ref(),
-        )])) as ArrayRef;
-        let field = Field::new("uint", DataType::Binary, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt128, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            200, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 456 (big-endian)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uint128_invalid_length() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8].as_ref()].into_iter()).unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uint", DataType::FixedSizeBinary(8), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::UInt128, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("FixedSizeBinary must be 16 bytes for UInt128")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_uint256_uint64() {
-        let column = Arc::new(UInt64Array::from(vec![123])) as ArrayRef;
-        let field = Field::new("uint", DataType::UInt64, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 123, // 123 (big-endian)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uint256_binary() {
-        let val: &[u8; 32] = &[
-            123_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, // 123 (big-endian)
-        ];
-        let column = Arc::new(BinaryArray::from_vec(vec![val])) as ArrayRef;
-        let field = Field::new("uint", DataType::Binary, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 123, // 123 (big-endian)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uint256_fixed_size_binary() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(
-                vec![
-                    {
-                        let mut bytes = [0u8; 32];
-                        bytes[..16].copy_from_slice(&u128::from(456_u32).to_le_bytes());
-                        bytes
-                    }
-                    .as_ref(),
-                ]
-                .into_iter(),
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uint", DataType::FixedSizeBinary(32), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::UInt256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 1, 200, // 456 (big-endian)
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_uint256_invalid_length() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(vec![[0u8; 16].as_ref()].into_iter()).unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("uint", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::UInt256, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("FixedSizeBinary must be 32 bytes for UInt256")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_i128_int64() {
-        let column = Arc::new(Int64Array::from(vec![123])) as ArrayRef;
-        let field = Field::new("int", DataType::Int64, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int128, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 123
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_i128_binary() {
-        let column =
+        assert_sync_matches_async(
+            Type::Int128,
             Arc::new(BinaryArray::from_iter(vec![Some(i128::from(-456).to_le_bytes().as_ref())]))
-                as ArrayRef;
-        let field = Field::new("int", DataType::Binary, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int128, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            56, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, // -456
-        ];
-        assert_eq!(writer, expected);
-    }
+                as ArrayRef,
+            DataType::Binary,
+        )
+        .await;
 
-    #[test]
-    fn test_serialize_i128_binary_invalid_length() {
-        let column = Arc::new(BinaryArray::from_iter(vec![Some(&[0_u8; 17])])) as ArrayRef;
-        let field = Field::new("int", DataType::Binary, false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Int128, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(e))
-            if e.clone().contains("Binary must be 16 bytes")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_i256_binary() {
-        let val = vec![
-            133_u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, // -123
-        ];
-        let column = Arc::new(BinaryArray::from_vec(vec![&val])) as ArrayRef;
-        let field = Field::new("bin", DataType::Binary, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 133, // -123
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_i256_fixed_binary() {
-        let val: &[u8; 32] = &[
-            133_u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, // -123
-        ];
-        let column = Arc::new(FixedSizeBinaryArray::from(vec![val])) as ArrayRef;
-        let field = Field::new("bin", DataType::FixedSizeBinary(32), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 133, // -123
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_i256_fixed_binary_invalid() {
-        let val: &[u8; 33] = &[
-            133_u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-        ];
-        let column = Arc::new(FixedSizeBinaryArray::from(vec![val])) as ArrayRef;
-        let field = Field::new("bin", DataType::FixedSizeBinary(32), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Int256, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(e))
-            if e.clone().contains("FixedSizeBinary must be 32 bytes for Int256")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_i256_int64_negative() {
-        let column = Arc::new(Int64Array::from(vec![-123])) as ArrayRef;
-        let field = Field::new("int", DataType::Int64, false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Int256, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 133, // -123
-        ];
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_decimal256() {
-        let column = Arc::new(
-            Decimal256Array::from(vec![i256::from(123_456)])
-                .with_precision_and_scale(76, 0)
+        assert_sync_matches_async(
+            Type::UInt128,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![u128::from(123_u32).to_le_bytes().as_ref()].into_iter(),
+                )
                 .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("decimal", DataType::Decimal256(76, 0), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Decimal256(0), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            1, 226, 64, // 123456 (big-endian)
-        ];
-        assert_eq!(writer, expected);
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(16),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Int256,
+            Arc::new(Int64Array::from(vec![-123])) as ArrayRef,
+            DataType::Int64,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::UInt256,
+            Arc::new(UInt64Array::from(vec![123])) as ArrayRef,
+            DataType::UInt64,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Decimal32(0),
+            Arc::new(Decimal32Array::from(vec![1, -2])) as ArrayRef,
+            DataType::Decimal32(9, 0),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Decimal64(0),
+            Arc::new(Decimal64Array::from(vec![1, -2])) as ArrayRef,
+            DataType::Decimal64(18, 0),
+        )
+        .await;
     }
 
-    #[test]
-    fn test_serialize_decimal256_decimal128() {
-        let column =
-            Arc::new(Decimal128Array::from(vec![123_456]).with_precision_and_scale(38, 0).unwrap())
-                as ArrayRef;
-        let field = Field::new("decimal", DataType::Decimal128(38, 0), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Decimal256(0), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            1, 226, 64, // 123456
-        ];
-        assert_eq!(writer, expected);
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_temporal_paths() {
+        assert_sync_matches_async(
+            Type::Date,
+            Arc::new(Date32Array::from(vec![0, 1])) as ArrayRef,
+            DataType::Date32,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime(Tz::UTC),
+            Arc::new(TimestampSecondArray::from(vec![1, 2])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Second, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(0, Tz::UTC),
+            Arc::new(TimestampSecondArray::from(vec![1000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Second, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(3, Tz::UTC),
+            Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(6, Tz::UTC),
+            Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::DateTime64(9, Tz::UTC),
+            Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+        )
+        .await;
     }
 
-    #[test]
-    fn test_serialize_datetime64_0() {
-        let column = Arc::new(TimestampSecondArray::from(vec![1000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(0, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1000
-        assert_eq!(writer, expected);
-    }
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_network_paths() {
+        assert_sync_matches_async(
+            Type::Ipv4,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![[192, 168, 1, 1].as_ref(), [10, 0, 0, 1].as_ref()].into_iter(),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(4),
+        )
+        .await;
 
-    #[test]
-    fn test_serialize_datetime64_3_microsecond() {
-        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(3, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1,000,000 / 1,000 = 1,000 ms (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_3_nanosecond() {
-        let column = Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(3, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1,000,000,000 / 1,000,000 = 1,000 ms (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_3_second() {
-        let column = Arc::new(TimestampSecondArray::from(vec![1])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(3, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![232, 3, 0, 0, 0, 0, 0, 0]; // 1 * 1,000 = 1,000 ms (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_6_millisecond() {
-        let column = Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(6, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1,000 * 1,000 = 1,000,000 µs (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_6_nanosecond() {
-        let column = Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(6, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1,000,000,000 / 1,000 = 1,000,000 µs (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_6_second() {
-        let column = Arc::new(TimestampSecondArray::from(vec![1])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(6, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1 * 1,000,000 = 1,000,000 µs (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_6_microsecond() {
-        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(6, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![64, 66, 15, 0, 0, 0, 0, 0]; // 1,000,000 (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_9_millisecond() {
-        let column = Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(9, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![0, 202, 154, 59, 0, 0, 0, 0]; // 1,000,000,000 (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_9_microsecond() {
-        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(9, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![0, 202, 154, 59, 0, 0, 0, 0]; // 1,000,000 * 1,000 = 1,000,000,000 ns (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_9_second() {
-        let column = Arc::new(TimestampSecondArray::from(vec![1])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(9, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![0, 202, 154, 59, 0, 0, 0, 0]; // 1 * 1,000,000,000 = 1,000,000,000 ns (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_unknown_millisecond() {
-        let column = Arc::new(TimestampMillisecondArray::from(vec![1000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Millisecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(0, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0]; // 1,000 / 1,000 = 1 s (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_unknown_microsecond() {
-        let column = Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(0, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0]; // 1,000,000 / 1,000,000 = 1 s (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime64_unknown_nanosecond() {
-        let column = Arc::new(TimestampNanosecondArray::from(vec![1_000_000_000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::DateTime64(0, Tz::UTC), &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![1, 0, 0, 0, 0, 0, 0, 0]; // 1,000,000,000 / 1,000,000,000 = 1 s (big-endian)
-        assert_eq!(writer, expected);
-    }
-
-    #[test]
-    fn test_serialize_datetime_out_of_range() {
-        let column =
-            Arc::new(TimestampSecondArray::from(vec![i64::from(u32::MAX) + 1])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::DateTime(Tz::UTC), &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("DateTime out of range for TimestampSecond")
-        ));
-    }
-    #[test]
-    fn test_serialize_ipv4_invalid_length() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(vec![[0u8; 3].as_ref()].into_iter()).unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("ip", DataType::FixedSizeBinary(3), false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::Ipv4, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("IPv4 must be 4 bytes")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_ipv6() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
-                vec![Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1].as_ref()), None]
+        assert_sync_matches_async(
+            Type::Ipv6,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                    vec![
+                        Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1].as_ref()),
+                        Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2].as_ref()),
+                    ]
                     .into_iter(),
-                16,
-            )
-            .unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("ip", DataType::FixedSizeBinary(16), false);
-        let mut writer = MockWriter::new();
-        serialize(&Type::Ipv6, &mut writer, &column, field.data_type()).unwrap();
-        let expected = vec![
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, // ::1
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        ];
-        assert_eq!(writer, expected);
+                    16,
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(16),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Uuid,
+            Arc::new(
+                FixedSizeBinaryArray::try_from_iter(
+                    vec![
+                        [
+                            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
+                            0x9a, 0xbc, 0xde, 0xf0,
+                        ]
+                        .as_ref(),
+                    ]
+                    .into_iter(),
+                )
+                .unwrap(),
+            ) as ArrayRef,
+            DataType::FixedSizeBinary(16),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Float32,
+            Arc::new(Float32Array::from(vec![1.5, -2.0, 0.0])) as ArrayRef,
+            DataType::Float32,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Float64,
+            Arc::new(Float64Array::from(vec![1.5, -2.0, 0.0])) as ArrayRef,
+            DataType::Float64,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "extended-types")]
+    #[tokio::test]
+    async fn test_serialize_sync_matches_async_extended_temporal_paths() {
+        assert_sync_matches_async(
+            Type::BFloat16,
+            Arc::new(Float32Array::from(vec![Some(1.0), Some(-2.5), None])) as ArrayRef,
+            DataType::Float32,
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Time,
+            Arc::new(Time32SecondArray::from(vec![1_i32, 2_i32])) as ArrayRef,
+            DataType::Time32(TimeUnit::Second),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Time64(3),
+            Arc::new(Time32MillisecondArray::from(vec![10_i32, 20_i32])) as ArrayRef,
+            DataType::Time32(TimeUnit::Millisecond),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Time64(6),
+            Arc::new(Time64MicrosecondArray::from(vec![100_i64, 200_i64])) as ArrayRef,
+            DataType::Time64(TimeUnit::Microsecond),
+        )
+        .await;
+
+        assert_sync_matches_async(
+            Type::Time64(9),
+            Arc::new(Time64NanosecondArray::from(vec![1_000_i64, 2_000_i64])) as ArrayRef,
+            DataType::Time64(TimeUnit::Nanosecond),
+        )
+        .await;
     }
 
     #[test]
-    fn test_serialize_ipv6_invalid_length() {
-        let column = Arc::new(
-            FixedSizeBinaryArray::try_from_iter(vec![[0u8; 8].as_ref()].into_iter()).unwrap(),
-        ) as ArrayRef;
-        let field = Field::new("ip", DataType::FixedSizeBinary(8), false);
+    fn test_serialize_sync_error_paths() {
+        let string_column = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
         let mut writer = MockWriter::new();
-        let result = serialize(&Type::Ipv6, &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("IPv6 must be 16 bytes")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_datetime64_invalid_precision() {
-        let column = Arc::new(TimestampSecondArray::from(vec![1000])) as ArrayRef;
-        let field = Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false);
-        let mut writer = MockWriter::new();
-        let result =
-            serialize(&Type::DateTime64(10, Tz::UTC), &mut writer, &column, field.data_type());
-        assert!(matches!(
-            result,
-            Err(Error::ArrowSerialize(msg))
-            if msg.contains("Unsupported precision for DateTime64: 10")
-        ));
-    }
-
-    #[test]
-    fn test_serialize_unsupported_type() {
-        let column = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
-        let field = Field::new("str", DataType::Utf8, false);
-        let mut writer = MockWriter::new();
-        let result = serialize(&Type::String, &mut writer, &column, field.data_type());
+        let result = serialize(&Type::String, &mut writer, &string_column, &DataType::Utf8);
         assert!(matches!(
             result,
             Err(Error::ArrowSerialize(msg))
             if msg.contains("Unsupported data type: String")
         ));
+
+        let ts_column = Arc::new(TimestampSecondArray::from(vec![1000])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(
+            &Type::DateTime64(10, Tz::UTC),
+            &mut writer,
+            &ts_column,
+            &DataType::Timestamp(TimeUnit::Second, None),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Unsupported precision for DateTime64: 10")
+        ));
+
+        let bad_uuid = Arc::new(
+            FixedSizeBinaryArray::try_from_iter(vec![[0x12, 0x34].as_ref()].into_iter()).unwrap(),
+        ) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Uuid, &mut writer, &bad_uuid, &DataType::FixedSizeBinary(2));
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("UUID must be 16 bytes")
+        ));
+
+        let bad_date = Arc::new(Date32Array::from(vec![-1])) as ArrayRef;
+        let mut writer = MockWriter::new();
+        let result = serialize(&Type::Date, &mut writer, &bad_date, &DataType::Date32);
+        assert!(matches!(
+            result,
+            Err(Error::ArrowSerialize(msg))
+            if msg.contains("Date out of range")
+        ));
+
+        #[cfg(feature = "extended-types")]
+        {
+            let bad_time = Arc::new(Time32SecondArray::from(vec![1_i32])) as ArrayRef;
+            let mut writer = MockWriter::new();
+            let result = serialize(
+                &Type::Time64(10),
+                &mut writer,
+                &bad_time,
+                &DataType::Time32(TimeUnit::Second),
+            );
+            assert!(matches!(
+                result,
+                Err(Error::ArrowSerialize(msg))
+                if msg.contains("Unsupported precision for Time64: 10")
+            ));
+        }
     }
 }

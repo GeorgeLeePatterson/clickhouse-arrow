@@ -39,7 +39,6 @@ jobs:
             - '!docs/**'
             - '!.claude/**'
             - '!.gitignore'
-            - '!.justfile'
             - '!LICENSE'
             - '!.github/workflows/pr.yml'
             - '!.github/workflows/release.yml'
@@ -55,6 +54,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Login to Docker Hub
+      if: github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
     - name: Install Rust stable
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -65,14 +72,11 @@ jobs:
       with:
         components: rustfmt
 
-    - name: Check formatting
-      run: cargo +nightly fmt -- --check
+    - name: Install just
+      uses: taiki-e/install-action@just
 
-    - name: Run clippy
-      run: cargo +stable clippy --profile ci --all-features --all-targets -- -D warnings
-
-    - name: Build stable
-      run: cargo +stable build --profile ci --all-features --verbose
+    - name: Run check/test matrix
+      run: just checks-no-coverage
 
   coverage:
     name: Code Coverage
@@ -93,19 +97,20 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Install just
+      uses: taiki-e/install-action@just
+
     - name: Install cargo-llvm-cov
       uses: taiki-e/install-action@cargo-llvm-cov
 
-    - name: Generate code coverage
-      run: |
-        cargo llvm-cov --features test-utils --workspace --lcov --output-path lcov.info \
-         --ignore-filename-regex "(clickhouse-arrow-derive|errors|error_codes|examples|test-utils).*"
+    - name: Generate merged code coverage
+      run: just coverage-lcov
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: lcov.info
+        files: coverage/lcov.info
         fail_ci_if_error: true
         disable_telem: true
 

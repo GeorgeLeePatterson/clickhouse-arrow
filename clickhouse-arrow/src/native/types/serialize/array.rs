@@ -2,7 +2,6 @@ use tokio::io::AsyncWriteExt;
 
 use super::{ClickHouseNativeSerializer, Serializer, SerializerState, Type};
 use crate::io::{ClickHouseBytesWrite, ClickHouseWrite};
-use crate::prelude::*;
 use crate::{Result, Value};
 
 // Trait to allow serializing [Values] wrapping an array of items.
@@ -22,6 +21,16 @@ impl ArraySerializerGeneric for ArraySerializer {
 }
 
 impl<T: ArraySerializerGeneric + 'static> Serializer for T {
+    fn write_prefix_sync(
+        type_: &Type,
+        writer: &mut impl ClickHouseBytesWrite,
+        state: &mut SerializerState,
+    ) {
+        if let Ok(inner) = T::inner_type(type_) {
+            inner.serialize_prefix(writer, state);
+        }
+    }
+
     async fn write_prefix<W: ClickHouseWrite>(
         type_: &Type,
         writer: &mut W,
@@ -48,15 +57,7 @@ impl<T: ArraySerializerGeneric + 'static> Serializer for T {
             all_values.append(&mut Self::values(value)?);
         }
 
-        match type_.serialize_column(all_values, writer, state).await {
-            Ok(()) => {}
-            Err(e) => {
-                error!("error serializing column in array type={type_:?}: {}", e);
-                return Err(e);
-            }
-        }
-
-        Ok(())
+        type_.serialize_column(all_values, writer, state).await
     }
 
     fn write_sync(
@@ -77,14 +78,6 @@ impl<T: ArraySerializerGeneric + 'static> Serializer for T {
             all_values.append(&mut Self::values(value)?);
         }
 
-        match type_.serialize_column_sync(all_values, writer, state) {
-            Ok(()) => {}
-            Err(e) => {
-                error!("error serializing column in array type={type_:?}: {}", e);
-                return Err(e);
-            }
-        }
-
-        Ok(())
+        type_.serialize_column_sync(all_values, writer, state)
     }
 }

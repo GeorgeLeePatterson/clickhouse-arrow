@@ -1,15 +1,14 @@
 use std::str::FromStr;
 
 use indexmap::IndexMap;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::block_info::BlockInfo;
-use super::kinds::{SerializationKind, read_serialization_kind};
 use super::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::deserialize::ClickHouseNativeDeserializer;
 use crate::formats::protocol_data::ProtocolData;
-use crate::formats::{DeserializerState, SerializerState};
-use crate::io::{ClickHouseBytesRead, ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
+use crate::formats::{CustomPlan, DeserializerState, SerializerState};
+use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::values::Value;
 use crate::prelude::*;
 use crate::serialize::ClickHouseNativeSerializer;
@@ -256,7 +255,7 @@ impl ProtocolData<Self, ()> for Block {
         Ok(())
     }
 
-    async fn read_async<R: ClickHouseRead>(
+    async fn read<R: ClickHouseRead>(
         reader: &mut R,
         revision: u64,
         _options: (),
@@ -287,24 +286,38 @@ impl ProtocolData<Self, ()> for Block {
                 .await
                 .inspect_err(|e| error!("reading column type (name {name}): {e}"))?;
 
-            // The value-mode reader only knows how to drive dense column bodies.
-            // Sparse and the other special kinds would need a Value-domain
-            // materialiser; until that exists they're a protocol-level
-            // mismatch, not a silent zero-row result.
-            let kind = read_serialization_kind(reader, revision).await?;
-            if kind != SerializationKind::Default {
-                return Err(Error::Protocol(format!(
-                    "value-mode block reader does not support SerializationInfo kind {kind:?} \
-                     (column {name}); use the Arrow reader for sparse-aware decoding"
-                )));
-            }
+            drop(state.take_custom_plan());
+
+            let has_custom_serialization =
+                if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
+                    reader.read_u8().await? != 0
+                } else {
+                    false
+                };
 
             let type_ = Type::from_str(&type_name).inspect_err(|error| {
                 error!(?error, "Type deserialize failed: name={name}, type={type_name}");
             })?;
 
+            if has_custom_serialization {
+                type_.deserialize_custom_serialization_prefix(reader, state).await?;
+            } else {
+                drop(state.replace_custom_plan(CustomPlan::from_type_structure(&type_)));
+            }
+
+            if let Some((_, node)) = state.custom_plan().and_then(|plan| {
+                plan.nodes.iter().enumerate().find(|(_, node)| node.stack_type != 0)
+            }) {
+                return Err(Error::Protocol(format!(
+                    "value-mode block reader does not support non-default SerializationInfo stack \
+                     {} (column {name}); use the Arrow reader for sparse-aware decoding",
+                    node.stack_type
+                )));
+            }
+
             let mut row_data = if rows > 0 {
-                type_.deserialize_prefix_async(reader, state).await?;
+                state.reset_custom_node_to_root();
+                type_.deserialize_prefix(reader, state).await?;
 
                 #[allow(clippy::cast_possible_truncation)]
                 type_
@@ -321,67 +334,215 @@ impl ProtocolData<Self, ()> for Block {
 
         Ok(block)
     }
+}
 
-    fn read<R: ClickHouseBytesRead + 'static>(
-        reader: &mut R,
-        revision: u64,
-        _options: (),
-        state: &mut DeserializerState,
-    ) -> Result<Self> {
-        let info = if revision > 0 { BlockInfo::read(reader)? } else { BlockInfo::default() };
+#[cfg(test)]
+mod custom_serialization_tests {
+    use std::borrow::Cow;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let columns = reader.try_get_var_uint()? as usize;
-        let rows = reader.try_get_var_uint()?;
+    use super::*;
+    use crate::native::convert::ColumnDefinition;
 
-        let mut block = Block {
-            info,
-            rows,
-            column_types: Vec::with_capacity(columns),
-            column_data: Vec::with_capacity(columns),
-        };
+    #[derive(Clone)]
+    struct TestRow {
+        id:   i32,
+        name: String,
+    }
 
-        for i in 0..columns {
-            let name = String::from_utf8(
-                reader
-                    .try_get_string()
-                    .inspect_err(|e| error!("reading column name (index {i}): {e}"))?
-                    .to_vec(),
-            )?;
+    impl Row for TestRow {
+        const COLUMN_COUNT: Option<usize> = Some(2);
 
-            let type_name = String::from_utf8(
-                reader
-                    .try_get_string()
-                    .inspect_err(|e| error!("reading column type (name {name}): {e}"))?
-                    .to_vec(),
-            )?;
-
-            // TODO: implement
-            let mut _has_custom_serialization = false;
-            if revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION {
-                _has_custom_serialization = reader.try_get_u8()? != 0;
-            }
-
-            let type_ = Type::from_str(&type_name).inspect_err(|error| {
-                error!(?error, "Type deserialize failed: name={name}, type={type_name}");
-            })?;
-
-            #[allow(clippy::cast_possible_truncation)]
-            let mut row_data = if rows > 0 {
-                type_.deserialize_prefix(reader)?;
-                type_
-                    .deserialize_column_sync(reader, rows as usize, state)
-                    .inspect_err(|e| error!("deserialize (name {name}): {e}"))?
-            } else {
-                vec![]
-            };
-
-            block.column_types.push((name, type_));
-            block.column_data.append(&mut row_data);
+        fn column_names() -> Option<Vec<Cow<'static, str>>> {
+            Some(vec![Cow::Borrowed("id"), Cow::Borrowed("name")])
         }
 
-        Ok(block)
+        fn to_schema() -> Option<Vec<ColumnDefinition<Value>>> {
+            Some(vec![
+                ("id".to_string(), Type::Int32, None),
+                ("name".to_string(), Type::String, None),
+            ])
+        }
+
+        fn deserialize_row(_map: Vec<(&str, &Type, Value)>) -> Result<Self> {
+            unreachable!("deserialize_row is not needed in these tests")
+        }
+
+        fn serialize_row(
+            self,
+            _type_hints: &[(String, Type)],
+        ) -> Result<Vec<(Cow<'static, str>, Value)>> {
+            Ok(vec![
+                (Cow::Borrowed("id"), Value::Int32(self.id)),
+                (Cow::Borrowed("name"), Value::String(self.name.into_bytes())),
+            ])
+        }
     }
+
+    #[derive(Clone)]
+    struct MissingColumnRow;
+
+    impl Row for MissingColumnRow {
+        const COLUMN_COUNT: Option<usize> = Some(1);
+
+        fn column_names() -> Option<Vec<Cow<'static, str>>> { Some(vec![Cow::Borrowed("missing")]) }
+
+        fn to_schema() -> Option<Vec<ColumnDefinition<Value>>> { None }
+
+        fn deserialize_row(_map: Vec<(&str, &Type, Value)>) -> Result<Self> {
+            unreachable!("deserialize_row is not needed in these tests")
+        }
+
+        fn serialize_row(
+            self,
+            _type_hints: &[(String, Type)],
+        ) -> Result<Vec<(Cow<'static, str>, Value)>> {
+            Ok(vec![(Cow::Borrowed("missing"), Value::Int32(1))])
+        }
+    }
+
+    #[derive(Clone)]
+    struct WrongTypeRow;
+
+    impl Row for WrongTypeRow {
+        const COLUMN_COUNT: Option<usize> = Some(1);
+
+        fn column_names() -> Option<Vec<Cow<'static, str>>> { Some(vec![Cow::Borrowed("id")]) }
+
+        fn to_schema() -> Option<Vec<ColumnDefinition<Value>>> { None }
+
+        fn deserialize_row(_map: Vec<(&str, &Type, Value)>) -> Result<Self> {
+            unreachable!("deserialize_row is not needed in these tests")
+        }
+
+        fn serialize_row(
+            self,
+            _type_hints: &[(String, Type)],
+        ) -> Result<Vec<(Cow<'static, str>, Value)>> {
+            Ok(vec![(Cow::Borrowed("id"), Value::String(b"oops".to_vec()))])
+        }
+    }
+
+    fn schema() -> Vec<(String, Type)> {
+        vec![("id".to_string(), Type::Int32), ("name".to_string(), Type::String)]
+    }
+
+    #[test]
+    fn block_from_rows_take_iter_rows_and_estimate_size() {
+        let rows = vec![TestRow { id: 1, name: "a".to_string() }, TestRow {
+            id:   2,
+            name: "b".to_string(),
+        }];
+        let mut block = Block::from_rows(rows, schema()).unwrap();
+        assert_eq!(block.rows, 2);
+        assert_eq!(block.column_types.len(), 2);
+        assert_eq!(block.column_data.len(), 4);
+        assert!(block.estimate_size() > 16);
+
+        let mut iter = block.take_iter_rows();
+        let first = iter.next().unwrap();
+        assert_eq!(first[0].0, "id");
+        assert_eq!(first[0].1, &Type::Int32);
+        assert_eq!(first[0].2, Value::Int32(1));
+        assert_eq!(first[1].0, "name");
+        assert_eq!(first[1].2, Value::String(b"a".to_vec()));
+
+        let second = iter.next().unwrap();
+        assert_eq!(second[0].2, Value::Int32(2));
+        assert_eq!(second[1].2, Value::String(b"b".to_vec()));
+        assert!(iter.next().is_none());
+        drop(iter);
+        // take_iter_rows drains column_data
+        assert!(block.column_data.is_empty());
+    }
+
+    #[test]
+    fn block_from_rows_reports_missing_column_and_type_validation_errors() {
+        let err = Block::from_rows(vec![MissingColumnRow], vec![("id".to_string(), Type::Int32)])
+            .unwrap_err();
+        assert!(matches!(err, Error::Protocol(msg) if msg.contains("missing type")));
+
+        let err = Block::from_rows(vec![WrongTypeRow], vec![("id".to_string(), Type::Int32)])
+            .unwrap_err();
+        assert!(matches!(err, Error::TypeParse(msg) if msg.contains("could not assign value")));
+    }
+
+    // TODO: Remove
+    // #[test]
+    // fn block_write_read_sync_roundtrip_and_mismatch_error() {
+    //     let block = Block::from_rows(
+    //         vec![TestRow { id: 10, name: "x".to_string() }, TestRow {
+    //             id:   20,
+    //             name: "y".to_string(),
+    //         }],
+    //         schema(),
+    //     )
+    //     .unwrap();
+
+    //     let revision = DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
+    //     let mut bytes = BytesMut::new();
+    //     <Block as ProtocolData<Block, ()>>::write(block.clone(), &mut bytes, revision, None, ())
+    //         .unwrap();
+
+    //     let mut frozen = bytes.freeze();
+    //     let mut state = DeserializerState::default();
+    //     let decoded =
+    //         <Block as ProtocolData<Block, ()>>::read(&mut frozen, revision, (), &mut state)
+    //             .unwrap();
+    //     assert_eq!(decoded.rows, 2);
+    //     assert_eq!(decoded.column_types.len(), 2);
+    //     assert_eq!(decoded.column_types[0].0, "id");
+    //     assert_eq!(decoded.column_types[1].0, "name");
+
+    //     let mismatch = Block {
+    //         info:         BlockInfo::default(),
+    //         rows:         2,
+    //         column_types: vec![("id".to_string(), Type::Int32)],
+    //         column_data:  vec![Value::Int32(1)],
+    //     };
+    //     let mut mismatch_buf = BytesMut::new();
+    //     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    //         <Block as ProtocolData<Block, ()>>::write(mismatch, &mut mismatch_buf, 0, None, ())
+    //     }));
+    //     assert!(panic.is_err());
+    // }
+
+    // TODO: Remove
+    // #[tokio::test]
+    // async fn block_write_read_async_roundtrip_and_invalid_type_error() {
+    //     let block =
+    //         Block::from_rows(vec![TestRow { id: 1, name: "ok".to_string() }], schema()).unwrap();
+    //     let revision = DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
+
+    //     let (mut tx, mut rx) = tokio::io::duplex(2048);
+    //     #[expect(clippy::disallowed_methods)]
+    //     let write_task = tokio::spawn(async move {
+    //         <Block as ProtocolData<Block, ()>>::write_async(block, &mut tx, revision, None, ())
+    //             .await
+    //             .unwrap();
+    //         tx.shutdown().await.unwrap();
+    //     });
+
+    //     let mut state = DeserializerState::default();
+    //     let decoded = <Block as ProtocolData<Block, ()>>::read(&mut rx, revision, (), &mut state)
+    //         .await
+    //         .unwrap();
+    //     assert_eq!(decoded.rows, 1);
+    //     assert_eq!(decoded.column_types[0].0, "id");
+    //     write_task.await.unwrap();
+
+    //     // columns=1, rows=0, name="c", type="DefinitelyUnknown"
+    //     let mut invalid = BytesMut::new();
+    //     invalid.put_var_uint(1).unwrap();
+    //     invalid.put_var_uint(0).unwrap();
+    //     invalid.put_string("c").unwrap();
+    //     invalid.put_string("DefinitelyUnknown").unwrap();
+
+    //     let mut frozen = invalid.freeze();
+    //     let mut state = DeserializerState::default();
+    //     let err =
+    //         <Block as ProtocolData<Block, ()>>::read(&mut frozen, 0, (), &mut
+    // state).unwrap_err();     assert!(matches!(err, Error::TypeParseError(_)));
+    // }
 }
 
 #[cfg(test)]
@@ -413,8 +574,7 @@ mod tests {
         let mut state = DeserializerState::default();
         let mut reader = Cursor::new(buffer);
         let result =
-            <Block as ProtocolData<Block, ()>>::read_async(&mut reader, revision, (), &mut state)
-                .await;
+            <Block as ProtocolData<Block, ()>>::read(&mut reader, revision, (), &mut state).await;
         assert!(matches!(
             result,
             Err(Error::Protocol(m)) if m.contains("value-mode block reader does not support")

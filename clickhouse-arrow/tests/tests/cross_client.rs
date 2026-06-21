@@ -611,13 +611,9 @@ pub async fn test_cross_client_primitives(ch: Arc<ClickHouseContainer>) {
 // plus an offset stream, and the reader must reconstruct every omitted row as
 // the type's *zero* value.
 //
-// `arrow::deserialize::sparse::default_array_of` builds that zero for the
-// interleave. It has explicit zero arms for the integer/float/string family
-// but falls through to `new_null_array` for Decimal and the Timestamp
-// (DateTime64) family — so omitted rows in a non-nullable Decimal/DateTime64
-// column come back as NULL instead of 0/epoch. That is silent corruption of a
-// non-nullable column, and it only triggers once the part goes sparse, so the
-// small-row sections above never hit it.
+// Sparse reconstruction must build omitted non-nullable rows as type-correct
+// zero/default values. Decimal and DateTime64 are included because they exposed
+// prior default-fill mistakes that small dense rows did not hit.
 //
 // These tests force sparse serialization with
 // `ratio_of_defaults_for_sparse_serialization = 0.0` (every column whose ratio
