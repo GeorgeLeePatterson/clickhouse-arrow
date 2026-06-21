@@ -5,7 +5,26 @@ use arrow::compute::cast;
 use arrow::datatypes::*;
 use arrow::record_batch::RecordBatch;
 
-use crate::{Date, DateTime, DynDateTime64, Error, Result, Type, Value};
+use crate::{Date, Date32, DateTime, DynDateTime64, Error, Ipv4, Ipv6, Result, Type, Value};
+
+/// Internal target-width tag for Decimal128 emission.
+///
+/// `array_to_values` collapses an incoming Arrow Decimal128 column into
+/// the narrowest `Value::Decimal{32,64,128}` variant the data fits,
+/// either from the `Type` hint when present, or by inspecting the Arrow
+/// type's precision.
+#[derive(Copy, Clone)]
+enum DecimalNarrow {
+    D32,
+    D64,
+    D128,
+}
+
+/// Convert an Arrow Decimal scale (`i8`) to the canonical `usize` scale
+/// used in `Value::Decimal*` variants. Negative scales are clamped to 0
+/// — they're unrepresentable in our `Value` shape and CH rejects them
+/// at table-creation time, so the clamp is conservative defence.
+fn arrow_scale_to_usize(scale: i8) -> usize { usize::try_from(scale).unwrap_or(0) }
 
 /// Splits a `RecordBatch` into multiple `RecordBatch`es, each containing at most `max` rows.
 ///
@@ -144,15 +163,14 @@ pub fn array_to_values(
         DataType::Float32 => map_or_null(array_to_f32_iter(column)?, Value::Float32),
         DataType::Float64 => map_or_null(array_to_f64_iter(column)?, Value::Float64),
 
-        // Binary-like types (converted to String)
+        // Binary-like types (converted to String).
         DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
             map_or_null(array_to_binary_iter(column)?, Value::String)
         }
-        DataType::FixedSizeBinary(_) if !matches!(type_hint, Some(Type::Uuid)) => {
-            map_or_null(array_to_binary_iter(column)?, Value::String)
-        }
 
-        // UUID type
+        // UUID — the wire-to-Arrow deserializer normalises CH's two-LE-u64
+        // wire form to canonical RFC 4122 byte order; here the Arrow bytes
+        // are already in the form Uuid::from_bytes expects.
         DataType::FixedSizeBinary(16) if matches!(type_hint, Some(Type::Uuid)) => {
             let iter = array_to_binary_iter(column)?.map(|opt| {
                 opt.and_then(|bytes| {
@@ -165,6 +183,96 @@ pub fn array_to_values(
             });
             map_or_null(iter, Value::Uuid)
         }
+
+        // IPv4 — the deserializer already converts the CH u32-LE wire form
+        // into octet order (a.b.c.d), so the FixedSizeBinary(4) bytes here
+        // are exactly what Ipv4Addr::from([u8;4]) expects.
+        DataType::FixedSizeBinary(4) if matches!(type_hint, Some(Type::Ipv4)) => {
+            let iter = array_to_binary_iter(column)?.map(|opt| {
+                opt.and_then(|bytes| {
+                    (bytes.len() == 4).then(|| {
+                        let mut buf = [0u8; 4];
+                        buf.copy_from_slice(&bytes);
+                        Ipv4(std::net::Ipv4Addr::from(buf))
+                    })
+                })
+            });
+            map_or_null(iter, Value::Ipv4)
+        }
+
+        // IPv6 — wire is the 16 address bytes in network byte order, which
+        // is what Ipv6Addr::from([u8;16]) takes directly.
+        DataType::FixedSizeBinary(16) if matches!(type_hint, Some(Type::Ipv6)) => {
+            let iter = array_to_binary_iter(column)?.map(|opt| {
+                opt.and_then(|bytes| {
+                    (bytes.len() == 16).then(|| {
+                        let mut buf = [0u8; 16];
+                        buf.copy_from_slice(&bytes);
+                        Ipv6(std::net::Ipv6Addr::from(buf))
+                    })
+                })
+            });
+            map_or_null(iter, Value::Ipv6)
+        }
+
+        // Int128 / UInt128 — CH writes the 16 bytes in little-endian.
+        DataType::FixedSizeBinary(16) if matches!(type_hint, Some(Type::Int128)) => {
+            let iter = array_to_binary_iter(column)?.map(|opt| {
+                opt.and_then(|bytes| {
+                    (bytes.len() == 16).then(|| {
+                        let mut buf = [0u8; 16];
+                        buf.copy_from_slice(&bytes);
+                        i128::from_le_bytes(buf)
+                    })
+                })
+            });
+            map_or_null(iter, Value::Int128)
+        }
+        DataType::FixedSizeBinary(16) if matches!(type_hint, Some(Type::UInt128)) => {
+            let iter = array_to_binary_iter(column)?.map(|opt| {
+                opt.and_then(|bytes| {
+                    (bytes.len() == 16).then(|| {
+                        let mut buf = [0u8; 16];
+                        buf.copy_from_slice(&bytes);
+                        u128::from_le_bytes(buf)
+                    })
+                })
+            });
+            map_or_null(iter, Value::UInt128)
+        }
+
+        // Int256 / UInt256 — crate::i256/u256 are byte-array wrappers; the
+        // 32-byte wire payload is stored verbatim. Use full crate paths
+        // here because arrow::datatypes::i256 is a different type that
+        // is also in scope.
+        DataType::FixedSizeBinary(32) if matches!(type_hint, Some(Type::Int256)) => {
+            let iter = array_to_binary_iter(column)?.map(|opt| {
+                opt.and_then(|bytes| {
+                    (bytes.len() == 32).then(|| {
+                        let mut buf = [0u8; 32];
+                        buf.copy_from_slice(&bytes);
+                        crate::i256(buf)
+                    })
+                })
+            });
+            map_or_null(iter, Value::Int256)
+        }
+        DataType::FixedSizeBinary(32) if matches!(type_hint, Some(Type::UInt256)) => {
+            let iter = array_to_binary_iter(column)?.map(|opt| {
+                opt.and_then(|bytes| {
+                    (bytes.len() == 32).then(|| {
+                        let mut buf = [0u8; 32];
+                        buf.copy_from_slice(&bytes);
+                        crate::u256(buf)
+                    })
+                })
+            });
+            map_or_null(iter, Value::UInt256)
+        }
+
+        // Catch-all for FixedSizeBinary with no type_hint match — caller
+        // wants the raw bytes wrapped as a String value.
+        DataType::FixedSizeBinary(_) => map_or_null(array_to_binary_iter(column)?, Value::String),
 
         // String-like types (converted to String)
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
@@ -179,36 +287,81 @@ pub fn array_to_values(
         }
 
         // Decimal types
-        DataType::Decimal128(precision, _) => {
+        //
+        // CH Decimal{32,64,128,256}(scale) all arrive at the Arrow boundary
+        // as Decimal128 or Decimal256, with the CH width encoded in the
+        // Arrow precision (9 → Decimal32, 18 → Decimal64, 38 → Decimal128,
+        // 76 → Decimal256). The scale is the *second* arg of the Arrow type
+        // and lives on the type only — the wire payload is just the raw
+        // signed mantissa.
+        //
+        // Prefer the CH-side scale from type_hint when available (already
+        // the canonical usize); fall back to the Arrow type's scale
+        // otherwise. Emit the narrowest Value variant the data fits.
+        DataType::Decimal128(precision, scale) => {
             let arr = column
                 .as_any()
                 .downcast_ref::<Decimal128Array>()
                 .ok_or_else(|| Error::ArrowDeserialize("Expected Decimal128Array".to_string()))?;
+            let s: usize = match type_hint {
+                Some(Type::Decimal32(s) | Type::Decimal64(s) | Type::Decimal128(s)) => {
+                    usize::from(*s)
+                }
+                _ => arrow_scale_to_usize(*scale),
+            };
+            let narrow = match type_hint {
+                Some(Type::Decimal32(_)) => DecimalNarrow::D32,
+                Some(Type::Decimal64(_)) => DecimalNarrow::D64,
+                Some(Type::Decimal128(_)) => DecimalNarrow::D128,
+                _ => match *precision {
+                    p if p <= 9 => DecimalNarrow::D32,
+                    p if p <= 18 => DecimalNarrow::D64,
+                    _ => DecimalNarrow::D128,
+                },
+            };
             map_or_null(
-                (0..arr.len()).map(|i| {
-                    if arr.is_null(i) { None } else { Some((*precision as usize, arr.value(i))) }
-                }),
-                |(p, v)| Value::Decimal128(p, v),
+                (0..arr.len()).map(|i| if arr.is_null(i) { None } else { Some(arr.value(i)) }),
+                move |v| match narrow {
+                    DecimalNarrow::D32 =>
+                    {
+                        #[expect(clippy::cast_possible_truncation)]
+                        Value::Decimal32(s, v as i32)
+                    }
+                    DecimalNarrow::D64 =>
+                    {
+                        #[expect(clippy::cast_possible_truncation)]
+                        Value::Decimal64(s, v as i64)
+                    }
+                    DecimalNarrow::D128 => Value::Decimal128(s, v),
+                },
             )
         }
-        DataType::Decimal256(precision, _) => {
+        DataType::Decimal256(_precision, scale) => {
             let arr = column
                 .as_any()
                 .downcast_ref::<Decimal256Array>()
                 .ok_or_else(|| Error::ArrowDeserialize("Expected Decimal256Array".to_string()))?;
+            let s: usize = match type_hint {
+                Some(Type::Decimal256(s)) => usize::from(*s),
+                _ => arrow_scale_to_usize(*scale),
+            };
             map_or_null(
-                (0..arr.len()).map(|i| {
-                    if arr.is_null(i) {
-                        None
-                    } else {
-                        Some((*precision as usize, arr.value(i).into()))
-                    }
-                }),
-                |(p, v)| Value::Decimal256(p, v),
+                (0..arr.len())
+                    .map(|i| if arr.is_null(i) { None } else { Some((s, arr.value(i).into())) }),
+                |(s, v)| Value::Decimal256(s, v),
             )
         }
 
         // Date types
+        //
+        // Arrow Date32 is i32 days-since-1970, matching CH's Date32. CH's
+        // Date is u16 days-since-1970 (range 1970-01-01..=2149-06-06) and
+        // also round-trips through Arrow Date32. Pick the Value variant
+        // from type_hint so a pre-1970 or post-2149 Date32 value doesn't
+        // panic the u16-bounded Date::from_days path.
+        DataType::Date32 if matches!(type_hint, Some(Type::Date32)) => {
+            map_or_null(array_to_i32_iter(column)?, |d| Value::Date32(Date32(d)))
+        }
         DataType::Date32 => {
             map_or_null(array_to_i32_iter(column)?, |d| Value::Date(Date::from_days(d)))
         }
@@ -1023,24 +1176,63 @@ mod tests {
 
     #[test]
     fn test_decimal128_array() {
+        // Arrow Decimal128(10, 2) is the storage CH uses for Decimal64(2).
+        // Without a type hint we infer the CH width from precision: 10 <= 18
+        // → CH Decimal64. The first tuple member is the CH-side scale.
         let array = Decimal128Array::from_iter_values([12345, -67890])
             .with_precision_and_scale(10, 2)
             .unwrap();
         let result = array_to_values(&array, &DataType::Decimal128(10, 2), None).unwrap();
         assert_eq!(result.len(), 2);
         match &result[0] {
-            Value::Decimal128(p, v) => {
-                assert_eq!(*p, 10);
-                assert_eq!(*v, 12345); // Raw value, represents 123.45 with scale 2
+            Value::Decimal64(s, v) => {
+                assert_eq!(*s, 2);
+                assert_eq!(*v, 12345); // Raw mantissa for 123.45 with scale 2
             }
-            _ => panic!("Expected Decimal128"),
+            other => panic!("Expected Decimal64, got {other:?}"),
         }
         match &result[1] {
-            Value::Decimal128(p, v) => {
-                assert_eq!(*p, 10);
-                assert_eq!(*v, -67890); // Raw value, represents -678.90 with scale 2
+            Value::Decimal64(s, v) => {
+                assert_eq!(*s, 2);
+                assert_eq!(*v, -67890); // Raw mantissa for -678.90 with scale 2
             }
-            _ => panic!("Expected Decimal128"),
+            other => panic!("Expected Decimal64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decimal128_array_wide() {
+        // Arrow Decimal128(38, 6) maps to CH Decimal128(6).
+        let array = Decimal128Array::from_iter_values([1_234_567_890_i128, -987_654_321_i128])
+            .with_precision_and_scale(38, 6)
+            .unwrap();
+        let result = array_to_values(&array, &DataType::Decimal128(38, 6), None).unwrap();
+        match &result[0] {
+            Value::Decimal128(s, v) => {
+                assert_eq!(*s, 6);
+                assert_eq!(*v, 1_234_567_890_i128);
+            }
+            other => panic!("Expected Decimal128, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decimal128_array_with_type_hint() {
+        // type_hint Type::Decimal32(2) forces narrow even with a wider
+        // Arrow precision (which a user might pass when reconstructing
+        // from a Decimal32 source).
+        let array = Decimal128Array::from_iter_values([12345, -67890])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        let result =
+            array_to_values(&array, &DataType::Decimal128(10, 2), Some(&Type::Decimal32(2)))
+                .unwrap();
+        match &result[0] {
+            Value::Decimal32(s, v) => {
+                assert_eq!(*s, 2);
+                assert_eq!(*v, 12345);
+            }
+            other => panic!("Expected Decimal32, got {other:?}"),
         }
     }
 
@@ -1057,6 +1249,7 @@ mod tests {
 
     #[test]
     fn test_decimal256_array() {
+        // CH Decimal256 always emits Value::Decimal256 with the CH-side scale.
         let array =
             Decimal256Array::from_iter_values([i256::from_i128(12345), i256::from_i128(-67890)])
                 .with_precision_and_scale(20, 2)
@@ -1064,19 +1257,102 @@ mod tests {
         let result = array_to_values(&array, &DataType::Decimal256(20, 2), None).unwrap();
         assert_eq!(result.len(), 2);
         match &result[0] {
-            Value::Decimal256(p, v) => {
-                assert_eq!(*p, 20);
+            Value::Decimal256(s, v) => {
+                assert_eq!(*s, 2);
                 assert_eq!(*v, crate::i256(i256::from_i128(12345).to_be_bytes()));
             }
             _ => panic!("Expected Decimal256"),
         }
         match &result[1] {
-            Value::Decimal256(p, v) => {
-                assert_eq!(*p, 20);
+            Value::Decimal256(s, v) => {
+                assert_eq!(*s, 2);
                 assert_eq!(*v, crate::i256(i256::from_i128(-67890).to_be_bytes()));
             }
             _ => panic!("Expected Decimal256"),
         }
+    }
+
+    // --- array_to_values type_hint branches: IPv4/6 + wide ints -----------
+    //
+    // These FixedSizeBinary branches only fire when the matching `type_hint`
+    // is supplied; the deserializer has already normalised the bytes to the
+    // form each `Value` variant expects.
+
+    #[test]
+    fn test_array_to_values_ipv4() {
+        let a = std::net::Ipv4Addr::LOCALHOST.octets();
+        let b = std::net::Ipv4Addr::new(192, 168, 1, 42).octets();
+        let array =
+            FixedSizeBinaryArray::try_from_iter([a.as_slice(), b.as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(4), Some(&Type::Ipv4)).unwrap();
+        assert_eq!(result, vec![
+            Value::Ipv4(Ipv4(std::net::Ipv4Addr::LOCALHOST)),
+            Value::Ipv4(Ipv4(std::net::Ipv4Addr::new(192, 168, 1, 42))),
+        ]);
+    }
+
+    #[test]
+    fn test_array_to_values_ipv6() {
+        let addr = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let array =
+            FixedSizeBinaryArray::try_from_iter([addr.octets().as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(16), Some(&Type::Ipv6)).unwrap();
+        assert_eq!(result, vec![Value::Ipv6(Ipv6(addr))]);
+    }
+
+    #[test]
+    fn test_array_to_values_int128() {
+        let vals = [i128::MIN, 0, i128::MAX];
+        let bytes: Vec<[u8; 16]> = vals.iter().map(|v| v.to_le_bytes()).collect();
+        let array =
+            FixedSizeBinaryArray::try_from_iter(bytes.iter().map(<[u8; 16]>::as_slice)).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(16), Some(&Type::Int128)).unwrap();
+        assert_eq!(result, vec![
+            Value::Int128(i128::MIN),
+            Value::Int128(0),
+            Value::Int128(i128::MAX),
+        ]);
+    }
+
+    #[test]
+    fn test_array_to_values_uint128() {
+        let vals = [0_u128, u128::MAX];
+        let bytes: Vec<[u8; 16]> = vals.iter().map(|v| v.to_le_bytes()).collect();
+        let array =
+            FixedSizeBinaryArray::try_from_iter(bytes.iter().map(<[u8; 16]>::as_slice)).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(16), Some(&Type::UInt128)).unwrap();
+        assert_eq!(result, vec![Value::UInt128(0), Value::UInt128(u128::MAX)]);
+    }
+
+    #[test]
+    fn test_array_to_values_int256() {
+        // The 32 wire bytes are stored verbatim into crate::i256.
+        let raw = [7_u8; 32];
+        let array = FixedSizeBinaryArray::try_from_iter([raw.as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(32), Some(&Type::Int256)).unwrap();
+        assert_eq!(result, vec![Value::Int256(crate::i256(raw))]);
+    }
+
+    #[test]
+    fn test_array_to_values_uint256() {
+        let raw = [9_u8; 32];
+        let array = FixedSizeBinaryArray::try_from_iter([raw.as_slice()].into_iter()).unwrap();
+        let result =
+            array_to_values(&array, &DataType::FixedSizeBinary(32), Some(&Type::UInt256)).unwrap();
+        assert_eq!(result, vec![Value::UInt256(crate::u256(raw))]);
+    }
+
+    #[test]
+    fn test_array_to_values_fixed_size_binary_no_hint_is_string() {
+        // No matching type_hint -> the catch-all wraps raw bytes as String.
+        let array = FixedSizeBinaryArray::try_from_iter([b"abcd".as_slice()].into_iter()).unwrap();
+        let result = array_to_values(&array, &DataType::FixedSizeBinary(4), None).unwrap();
+        assert_eq!(result, vec![Value::String(b"abcd".to_vec())]);
     }
 
     #[test]

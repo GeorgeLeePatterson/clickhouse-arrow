@@ -25,10 +25,9 @@ use crate::formats::{CustomPlan, DeserializerState, SerializerState};
 use crate::geo::normalize_geo_type;
 use crate::io::{ClickHouseBytesWrite, ClickHouseRead, ClickHouseWrite};
 use crate::native::block_info::BlockInfo;
-use crate::native::protocol::DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION;
 use crate::prelude::*;
 use crate::serialize::ClickHouseNativeSerializer;
-use crate::{ArrowOptions, Result, Type};
+use crate::{ArrowOptions, Error, Result, Type};
 
 /// Implementation of `ProtocolData` for Arrow `RecordBatch`es.
 ///
@@ -255,6 +254,18 @@ impl ProtocolData<RecordBatch, ArrowDeserializerState> for RecordBatch {
             } else {
                 drop(state.replace_custom_plan(CustomPlan::from_type_structure(&internal_type)));
             }
+            if let Some((node_index, node)) = state.custom_plan().and_then(|plan| {
+                plan.nodes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, node)| node.stack_type != 0 && !node.is_sparse())
+            }) {
+                return Err(Error::Protocol(format!(
+                    "unsupported SerializationInfo kind stack {} at custom node {node_index} for \
+                     column {name}",
+                    node.stack_type
+                )));
+            }
 
             state.reset_custom_node_to_root();
             internal_type.deserialize_prefix(reader, state).await?;
@@ -448,6 +459,74 @@ mod tests {
             Err(Error::TypeParse(m))
             if &m == "invalid type name: 'InvalidType'"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_rejects_unsupported_kind() {
+        // A column header that declares has_custom=1 and kind=2 (Detached) —
+        // a kind the arrow reader does not support. It must be rejected with
+        // Error::Protocol, not silently mis-framed.
+        let mut buffer = Vec::new();
+        BlockInfo::default().write_async(&mut buffer).await.unwrap();
+        buffer.write_var_uint(1).await.unwrap(); // Columns
+        buffer.write_var_uint(1).await.unwrap(); // Rows
+        buffer.write_string("v").await.unwrap();
+        buffer.write_string("Int32").await.unwrap();
+        buffer.write_u8(1).await.unwrap(); // has_custom = 1
+        buffer.write_u8(2).await.unwrap(); // kind = 2 (Detached)
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(buffer);
+        let result = RecordBatch::read(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            ArrowOptions::default(),
+            &mut state,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::Protocol(m)) if m.contains("unsupported SerializationInfo kind")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_sparse_all_default_column() {
+        // A single-row Int32 column serialized Sparse where the only row is
+        // the default (0). The SparseOffsets stream is just the terminator
+        // (END_OF_GRANULE_FLAG | group_size=1 trailing default), and there are
+        // zero non-default values. Exercises the Sparse dispatch + materialize
+        // path end-to-end through the block reader.
+        const END_OF_GRANULE_FLAG: u64 = 1u64 << 62;
+
+        let mut buffer = Vec::new();
+        BlockInfo::default().write_async(&mut buffer).await.unwrap();
+        buffer.write_var_uint(1).await.unwrap(); // Columns
+        buffer.write_var_uint(1).await.unwrap(); // Rows
+        buffer.write_string("v").await.unwrap();
+        buffer.write_string("Int32").await.unwrap();
+        buffer.write_u8(1).await.unwrap(); // has_custom = 1
+        buffer.write_u8(1).await.unwrap(); // kind = 1 (Sparse)
+        // SparseOffsets: one flagged terminator = "1 trailing default, no value".
+        buffer.write_var_uint(END_OF_GRANULE_FLAG | 1).await.unwrap();
+        // SparseElements: zero non-default Int32 values follow.
+
+        let mut state = DeserializerState::default();
+        let mut reader = Cursor::new(buffer);
+        let batch = RecordBatch::read(
+            &mut reader,
+            DBMS_TCP_PROTOCOL_VERSION,
+            ArrowOptions::default(),
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 1);
+        let col = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(col.null_count(), 0);
+        assert_eq!(col.value(0), 0, "the single sparse-default row materializes as 0");
     }
 
     #[tokio::test]

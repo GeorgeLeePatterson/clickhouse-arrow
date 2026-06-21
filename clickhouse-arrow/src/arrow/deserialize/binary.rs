@@ -76,6 +76,16 @@ macro_rules! binary_async {
             std::net::Ipv6Addr::from(octets).octets()
         }
     }};
+    // See sync `Uuid` arm — CH wire is two LE u64s in (high, low) order.
+    (Uuid => $reader:expr) => {{
+        {
+            let mut buf = [0u8; 16];
+            let _ = $reader.read_exact(&mut buf).await?;
+            buf[0..8].reverse();
+            buf[8..16].reverse();
+            buf
+        }
+    }};
 }
 
 macro_rules! append_default {
@@ -246,7 +256,19 @@ pub(crate) async fn deserialize<R: ClickHouseRead>(
                 );
                 Arc::new(b.finish())
             },
-            Type::Uuid | Type::Int128 | Type::UInt128 => {
+            Type::Uuid => {
+                deserialize_binary_rows!(
+                    ok => b,
+                    reader,
+                    rows,
+                    nulls,
+                    sparse_offsets,
+                    [0_u8; 16],
+                    binary_async!(Uuid => reader)
+                );
+                Arc::new(b.finish())
+            },
+            Type::Int128 | Type::UInt128 => {
                 deserialize_binary_rows!(
                     ok => b,
                     reader,
@@ -584,11 +606,18 @@ mod tests {
         let type_hint = Type::Uuid;
         let rows = 2;
         let null_mask = vec![];
+        // CH wire form: each UUID is a 128-bit LE value stored as two LE
+        // u64s in (high, low) order. The deserializer reverses each 8-byte
+        // half so the Arrow FixedSizeBinary(16) ends up in canonical RFC
+        // 4122 byte order.
         let input = vec![
-            // UUIDs: [00010203-0405-0607-0809-0a0b0c0d0e0f, 10111213-1415-1617-1819-1a1b1c1d1e1f]
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
-            0x1c, 0x1d, 0x1e, 0x1f,
+            // wire (per 8-byte half, little-endian) -> arrow bytes:
+            // 0706050403020100 0f0e0d0c0b0a0908 -> 00010203-0405-0607-0809-0a0b0c0d0e0f
+            0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a,
+            0x09, 0x08,
+            // 1716151413121110 1f1e1d1c1b1a1918 -> 10111213-1415-1617-1819-1a1b1c1d1e1f
+            0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x10, 0x1f, 0x1e, 0x1d, 0x1c, 0x1b, 0x1a,
+            0x19, 0x18,
         ];
         let mut reader = Cursor::new(input);
 
@@ -616,14 +645,15 @@ mod tests {
         let type_hint = Type::Nullable(Box::new(Type::Uuid));
         let rows = 3;
         let null_mask = vec![0, 1, 0]; // [not null, null, not null]
+        // Wire bytes are per-8-byte-half little-endian; the deserializer
+        // reverses each half so the Arrow value is canonical big-endian.
         let input = vec![
-            // UUIDs: [00010203-0405-0607-0809-0a0b0c0d0e0f, [0;16],
-            // 10111213-1415-1617-1819-1a1b1c1d1e1f]
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f, // non-null
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // null (zeroed)
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
-            0x1e, 0x1f, // non-null
+            // wire -> arrow 00010203-0405-0607-0809-0a0b0c0d0e0f
+            0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a,
+            0x09, 0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // null (zeroed)
+            // wire -> arrow 10111213-1415-1617-1819-1a1b1c1d1e1f
+            0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x10, 0x1f, 0x1e, 0x1d, 0x1c, 0x1b, 0x1a,
+            0x19, 0x18,
         ];
         let mut reader = Cursor::new(input);
 

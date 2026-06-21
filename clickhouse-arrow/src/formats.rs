@@ -209,7 +209,6 @@ impl<T: Default> DeserializerState<T> {
         self.custom_plan.take()
     }
 
-    #[cfg(feature = "extended-types")]
     #[must_use]
     pub(crate) fn custom_plan(&self) -> Option<&CustomPlan> { self.custom_plan.as_ref() }
 

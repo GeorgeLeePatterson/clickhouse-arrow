@@ -49,12 +49,7 @@ macro_rules! primitive {
     // (Float32 => $reader:expr) => {{ $reader.read_f32_le().await? }};
     // (Float64 => $reader:expr) => {{ $reader.read_f64_le().await? }};
     // (Date => $reader:expr) => {{ $reader.read_u16_le().await?.map(i32::from)? }};
-    (Date32 => $reader:expr) => {{
-        {
-            let days = $reader.read_i32_le().await?;
-            days - $crate::deserialize::DAYS_1900_TO_1970 // Adjust to days since 1970-01-01
-        }
-    }};
+    (Date32 => $reader:expr) => {{ $reader.read_i32_le().await? }};
     // (DateTime => $reader:expr) => {{ $reader.read_u32_le().await?.map(i64::from)? }};
     // (DateTime64(0) => $reader:expr) => {{ $reader.read_i64_le().await? }};
     // (DateTime64(3) => $reader:expr) => {{ $reader.read_i64_le().await? }};

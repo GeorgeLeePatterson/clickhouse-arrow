@@ -1,3 +1,33 @@
+//! `ClickHouse` native TCP protocol — declared dialect.
+//!
+//! `DBMS_TCP_PROTOCOL_VERSION` in this file is what the
+//! client advertises in its Hello packet. The server adopts
+//! `min(client_revision, server_revision)` for the connection, so each
+//! `DBMS_MIN_*_VERSION_WITH_*` constant below is a *gate* — once both
+//! sides are at or past it, that on-wire feature is enabled.
+//!
+//! ### What we support on the column body wire
+//!
+//! `DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION` (54454) turns on
+//! the per-column `has_custom` flag byte plus the kind-stack that
+//! follows. The kinds CH may emit and how this crate handles each:
+//!
+//!   - `Default` (kind 0)              — supported. Native column body.
+//!   - `Sparse` (kind 1)               — supported. Offsets stream then dense nested values;
+//!     reconstructed to a full column on read.
+//!   - `Detached` (kind 2)             — rejected with `Error::Protocol`; internal pipeline
+//!     marshalling, not seen in normal SELECT traffic.
+//!   - `DetachedOverSparse` (kind 3)   — rejected with `Error::Protocol`.
+//!   - `Replicated` (kind 4)           — rejected with `Error::Protocol`; Native-format only, not
+//!     used by `MergeTree`.
+//!   - `Combination` (kind 5)          — rejected with `Error::Protocol`.
+//!
+//! The write path always emits `Default`. CH merges across kinds, so a
+//! table whose existing parts are sparse still accepts our Default
+//! inserts. If a future bump moves the advertised revision past a new
+//! encoding gate, that encoding must be added here before the gate is
+//! enabled — or the rejection path will surface it loudly.
+
 use std::str::FromStr;
 
 use strum::AsRefStr;
@@ -42,6 +72,11 @@ pub(crate) const DBMS_MIN_PROTOCOL_VERSION_WITH_PASSWORD_COMPLEXITY_RULES: u64 =
 pub(crate) const DBMS_MIN_REVISION_WITH_INTERSERVER_SECRET_V2: u64 = 54462;
 pub(crate) const DBMS_MIN_PROTOCOL_VERSION_WITH_TOTAL_BYTES_IN_PROGRESS: u64 = 54463;
 // pub(crate) const DBMS_MIN_PROTOCOL_VERSION_WITH_TIMEZONE_UPDATES: u64 = 54464;
+// Informational: Sparse kind byte first appeared in server revision 54465.
+// Wire-level gating uses the per-column has_custom flag from
+// `DBMS_MIN_PROTOCOL_VERSION_WITH_CUSTOM_SERIALIZATION` (54454), not this
+// revision. Servers older than 54465 will only ever emit kind=0 even when
+// has_custom is set, so we don't need to branch on this in the reader.
 // pub(crate) const DBMS_MIN_REVISION_WITH_SPARSE_SERIALIZATION: u64 = 54465;
 // pub(crate) const DBMS_MIN_REVISION_WITH_SSH_AUTHENTICATION: u64 = 54466;
 /// Send read-only flag for Replicated tables as well
