@@ -89,7 +89,7 @@ unsafe fn expand_null_bitmap_avx2(bitmap: &[u8], output: &mut [u8], len: usize) 
 }
 
 #[cfg(target_arch = "x86_64")]
-#[inline(always)]
+#[inline]
 fn write_expanded_byte(byte: u8, out: &mut [u8]) {
     out[0] = u8::from((byte & 0x01) == 0);
     out[1] = u8::from((byte & 0x02) == 0);
