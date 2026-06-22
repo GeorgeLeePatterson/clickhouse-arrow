@@ -67,10 +67,10 @@ jobs:
       with:
         components: clippy
 
-    - name: Install Rust nightly (for formatting)
+    - name: Install Rust nightly
       uses: dtolnay/rust-toolchain@nightly
       with:
-        components: rustfmt
+        components: rustfmt, clippy
 
     - name: Install just
       uses: taiki-e/install-action@just
