@@ -57,7 +57,7 @@ tmpfs-size = ["test-utils"]
 # DEPENDENCIES
 
 [dependencies]
-arrow = { version = "57", features = [
+arrow = { version = "58", features = [
     "prettyprint",
     "ipc_compression",
     "chrono-tz",
